@@ -21,14 +21,14 @@ try {
   pdf+=`xref\n0 6\n0000000000 65535 f \n${offsets.map(o=>String(o).padStart(10,'0')+' 00000 n \n').join('')}trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
   await fs.writeFile(path.join(root,'papers','sample.pdf'),pdf);
   const pi=new PiClient({root,stateDir});
-  app=await createApp({root,stateDir,connectCodex:false,piClient:pi});
+  app=await createApp({root,stateDir,connectPi:false,piClient:pi});
   const waitFor=async id=>{
     const deadline=Date.now()+100000;
     while(Date.now()<deadline){const m=app.chats.get(id).messages.at(-1);if(m&&m.status!=='streaming')return m;await new Promise(r=>setTimeout(r,150));}
     await app.chats.interrupt(id);throw new Error('Pi test timed out');
   };
-  await app.chats.connect('pi');pi.settings.defaultThinkingLevel='off';
-  const chat=app.chats.create({provider:'pi',title:'Synthetic Pi test'});
+  await app.chats.connect();pi.settings.defaultThinkingLevel='off';
+  const chat=app.chats.create({title:'Synthetic Pi test'});
   await app.chats.send(chat.id,{text:'This is a synthetic integration test. Reply only: Pi connected.'});
   const first=await waitFor(chat.id);
   console.log(JSON.stringify({step:'real-model',status:first.status,text:first.text,error:first.error}));

@@ -1,16 +1,15 @@
 <script setup>
 import { computed } from 'vue';
 import { markdown, endpoint } from '../lib/content.js';
-import { activeStatuses, agentLabel } from '../lib/workspace.js';
+import { activeStatuses } from '../lib/workspace.js';
 const props = defineProps({
   message: { type: Object, required: true },
-  provider: { type: String, default: 'pi' },
 });
 const role = computed(() =>
   ['user', 'assistant', 'tool', 'system'].includes(props.message.role) ? props.message.role : 'assistant',
 );
 const label = computed(
-  () => ({ user: '你', assistant: agentLabel(props.provider), tool: '工具', system: '系统' })[role.value],
+  () => ({ user: '你', assistant: 'Pi Agent', tool: '工具', system: '系统' })[role.value],
 );
 const working = computed(() => activeStatuses.includes(props.message.status));
 const failed = computed(() => ['error', 'failed'].includes(props.message.status));

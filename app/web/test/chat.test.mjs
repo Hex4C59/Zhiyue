@@ -4,9 +4,9 @@ import { EventEmitter } from 'node:events';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
-import { ChatService } from '../src/lib/codex.mjs';
+import { ChatService } from '../src/lib/chat.mjs';
 
-class FakeCodex extends EventEmitter {
+class FakeAgent extends EventEmitter {
   constructor(){super();this.available=true;this.calls=[];this.responses=[];}
   async start(){}
   async request(method,params){this.calls.push({method,params});if(method==='account/read')return {account:{type:'apiKey'},requiresOpenaiAuth:true};if(method==='model/list')return {data:[]};if(method==='thread/start')return {thread:{id:'thread-1'}};if(method==='turn/start')return {turn:{id:'turn-1'}};return {};}
@@ -16,7 +16,7 @@ class FakeCodex extends EventEmitter {
 
 async function fixture(t){
   const dir=await fs.mkdtemp(path.join(os.tmpdir(),'literature-chat-'));t.after(()=>fs.rm(dir,{recursive:true,force:true}));
-  const client=new FakeCodex();const events=[];
+  const client=new FakeAgent();const events=[];
   const chats=new ChatService({root:dir,stateDir:dir,client,emit:e=>events.push(structuredClone(e)),library:{getPaper:async()=>null},jobs:{startDownload:async x=>({id:'job-1',status:'queued',input:x.input})},extract:async()=>({text:'文件内容'})});
   chats.authenticated=true;
   return {chats,client,events,dir};
@@ -29,7 +29,8 @@ test('会话接入真实协议形状，图片以localImage输入，文件提取�
   await until(()=>client.calls.some(x=>x.method==='turn/start'));
   const turn=client.calls.find(x=>x.method==='turn/start').params;
   assert.equal(turn.threadId,'thread-1');assert.equal(turn.input[1].type,'localImage');assert.match(turn.input[0].text,/文件内容/);
-  assert.equal(client.calls[0].params.sandbox,'workspace-write');
+  assert.match(client.calls[0].params.developerInstructions,/文献研究助手/);
+  assert.equal(client.calls[0].params.dynamicTools.length,5);
 });
 
 test('多条agent消息流可拼接并在turn完成后持久化',async t=>{

@@ -22,7 +22,6 @@ export const statusLabels = {
   needs_review: '待人工核对',
   unknown: '状态待核实',
 };
-export const agentLabel = (provider) => (provider === 'pi' ? 'Pi Agent' : 'Codex');
 export const activeJob = (job) => ['queued', 'pending', 'running', 'in_progress'].includes(job.status);
 
 export function createWorkspace({
@@ -55,13 +54,10 @@ export function createWorkspace({
     status: {},
     statusError: '',
     eventsOpen: false,
-    provider: 'pi',
     model: '',
     draft: '',
     focusComposer: 0,
     historyOpen: false,
-    loginInfo: null,
-    loginPending: false,
     jobs: new Map(),
     batches: [],
     sending: false,
@@ -95,14 +91,8 @@ export function createWorkspace({
       return null;
     }
   };
-  const preferredProvider = recalled('zhiyue.agent');
-  if (['pi', 'codex'].includes(preferredProvider)) state.provider = preferredProvider;
-
   const currentPaper = computed(() => state.papers.find((paper) => paper.literature_id === state.current));
-  const agent = computed(
-    () =>
-      state.status.agents?.[state.provider] || (state.provider === 'codex' ? state.status.codex : {}) || {},
-  );
+  const agent = computed(() => state.status.agents?.pi || {});
   const models = computed(() =>
     (agent.value.models || [])
       .map((model) => {
@@ -207,35 +197,21 @@ export function createWorkspace({
     try {
       state.status = await api('/api/status');
       state.statusError = '';
-      if (!preferredProvider && !state.chat && !state.status.agents?.[state.provider]) {
-        state.provider = state.status.defaultProvider || 'pi';
-      }
     } catch (error) {
       state.statusError = error.message;
     }
   }
   async function reconnectAgent() {
-    const provider = state.provider;
     state.status.agents = {
       ...state.status.agents,
-      [provider]: { ...state.status.agents?.[provider], loading: true },
+      pi: { ...state.status.agents?.pi, loading: true },
     };
     try {
-      await api(`/api/agents/${provider}/connect`, json('POST', {}));
+      await api('/api/agents/pi/connect', json('POST', {}));
     } catch (error) {
       toast(error.message, true);
     } finally {
       await loadStatus();
-    }
-  }
-  async function login() {
-    state.loginPending = true;
-    try {
-      state.loginInfo = await api('/api/codex/login', json('POST', {}));
-    } catch (error) {
-      toast(error.message, true);
-    } finally {
-      state.loginPending = false;
     }
   }
   async function loadChats() {
@@ -252,25 +228,13 @@ export function createWorkspace({
     remember('zhiyue.chat', null);
     state.focusComposer++;
   }
-  async function switchProvider(provider) {
-    if (busy.value || !['pi', 'codex'].includes(provider)) return;
-    state.provider = provider;
-    state.model = '';
-    state.loginInfo = null;
-    remember('zhiyue.agent', provider);
-    newChat();
-    if (agent.value.available !== true) await reconnectAgent();
-  }
   async function openChat(id) {
     if (state.sending) return;
     const epoch = ++state.chatEpoch;
     try {
       const chat = await api(`/api/chats/${endpoint(id)}`);
       if (epoch !== state.chatEpoch || stopped) return;
-      if (state.provider !== (chat.provider || 'codex')) state.model = '';
       state.chat = chat;
-      state.provider = chat.provider || 'codex';
-      state.loginInfo = null;
       state.context = new Set(chat.paperIds || []);
       remember('zhiyue.chat', chat.id);
       if (agent.value.available !== true) reconnectAgent();
@@ -307,7 +271,6 @@ export function createWorkspace({
           const chat = await api(
             '/api/chats',
             json('POST', {
-              provider: state.provider,
               paperIds,
               title: text.slice(0, 50) || titleOf(currentPaper.value || {}),
             }),
@@ -493,9 +456,7 @@ export function createWorkspace({
         ...state.status,
         ...status,
         agents: { ...state.status.agents, ...status.agents },
-        codex: { ...state.status.codex, ...status.codex },
       };
-      if (agent.value.authenticated === true) state.loginInfo = null;
     }
     if (data.type === 'job' && data.job?.id) {
       const previous = state.jobs.get(data.job.id);
@@ -557,14 +518,7 @@ export function createWorkspace({
     await Promise.allSettled([loadLibrary(), loadStatus(), loadChats(), loadDownloads()]);
     if (stopped) return;
     const saved = recalled('zhiyue.chat');
-    if (
-      saved &&
-      state.chats.some((chat) => chat.id === saved && (chat.provider || 'codex') === state.provider)
-    ) {
-      await openChat(saved);
-    }
-    if (state.provider !== state.status.defaultProvider && agent.value.available !== true)
-      await reconnectAgent();
+    if (saved && state.chats.some((chat) => chat.id === saved)) await openChat(saved);
     if (pollInterval) pollTimer = setInterval(poll, pollInterval);
   }
   function stop() {
@@ -592,12 +546,10 @@ export function createWorkspace({
     patchPaper,
     loadStatus,
     reconnectAgent,
-    login,
     loadChats,
     openChat,
     syncChat,
     newChat,
-    switchProvider,
     sendMessage,
     interrupt,
     uploadFiles,

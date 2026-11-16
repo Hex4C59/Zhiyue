@@ -16,7 +16,7 @@ app/
 ├─ web/
 │  ├─ server.mjs          兼容启动入口
 │  ├─ src/server.mjs      HTTP 与服务装配
-│  ├─ src/lib/            书目、Codex、任务、预览和提取
+│  ├─ src/lib/            书目、助手协议、任务、预览和提取
 │  ├─ frontend/          Vue 3 单文件组件与状态、阅读控制器
 │  ├─ dist/              Vite 构建的 app.js 与 Vue MIT 许可证
 │  ├─ public/index.html   Vue 挂载入口

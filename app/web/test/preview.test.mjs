@@ -91,7 +91,7 @@ w.write(sys.argv[1])`;
   await promisify(execFile)(python,['-c',fixture,file],{windowsHide:true,timeout:10000});
   const original=await readFile(file);
   await writeFile(path.join(root,'catalog','文献索引.json'),JSON.stringify({records:[{literature_id:'L001',title:'Synthetic selection test',authors:[],year:2026,file:'papers/selectable.pdf',versions:[]}]}));
-  const app=await createApp({root,stateDir:path.join(root,'web/data'),connectCodex:false});
+  const app=await createApp({root,stateDir:path.join(root,'web/data'),connectPi:false});
   await new Promise(resolve=>app.server.listen(0,'127.0.0.1',resolve));
   t.after(async()=>{await app.close();await rm(root,{recursive:true,force:true});});
   const base=`http://127.0.0.1:${app.server.address().port}`;

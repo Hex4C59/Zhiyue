@@ -3,7 +3,6 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { EventEmitter } from 'node:events';
 import { randomUUID } from 'node:crypto';
 import { PiClient, resolvePi } from '../src/lib/pi.mjs';
 import { AssistantService } from '../src/lib/assistants.mjs';
@@ -41,17 +40,15 @@ function fixture(t) {
   t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));
   const sdk=mockSDK(),events=[];
   const pi=new PiClient({root:dir,stateDir:dir,sdk});
-  const codex=new EventEmitter();Object.assign(codex,{available:false,close:()=>{},start:async()=>{throw new Error('Codex 未安装');}});
-  const options={root:dir,stateDir:dir,piClient:pi,codexClient:codex,emit:e=>events.push(structuredClone(e)),library:{getPaper:async()=>null,getLibrary:async()=>({papers:[{literature_id:'L001',title:'Test paper',authors:[]}]})},jobs:{},extract:async()=>({text:'附件内容'})};
+  const options={root:dir,stateDir:dir,piClient:pi,emit:e=>events.push(structuredClone(e)),library:{getPaper:async()=>null,getLibrary:async()=>({papers:[{literature_id:'L001',title:'Test paper',authors:[]}]})},jobs:{},extract:async()=>({text:'附件内容'})};
   const chats=new AssistantService(options);t.after(()=>chats.client.close());
   return {chats,pi,sdk,dir,events,options};
 }
 
-test('Pi 复用流式消息、附件和文献工具；Codex 故障不会阻塞 Pi',async t=>{
+test('Pi 复用流式消息、附件和文献工具',async t=>{
   const {chats,pi,sdk,dir,events}=fixture(t);
-  await chats.connect('pi');
-  await assert.rejects(chats.connect('codex'),/未安装/);
-  const c=chats.create({provider:'pi'});
+  await chats.connect();
+  const c=chats.create();
   const image=path.join(dir,'test.png');fs.writeFileSync(image,'test-image');
   await chats.send(c.id,{text:'请解释附件',model:'test/test-model',attachments:[{id:'a',name:'test.png',path:image,mime:'image/png',size:10},{id:'b',name:'test.txt',path:'example.txt',mime:'text/plain',size:4}]});
   await wait(()=>chats.get(c.id).messages.at(-1).status==='completed');
@@ -65,22 +62,21 @@ test('Pi 复用流式消息、附件和文献工具；Codex 故障不会阻塞 P
   assert.equal(pi.pending.size,0);
 });
 
-test('Pi 与旧 Codex 历史分开保存，重建服务可恢复 Pi 会话',async t=>{
+test('Pi 会话保存于独立目录，重建服务可恢复',async t=>{
   const {chats,dir,options,sdk}=fixture(t);
-  const old=chats.create({provider:'codex',title:'旧 Codex 会话'});
-  await chats.connect('pi');const c=chats.create({provider:'pi',title:'Pi 会话'});
+  await chats.connect();const c=chats.create({title:'Pi 会话'});
   await chats.send(c.id,{text:'问题'});await wait(()=>chats.get(c.id).messages.at(-1).status==='completed');
   await chats.client.close();
   const pi=new PiClient({root:dir,stateDir:dir,sdk});
   const restored=new AssistantService({...options,piClient:pi});t.after(()=>restored.client.close());
-  assert.equal(restored.get(old.id).provider,'codex');assert.equal(restored.get(c.id).provider,'pi');
-  assert.equal(JSON.parse(fs.readFileSync(path.join(dir,'chats.json'),'utf8')).chats.length,1);
+  assert.equal(restored.get(c.id).id,c.id);assert.equal(restored.get(c.id).messages.length,2);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(dir,'pi','chats.json'),'utf8')).chats.length,1);
   await restored.send(c.id,{text:'继续'});await wait(()=>restored.get(c.id).messages.at(-1).status==='completed');
-  assert.equal(restored.get(c.id).messages.length,4);assert.equal(restored.list().length,2);
+  assert.equal(restored.get(c.id).messages.length,4);assert.equal(restored.list().length,1);
 });
 
 test('Pi 可停止正在生成的回答并继续新一轮，未知模型明确报错',async t=>{
-  const {chats,pi,sdk}=fixture(t);await chats.connect('pi');const c=chats.create({provider:'pi'});
+  const {chats,pi,sdk}=fixture(t);await chats.connect();const c=chats.create();
   await chats.send(c.id,{text:'等待停止'});await wait(()=>sdk.created[0]?.lastPrompt);
   await chats.interrupt(c.id);await wait(()=>chats.get(c.id).messages.at(-1).status==='interrupted');
   assert.equal(pi.turns.size,0);
@@ -97,25 +93,24 @@ test('Pi 恢复会话拒绝目录外文件，托管安装路径拒绝非法版�
   assert.throws(()=>resolvePi({PI_CODING_AGENT_DIR:dir,PATH:''}),/未找到/);
 });
 
-test('HTTP 提供助手状态和连接接口，新旧会话按助手路由',async t=>{
+test('HTTP 提供 Pi 状态和连接接口',async t=>{
   const dir=fs.mkdtempSync(path.join(os.tmpdir(),'literature-pi-http-'));
   fs.mkdirSync(path.join(dir,'catalog'));fs.writeFileSync(path.join(dir,'catalog','文献索引.json'),JSON.stringify({records:[]}));
   const stateDir=path.join(dir,'web','data'),sdk=mockSDK();
   const piClient=new PiClient({root:dir,stateDir,sdk});
-  const app=await createApp({root:dir,stateDir,connectCodex:false,piClient});
+  const app=await createApp({root:dir,stateDir,connectPi:false,piClient});
   await new Promise(resolve=>app.server.listen(0,'127.0.0.1',resolve));
   t.after(async()=>{await app.close();fs.rmSync(dir,{recursive:true,force:true});});
   const base=`http://127.0.0.1:${app.server.address().port}`;
   const post=async(route,data={})=>fetch(base+route,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});
   const connected=await post('/api/agents/pi/connect');assert.equal(connected.status,200);
   const status=await connected.json();assert.equal(status.agents.pi.authenticated,true);assert.equal(status.agents.pi.models[0].model,'test/test-model');
-  const piChat=await (await post('/api/chats',{provider:'pi'})).json();
-  const codexChat=await (await post('/api/chats',{provider:'codex'})).json();
-  assert.equal(piChat.provider,'pi');assert.equal(codexChat.provider,'codex');
+  assert.deepEqual(Object.keys(status.agents),['pi']);
+  const piChat=await (await post('/api/chats',{})).json();
   const sent=await post(`/api/chats/${piChat.id}/messages`,{text:'HTTP 问题'});assert.equal(sent.status,202);
   await wait(()=>app.chats.get(piChat.id).messages.at(-1).status!=='streaming');
   assert.equal(app.chats.get(piChat.id).messages.at(-1).status,'completed',app.chats.get(piChat.id).messages.at(-1).error);
   assert.equal((await (await fetch(base+`/api/chats/${piChat.id}`)).json()).messages.at(-1).text,'Pi已连接');
-  const chats=await (await fetch(base+'/api/chats')).json();assert.equal(chats.length,2);
-  assert.equal((await post('/api/chats',{provider:'unknown'})).status,400);
+  const chats=await (await fetch(base+'/api/chats')).json();assert.equal(chats.length,1);
+  assert.equal((await post('/api/agents/codex/connect')).status,404);
 });

@@ -28,8 +28,7 @@ export function resolvePi(env=process.env) {
   return entry;
 }
 
-// Adapt Pi session events to the existing chat protocol, so attachments, tools and
-// persistence follow the same path as Codex rather than a second implementation.
+// 把 Pi 的会话事件转换为网站的聊天协议，使附件、工具和持久化共用 ChatService。
 export class PiClient extends EventEmitter {
   constructor({root,stateDir,sdk,agentDir=process.env.PI_CODING_AGENT_DIR||path.join(os.homedir(),'.pi','agent')}={}) {
     super();Object.assign(this,{root,sdk,agentDir});

@@ -67,7 +67,7 @@ export function extractFile(python,file,pages) {
   });
 }
 
-export async function createApp({root=path.resolve(HERE,'../../../library'),stateDir=path.resolve(HERE,'../../../library/web/data'),connectCodex=true,codexClient,piClient}={}) {
+export async function createApp({root=path.resolve(HERE,'../../../library'),stateDir=path.resolve(HERE,'../../../library/web/data'),connectPi=true,piClient}={}) {
   await fsp.mkdir(stateDir,{recursive:true});await fsp.mkdir(path.join(stateDir,'uploads'),{recursive:true});
   const connections=new Set();
   const library=new Library({root,stateDir});
@@ -77,14 +77,14 @@ export async function createApp({root=path.resolve(HERE,'../../../library'),stat
   };
   const python=resolvePython(root);
   const jobs=new JobManager({root,stateDir,emit,python});
-  const chats=new AssistantService({root,stateDir,library,jobs,emit,extract:(file,pages)=>extractFile(python,file,pages),codexClient,piClient});
+  const chats=new AssistantService({root,stateDir,library,jobs,emit,extract:(file,pages)=>extractFile(python,file,pages),piClient});
   const uploads=new Store(path.join(stateDir,'uploads.json'),{files:[]});
   const validUploads=ids=>{
     if(!Array.isArray(ids)||ids.length>8)throw error('每次最多附加8个文件。');
     return ids.map(id=>{const file=uploads.data.files.find(f=>f.id===id);if(!file||!fs.existsSync(file.path))throw error('附件不存在，请重新上传。');return file;});
   };
   const boot=()=>chats.connect().catch(()=>emit({type:'status',...chats.snapshot()}));
-  if(connectCodex)boot();
+  if(connectPi)boot();
   const server=http.createServer(async(req,res)=>{
     res.setHeader('X-Content-Type-Options','nosniff');res.setHeader('Referrer-Policy','no-referrer');
     res.setHeader('Content-Security-Policy',"default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; frame-src 'self'; object-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'self'");
@@ -97,8 +97,7 @@ export async function createApp({root=path.resolve(HERE,'../../../library'),stat
       }
       if(method==='GET'&&route==='/api/library')return json(res,await library.getLibrary());
       if(method==='GET'&&route==='/api/status')return json(res,{...chats.snapshot(),python,node:process.version,root});
-      const agentRoute=/^\/api\/(?:agents\/)?(pi|codex)\/(connect|login)$/.exec(route);
-      if(method==='POST'&&agentRoute)return json(res,agentRoute[2]==='connect'?await chats.connect(agentRoute[1]):await chats.login(agentRoute[1]));
+      if(method==='POST'&&route==='/api/agents/pi/connect')return json(res,await chats.connect());
       if(method==='GET'&&route==='/api/chats')return json(res,chats.list());
       if(method==='POST'&&route==='/api/chats')return json(res,chats.create(await readJson(req)),201);
       const chatMatch=/^\/api\/chats\/([\w-]+)(?:\/(messages|interrupt))?$/.exec(route);

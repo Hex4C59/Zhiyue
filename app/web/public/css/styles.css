@@ -179,10 +179,7 @@ pre,code,kbd,samp { font-family:var(--font-mono); }
 .chat-panel { display:flex; flex-direction:column; min-width:0; min-height:0; background:#fff; border-left:1px solid var(--line); container:assistant / inline-size; }
 .chat-header { min-height:60px; flex-shrink:0; display:flex; align-items:center; justify-content:space-between; padding:12px 20px; gap:12px; border-bottom:1px solid #efefec; }
 .assistant-title { display:flex; align-items:center; gap:10px; min-width:0; }
-.agent-picker { position:relative; min-width:0; }
-.agent-picker select { appearance:none; border:0; border-radius:6px; background:transparent; padding:5px 24px 5px 0; font-size:14px; font-weight:650; color:#282a27; max-width:150px; cursor:pointer; }
-.agent-picker>span { position:absolute; right:2px; top:50%; transform:translateY(-50%); pointer-events:none; display:flex; color:#7d8078; }
-.agent-picker svg { width:13px; height:13px; }
+.agent-name { font-size:14px; font-weight:650; color:#282a27; white-space:nowrap; }
 .connection-indicator { flex-shrink:0; display:block; width:6px; height:6px; border-radius:50%; background:#b3b5af; }
 .connection-indicator[data-state="connected"] { background:#78937e; }
 .connection-indicator[data-state="error"] { background:#b86658; }

@@ -24,7 +24,7 @@ npm run doctor
 
 推荐在 PowerShell 运行 `.\start-web.cmd`，或双击该文件，打开 <http://127.0.0.1:8765>。此入口仅对启动子进程设置执行策略，不修改用户或系统的持久执行策略；支持 `-Port 8766` 和 `-NoBrowser`。`./start-web.ps1` 仍可在允许执行该脚本的环境中使用。旧文献工具命令 `./tools/文献工具.ps1` 保持兼容。
 
-右侧研究助手支持 **Pi Agent / Codex** 切换，新会话默认使用 Pi，复用本机 Pi 的模型与登录配置；原 Codex 历史保留。详见[助手接入与使用](app/web/README.md#阅读和提问)。
+右侧研究助手固定使用 **Pi Agent**，复用本机 Pi 的模型与登录配置。旧 Codex 聊天数据仍保留在 `library/web/data/chats.json`，网站不再读取或显示。详见[助手接入与使用](app/web/README.md#阅读和提问)。
 
 查找论文、编号与阅读成果请进入 [library/README.md](library/README.md)。前端采用 Vue 3，修改组件后需运行 `npm run build:web`；日常启动使用随项目保存的构建产物。修改程序请进入 [app/README.md](app/README.md)。文献目录中的 `papers/`、`notes/` 等相对路径，均以 `library/` 为基准。
 

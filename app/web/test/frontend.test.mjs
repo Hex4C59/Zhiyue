@@ -118,11 +118,6 @@ async function fixture(t) {
           { id: 'test/sonnet', model: 'test/sonnet', displayName: 'Claude Sonnet · test' },
         ],
       },
-      codex: {
-        available: true,
-        authenticated: true,
-        models: [{ id: 'codex-test', displayName: 'Codex Test' }],
-      },
     },
   };
   const jobs = new Map([['job-1', { id: 'job-1', title: '测试下载', status: 'running', log: 'start' }]]);
@@ -320,7 +315,7 @@ test('流式增量只更新目标消息，保留已完成内容的选择范围�
   assert.deepEqual(page.decisions[0].answers.question.answers, ['尚未提交的回答']);
 });
 
-test('附件上传与删除、助手切换以及空上下文按 Vue 状态更新', async (t) => {
+test('附件上传与删除、Pi 标题与空上下文按 Vue 状态更新', async (t) => {
   const page = await fixture(t),
     { workspace } = page;
   assert.equal(page.$('.chat-context'), null);
@@ -337,13 +332,10 @@ test('附件上传与删除、助手切换以及空上下文按 Vue 状态更新
   click(page.$('#attachments button'));
   await flush();
   assert.equal(page.$('#send').disabled, true);
-  const select = page.$('#agent-select');
-  select.value = 'codex';
-  select.dispatchEvent(new Event('change', { bubbles: true }));
-  await flush();
-  assert.equal(workspace.state.provider, 'codex');
-  assert.equal(page.$('#agent-select').value, 'codex');
-  assert.equal(localStorage.getItem('zhiyue.agent'), 'codex');
+  assert.equal(page.$('#agent-select'), null);
+  assert.equal(page.$('#codex-login'), null);
+  assert.equal(page.$('.agent-name').textContent.trim(), 'Pi Agent');
+  assert.equal(localStorage.getItem('zhiyue.agent'), null);
 });
 
 test('下载表单和任务日志保持用户状态，模型与正文内容不能注入 HTML', async (t) => {

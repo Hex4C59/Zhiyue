@@ -10,7 +10,7 @@ test('本地HTTP服务提供目录、PDF范围读取和上传，拒绝跨站与�
   await fs.mkdir(path.join(root,'catalog'));await fs.mkdir(path.join(root,'papers'));
   await fs.writeFile(path.join(root,'papers','论文.pdf'),'%PDF-1.4\nexample-bytes');
   await fs.writeFile(path.join(root,'catalog','文献索引.json'),JSON.stringify({records:[{literature_id:'L001',title:'测试论文',authors:['作者'],year:2001,file:'papers/论文.pdf',versions:[]}]}));
-  const app=await createApp({root,stateDir:path.join(root,'web/data'),connectCodex:false});
+  const app=await createApp({root,stateDir:path.join(root,'web/data'),connectPi:false});
   await new Promise(r=>app.server.listen(0,'127.0.0.1',r));const base=`http://127.0.0.1:${app.server.address().port}`;
   t.after(async()=>{await app.close();await fs.rm(root,{recursive:true,force:true});});
   const index = await fetch(base + '/');
