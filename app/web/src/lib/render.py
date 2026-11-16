@@ -76,8 +76,8 @@ def text_layer(file, page):
 
 
 def render(root, file, page, output):
-    local = root / 'tools' / 'download'
-    sys.path.insert(0, str(local if (local/'validation.py').is_file() else Path(__file__).resolve().parents[3]/'tools/download'))
+    downloader = os.environ.get('LITERATURE_DOWNLOADER') or Path(__file__).resolve().parents[3] / 'downloader'
+    sys.path.insert(0, str(downloader))
     from validation import poppler
     from pypdf import PdfReader
 

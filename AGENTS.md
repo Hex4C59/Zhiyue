@@ -1,6 +1,6 @@
 # Zhiyue 协作约定
 
-目录说明（2026-11-05）：项目根 README 是总导航，文献总索引已移到 `library/README.md`。下文的 `papers/`、`notes/`、`catalog/`、`batches/`、`synthesis/`、`outputs/`、`docs/`、`tmp/` 均相对于 `library/`；网站和下载工具以该目录为文献工作区。程序在 `app/`，第三方安装在根 `tools/`，分享交付在 `releases/`。每次文献任务读总导航后，再读 `library/README.md` 定位编号和已有成果。
+目录说明（2026-11-17）：项目根 README 是总导航，文献总索引是 `library/README.md`。下文的 `papers/`、`notes/`、`synthesis/`、`outputs/` 相对于 `library/`；`catalog/`、`batches/`、`data/`、`docs/`、`tmp/`、`cache/` 相对于 `library/.zhiyue/`。网站和下载工具以 `library/` 为文献工作区。程序在 `app/`，第三方安装在根 `tools/`，分享交付在 `releases/`。每次文献任务读总导航后，再读 `library/README.md` 定位编号和已有成果。
 
 ## 目标与工作入口
 

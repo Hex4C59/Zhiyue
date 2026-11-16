@@ -53,8 +53,8 @@ def parse_input(path):
  return entries
 
 def batch_dir(root,batch):
- d=within(Path(root)/'batches',batch)
- if d==Path(root)/'batches':raise ValueError('请指定批次名')
+ root=Path(root);d=within(meta(root)/'batches',batch)
+ if d==meta(root)/'batches':raise ValueError('请指定批次名')
  return d
 def read(root,batch):
  d=batch_dir(root,batch);x=load(d/'下载状态.json')

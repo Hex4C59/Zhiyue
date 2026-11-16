@@ -10,7 +10,7 @@ def poppler():
  if explicit and Path(explicit).is_file():return str(Path(explicit))
  found=shutil.which('pdftoppm') or shutil.which('pdftoppm.exe')
  if found:return found
- candidate=Path.home()/'.cache/codex-runtimes/codex-primary-runtime/dependencies/native/poppler/Library/bin/pdftoppm.exe'
+ candidate=Path(__file__).resolve().parents[2]/'tools/poppler/Library/bin/pdftoppm.exe'
  return str(candidate) if candidate.is_file() else None
 
 def first_author_tokens(authors):

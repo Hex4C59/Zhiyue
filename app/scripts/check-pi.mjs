@@ -7,12 +7,12 @@ import { createApp } from '../web/src/server.mjs';
 import { PiClient } from '../web/src/lib/pi.mjs';
 
 const dir=await fs.mkdtemp(path.join(os.tmpdir(),'literature-pi-synthetic-'));
-const root=path.join(dir,'library'),stateDir=path.join(root,'web','data');
+const root=path.join(dir,'library'),stateDir=path.join(root,'.zhiyue','data');
 let app;
 try {
-  await fs.mkdir(path.join(root,'catalog'),{recursive:true});await fs.mkdir(path.join(root,'papers'));
+  await fs.mkdir(path.join(root,'.zhiyue','catalog'),{recursive:true});await fs.mkdir(path.join(root,'papers'));
   await fs.writeFile(path.join(root,'README.md'),'Synthetic public integration fixture. No real papers or private data.');
-  await fs.writeFile(path.join(root,'catalog','文献索引.json'),JSON.stringify({records:[{literature_id:'L001',title:'Synthetic Pi Integration Sample',authors:['Test Author'],year:2026,file:'papers/sample.pdf',versions:[]}]}));
+  await fs.writeFile(path.join(root,'.zhiyue','catalog','文献索引.json'),JSON.stringify({records:[{literature_id:'L001',title:'Synthetic Pi Integration Sample',authors:['Test Author'],year:2026,file:'papers/sample.pdf',versions:[]}]}));
   const stream='BT /F1 12 Tf 30 100 Td (This is a synthetic Pi integration test PDF. Sample value: 42.) Tj ET';
   const objects=['<< /Type /Catalog /Pages 2 0 R >>','<< /Type /Pages /Kids [3 0 R] /Count 1 >>','<< /Type /Page /Parent 2 0 R /MediaBox [0 0 400 200] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>','<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>',`<< /Length ${stream.length} >>\nstream\n${stream}\nendstream`];
   let pdf='%PDF-1.4\n';const offsets=[];

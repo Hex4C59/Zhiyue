@@ -5,12 +5,12 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path $PSScriptRoot -Parent
-$downloadRoot = Join-Path $projectRoot 'tools\download'
+$downloadRoot = Join-Path $projectRoot 'downloader'
 $literatureEntry = Join-Path $downloadRoot 'run.py'
 $literatureCandidates = @(
-    (Join-Path $downloadRoot '.venv\Scripts\python.exe'),
-    (Join-Path $env:USERPROFILE '.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe')
-)
+    $env:LITERATURE_PYTHON,
+    (Join-Path $downloadRoot '.venv\Scripts\python.exe')
+) | Where-Object { $_ }
 $literaturePython = $literatureCandidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
 if (-not $literaturePython) {
     $literaturePython = (Get-Command python -ErrorAction Stop).Source

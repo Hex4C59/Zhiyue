@@ -29,7 +29,7 @@ class Transport:
     command=[curl,'--config','-','--silent','--show-error','--connect-timeout',str(net['connect_timeout']),'--max-time',str(net['request_timeout']),'--max-filesize',str(net['max_bytes']),'--dump-header',str(headerfile),'--output',str(target),'--write-out','%{http_code}']
     if not net['use_environment_proxy']:command+=['--noproxy','*']
     if os.name=='nt':command+=['--ssl-revoke-best-effort']
-    with lock(self.root/'tmp/download_host_locks'/(slug(host)+'.lock'),timeout=30):
+    with lock(meta(self.root)/'tmp/download_host_locks'/(slug(host)+'.lock'),timeout=30):
      delay=float(net['minimum_interval'])-(time.monotonic()-self._last)
      if delay>0:time.sleep(min(delay,5))
      start=time.monotonic()

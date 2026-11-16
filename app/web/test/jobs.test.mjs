@@ -9,35 +9,37 @@ import { JobManager, resolvePython } from '../src/lib/jobs.mjs';
 async function fixture(t) {
   const root = await mkdtemp(path.join(os.tmpdir(), 'literature-jobs-'));
   t.after(() => rm(root, { recursive: true, force: true }));
-  await mkdir(path.join(root, 'tools/download'), { recursive: true });
-  await mkdir(path.join(root, 'batches'), { recursive: true });
+  await mkdir(path.join(root, 'fixture'), { recursive: true });
+  await mkdir(path.join(root, '.zhiyue/batches'), { recursive: true });
+  await mkdir(path.join(root, '.zhiyue/tmp'), { recursive: true });
   // A local Node fixture acts as the executable's script; no real downloads.
-  await writeFile(path.join(root, 'tools/download/run.py'), `
+  const downloader = path.join(root, 'fixture/run.py');
+  await writeFile(downloader, `
 const fs = require('node:fs'); const path = require('node:path');
 const args = process.argv.slice(2); const root = args[1]; const command = args[2];
 const batch = args[args.indexOf('--batch') + 1];
 fs.appendFileSync(path.join(root, 'calls.jsonl'), JSON.stringify({command,args})+'\\n');
 if(command === 'import') {
  const entries = JSON.parse(fs.readFileSync(args[3], 'utf8')).map(e=>({...e,status:'pending'}));
- const dir=path.join(root,'batches',batch); fs.mkdirSync(dir,{recursive:true});
+ const dir=path.join(root,'.zhiyue','batches',batch); fs.mkdirSync(dir,{recursive:true});
  fs.writeFileSync(path.join(dir,'下载状态.json'), JSON.stringify({batch_id:batch,entries,scope_note:'fixture'}));
 }
 if(command === 'download') {
- const file=path.join(root,'batches',batch,'下载状态.json'); const state=JSON.parse(fs.readFileSync(file));
+ const file=path.join(root,'.zhiyue','batches',batch,'下载状态.json'); const state=JSON.parse(fs.readFileSync(file));
  state.entries.forEach(e=>e.status='needs_review'); fs.writeFileSync(file, JSON.stringify(state));
 }
 process.stdout.write('Authorization: Bea');
 setTimeout(()=>{process.stdout.write('rer secret-value\\nhttps://example.test/a?api_key=secret-query\\n');},5);
 `);
-  const stateDir = path.join(root, 'web/data');
+  const stateDir = path.join(root, '.zhiyue/data');
   const events = [];
-  const manager = new JobManager({ root, stateDir, python: process.execPath, emit: event => events.push(event) });
-  return { root, stateDir, events, manager, calls: async () => (await readFile(path.join(root, 'calls.jsonl'), 'utf8')).trim().split('\n').map(JSON.parse) };
+  const manager = new JobManager({ root, stateDir, python: process.execPath, downloader, emit: event => events.push(event) });
+  return { root, stateDir, downloader, events, manager, calls: async () => (await readFile(path.join(root, 'calls.jsonl'), 'utf8')).trim().split('\n').map(JSON.parse) };
 }
 
 test('downloads are queued, safely imported, redacted and never claim unverified acquisition', async t => {
   const { root, manager, calls, events, stateDir } = await fixture(t);
-  assert.equal(typeof resolvePython(root), 'string'); assert.equal(manager.python, process.execPath);
+  assert.equal(typeof resolvePython(), 'string'); assert.equal(manager.python, process.execPath);
   const first = await manager.startDownload({ input: '10.1234/test\nA paper title' });
   const second = await manager.startDownload({ input: [{ title: 'Other', file: '../private.pdf', human_visual_review: true }], channel: 'ieee' });
   await manager.queue;
@@ -56,7 +58,7 @@ test('downloads are queued, safely imported, redacted and never claim unverified
   assert.ok((await calls()).find(c => c.command === 'ieee').args.includes('--submit'));
   assert.equal((await calls())[0].args.at(-1), 'papers/09_情感综述调研/网站导入');
   assert.ok(events.every(e => e.type === 'job'));
-  const persisted = new JobManager({ root, stateDir, python: process.execPath });
+  const persisted = new JobManager({ root, stateDir, python: process.execPath, downloader: path.join(root, 'fixture/run.py') });
   assert.equal(persisted.listJobs().length, 2);
 });
 
@@ -83,7 +85,7 @@ test('action allowlist, explicit IEEE submission, refresh and restart recovery',
 
 test('large logs stay bounded and process/spawn failures persist as failed', async t => {
   const { root, manager, stateDir } = await fixture(t);
-  await writeFile(path.join(root, 'tools/download/run.py'), `
+  await writeFile(path.join(root, 'fixture/run.py'), `
 process.stdout.write(('ordinary line\\n').repeat(12000));
 process.stderr.write('token=very-private-value\\n');
 process.exitCode=2;
@@ -93,19 +95,17 @@ process.exitCode=2;
   assert.equal(result.status, 'failed'); assert.equal(result.steps[0].status, 'failed');
   assert.ok(result.log.length <= 100000); assert.ok(!result.log.includes('very-private-value'));
   assert.equal(JSON.parse(await readFile(path.join(stateDir, 'jobs.json'), 'utf8'))[0].status, 'failed');
-  const missing = new JobManager({ root, stateDir, python: path.join(root, 'nonexistent-python') });
+  const missing = new JobManager({ root, stateDir, python: path.join(root, 'nonexistent-python'), downloader: path.join(root, 'fixture/run.py') });
   const failed = await missing.refreshCatalog(); await missing.queue;
   assert.equal(missing.getJob(failed.id).status, 'failed');
 });
 
 test('explicit Python environment override takes precedence over installed interpreters', async t => {
-  const { root } = await fixture(t);
-  const installed = path.join(root, 'tools/download/.venv', process.platform === 'win32' ? 'Scripts/python.exe' : 'bin/python');
-  await mkdir(path.dirname(installed), { recursive: true }); await writeFile(installed, 'fixture');
+  await fixture(t);
   const previous = process.env.LITERATURE_PYTHON;
   try {
     process.env.LITERATURE_PYTHON = process.execPath;
-    assert.equal(resolvePython(root), process.execPath);
+    assert.equal(resolvePython(), process.execPath);
   } finally {
     if (previous === undefined) delete process.env.LITERATURE_PYTHON;
     else process.env.LITERATURE_PYTHON = previous;
@@ -134,7 +134,7 @@ test('collect uses only the batch IEEE output and refuses caller paths, mismatch
   const { root, manager, calls } = await fixture(t);
   const job = await manager.startDownload({ input: 'A paper', autoArchive: false }); await manager.queue;
   await assert.rejects(manager.startAction({ batch: job.batch, action: 'collect' }));
-  const directory = path.join(root, 'tmp', job.batch, 'instsci');
+  const directory = path.join(root, '.zhiyue', 'tmp', job.batch, 'instsci');
   await mkdir(directory, { recursive: true });
   await assert.rejects(manager.startAction({ batch: job.batch, action: 'collect', directory: root }));
   await assert.rejects(manager.startAction({ batch: job.batch, action: 'collect', submit: true }));
@@ -143,7 +143,7 @@ test('collect uses only the batch IEEE output and refuses caller paths, mismatch
   const call = (await calls()).at(-1);
   assert.equal(call.command, 'collect');
   assert.deepEqual(call.args.slice(3), ['--batch', job.batch, '--directory', await realpath(directory)]);
-  const ledger = path.join(root, 'batches', job.batch, '下载状态.json');
+  const ledger = path.join(root, '.zhiyue', 'batches', job.batch, '下载状态.json');
   const state = JSON.parse(await readFile(ledger, 'utf8'));
   await writeFile(ledger, JSON.stringify({ ...state, batch_id: 'another_batch' }));
   await assert.rejects(manager.startAction({ batch: job.batch, action: 'collect' }));
@@ -156,8 +156,8 @@ test('collect uses only the batch IEEE output and refuses caller paths, mismatch
 });
 
 test('close kills its running process tree, prevents queued work and persists interrupted jobs', { timeout: 18000 }, async t => {
-  const { root, stateDir, calls } = await fixture(t);
-  const script = path.join(root, 'tools/download/run.py');
+  const { root, stateDir, downloader, calls } = await fixture(t);
+  const script = path.join(root, 'fixture/run.py');
   await writeFile(script, (await readFile(script, 'utf8')) + `
 if(command === 'download') {
  const child=require('node:child_process').spawn(process.execPath,['-e','setTimeout(()=>{},10000)'],{stdio:'inherit',windowsHide:true,shell:false});
@@ -172,8 +172,8 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { JobManager } from ${JSON.stringify(new URL('../src/lib/jobs.mjs', import.meta.url).href)};
-const root=${JSON.stringify(root)}, stateDir=${JSON.stringify(stateDir)};
-const manager=new JobManager({root,stateDir,python:process.execPath});
+const root=${JSON.stringify(root)}, stateDir=${JSON.stringify(stateDir)}, downloader=${JSON.stringify(downloader)};
+const manager=new JobManager({root,stateDir,python:process.execPath,downloader});
 const first=await manager.startDownload({input:'First'});
 const second=await manager.startDownload({input:'Second'});
 let running;
@@ -192,7 +192,7 @@ for(const pid of [running.pid,running.descendant]) {
  for(let i=0;i<100;i++) { try { process.kill(pid,0);await delay(10); } catch(e) { if(e.code==='ESRCH') { alive=false;break; } throw e; } }
  assert.equal(alive,false,'owned child survived close: '+pid);
 }
-const restarted=new JobManager({root,stateDir,python:process.execPath});await restarted.ready;
+const restarted=new JobManager({root,stateDir,python:process.execPath,downloader});await restarted.ready;
 assert.ok(restarted.listJobs().every(j=>j.status==='failed'&&/中断/.test(j.error)));
 await restarted.close();
 `;

@@ -98,8 +98,8 @@ test('Pi 恢复会话拒绝目录外文件，托管安装路径拒绝非法版�
 
 test('HTTP 提供 Pi 状态和连接接口',async t=>{
   const dir=fs.mkdtempSync(path.join(os.tmpdir(),'literature-pi-http-'));
-  fs.mkdirSync(path.join(dir,'catalog'));fs.writeFileSync(path.join(dir,'catalog','文献索引.json'),JSON.stringify({records:[]}));
-  const stateDir=path.join(dir,'web','data'),sdk=mockSDK();
+  fs.mkdirSync(path.join(dir,'.zhiyue','catalog'),{recursive:true});fs.writeFileSync(path.join(dir,'.zhiyue','catalog','文献索引.json'),JSON.stringify({records:[]}));
+  const stateDir=path.join(dir,'.zhiyue','data'),sdk=mockSDK();
   const piClient=new PiClient({root:dir,stateDir,sdk});
   const app=await createApp({root:dir,stateDir,connectPi:false,piClient});
   await new Promise(resolve=>app.server.listen(0,'127.0.0.1',resolve));

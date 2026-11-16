@@ -2,12 +2,12 @@ import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, realpathSync, readFileSync } from 'node:fs';
 import { readFile, writeFile, rename, readdir, realpath, lstat } from 'node:fs/promises';
 import path from 'node:path';
-import os from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { StringDecoder } from 'node:string_decoder';
 import { fileURLToPath } from 'node:url';
+import { libraryPaths } from './paths.mjs';
 
-const bundledDownloader = fileURLToPath(new URL('../../../tools/download/run.py',import.meta.url));
+const bundledDownloader = fileURLToPath(new URL('../../../downloader/run.py',import.meta.url));
 
 const clone = value => structuredClone(value);
 const inside = (base, file) => { const rel = path.relative(base, file); return !path.isAbsolute(rel) && rel !== '..' && !rel.startsWith(`..${path.sep}`); };
@@ -18,10 +18,9 @@ const LOG_LIMIT = 100_000;
 const INTERRUPTED = '服务关闭，任务已中断；请检查批次后手动续跑';
 
 // Honor an explicit interpreter override before the installed runtimes/PATH.
-export function resolvePython(root) {
+export function resolvePython() {
   if (process.env.LITERATURE_PYTHON) return process.env.LITERATURE_PYTHON;
-  const runtimePython = path.join(os.homedir(), '.cache', 'codex-runtimes', 'codex-primary-runtime', 'dependencies', 'python', process.platform === 'win32' ? 'python.exe' : 'bin/python3');
-  const candidates = [path.join(path.dirname(bundledDownloader),'.venv',process.platform === 'win32' ? 'Scripts/python.exe' : 'bin/python'),path.join(root, 'tools/download/.venv', process.platform === 'win32' ? 'Scripts/python.exe' : 'bin/python'), runtimePython];
+  const candidates = [path.join(path.dirname(bundledDownloader), '.venv', process.platform === 'win32' ? 'Scripts/python.exe' : 'bin/python')];
   for (const candidate of candidates) if (existsSync(candidate)) return candidate;
   for (const dir of (process.env.PATH ?? '').split(path.delimiter)) {
     const candidate = path.join(dir, process.platform === 'win32' ? 'python.exe' : 'python');
@@ -71,7 +70,7 @@ function entriesFrom(input) {
 }
 
 export class JobManager {
-  constructor({ root, stateDir, emit = () => {}, python }) {
+  constructor({ root, stateDir, emit = () => {}, python, downloader = bundledDownloader }) {
     this.root = realpathSync(path.resolve(root));
     this.stateDir = path.resolve(stateDir);
     if (this.stateDir === this.root || !inside(this.root, this.stateDir)) throw fail('任务状态目录必须位于项目内部');
@@ -81,7 +80,8 @@ export class JobManager {
     mkdirSync(this.stateDir, { recursive: true });
     this.stateDir = realpathSync(this.stateDir);
     if (!inside(this.root, this.stateDir)) throw fail('任务状态目录逃逸');
-    this.python = python ?? resolvePython(this.root);
+    this.python = python ?? resolvePython();
+    this.downloader = path.resolve(downloader);
     this.emit = emit;
     this.jobs = [];
     this.closed = false;
@@ -172,8 +172,8 @@ export class JobManager {
 
   async _batchPath(batch) {
     if (!validBatch(batch)) throw fail('批次名称无效');
-    const directory = await realpath(path.join(this.root, 'batches', batch));
-    if (!inside(path.join(this.root, 'batches'), directory) || !inside(this.root, directory)) throw fail('批次目录逃逸');
+    const directory = await realpath(path.join(libraryPaths(this.root).batches, batch));
+    if (!inside(libraryPaths(this.root).batches, directory) || !inside(this.root, directory)) throw fail('批次目录逃逸');
     const file = await realpath(path.join(directory, '下载状态.json'));
     if (!inside(directory, file)) throw fail('批次状态文件逃逸');
     return file;
@@ -204,10 +204,10 @@ export class JobManager {
 
   async _collectDirectory(batch) {
     const state = JSON.parse((await readFile(await this._batchPath(batch), 'utf8')).replace(/^\uFEFF/, ''));
-    // providers/ieee.py writes to root/tmp/state['batch_id']/instsci.
+    // providers/ieee.py writes to root/.zhiyue/tmp/state['batch_id']/instsci.
     // Refuse a mismatched ledger instead of collecting another batch's files.
     if (state.batch_id !== batch) throw fail('批次记录编号不一致，不能收集其他批次的输出');
-    return this._projectDirectory(`tmp/${batch}/instsci`, true);
+    return this._projectDirectory(`.zhiyue/tmp/${batch}/instsci`, true);
   }
 
   async _summary(batch) {
@@ -220,7 +220,7 @@ export class JobManager {
 
   async listBatches() {
     const result = [];
-    const dirs = await readdir(path.join(this.root, 'batches'), { withFileTypes: true }).catch(e => { if (e.code === 'ENOENT') return []; throw e; });
+    const dirs = await readdir(libraryPaths(this.root).batches, { withFileTypes: true }).catch(e => { if (e.code === 'ENOENT') return []; throw e; });
     for (const dir of dirs) {
       if (!dir.isDirectory() || !validBatch(dir.name)) continue;
       try { result.push(await this._summary(dir.name)); } catch (e) { if (e.code !== 'ENOENT') throw e; }
@@ -230,10 +230,8 @@ export class JobManager {
 
   async _run(job, command, args = []) {
     this._assertOpen();
-    const localScript=path.join(this.root,'tools/download/run.py');
-    const script = await realpath(existsSync(localScript)?localScript:bundledDownloader);
+    const script = await realpath(this.downloader);
     this._assertOpen();
-    if (!inside(this.root, script)&&script!==await realpath(bundledDownloader)) throw fail('下载工具必须是工作区工具或内置程序');
     const step = { action: command, status: 'running', startedAt: stamp() };
     job.steps.push(step);
     this._log(job, `\n[${command}] 开始\n`);
@@ -321,7 +319,7 @@ export class JobManager {
     const batch = `${day}_web_${randomUUID().slice(0, 8)}`;
     return this._enqueue({ batch, title: title ?? `导入${entries.length}篇论文` }, async job => {
       await this._category(category);
-      const batchesDir = path.join(this.root, 'batches');
+      const batchesDir = libraryPaths(this.root).batches;
       mkdirSync(batchesDir, { recursive: true });
       if (!inside(this.root, await realpath(batchesDir))) throw fail('批次目录不能位于项目外');
       const inputPath = path.join(this.stateDir, `${job.id}_input.json`);

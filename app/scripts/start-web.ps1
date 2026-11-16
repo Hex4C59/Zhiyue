@@ -5,7 +5,7 @@
 $ErrorActionPreference = 'Stop'
 $applicationRoot = Split-Path $PSScriptRoot -Parent
 $projectRoot = Join-Path (Split-Path $applicationRoot -Parent) 'library'
-$webEntry = Join-Path $applicationRoot 'web\server.mjs'
+$webEntry = Join-Path $applicationRoot 'web\src\server.mjs'
 $nodeExecutable = (Get-Command node -ErrorAction Stop).Source
 $nodeVersion = & $nodeExecutable --version
 if ([int] ($nodeVersion -replace '^v(\d+).*', '$1') -lt 22) {

@@ -97,7 +97,7 @@ export class PiClient extends EventEmitter {
     const id=manager.getSessionFile();
     const instructions=params.developerInstructions||this.instructions||'你是文献研究助手，使用中文回答并核对原文证据。';
     this.instructions=instructions;
-    const projectRules=path.join(this.root,'..','AGENTS.md');
+    const projectRules=path.join(this.root,'.zhiyue','AGENTS.md');
     const rules=fs.existsSync(projectRules)?fs.readFileSync(projectRules,'utf8'):'';
     const loader={
       getExtensions:()=>({extensions:[],errors:[],runtime:this.sdk.createExtensionRuntime()}),

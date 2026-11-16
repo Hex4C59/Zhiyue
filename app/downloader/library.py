@@ -3,7 +3,7 @@ from __future__ import annotations
 import re,urllib.parse
 from collections import defaultdict
 from pathlib import Path
-from common import load,save,atomic_text,csv_text,normalize_doi,sha256,rel,within,now,safe_url
+from common import load,save,atomic_text,csv_text,normalize_doi,sha256,rel,within,now,safe_url,meta
 
 LINK=re.compile(r'\[([^\]]*)\]\((?:<([^>]+)>|([^\n]*?))\)')
 def pick(data,*keys,default=None):
@@ -79,12 +79,12 @@ def build(root,hash_files=True):
  for doi,ids in duplicates.items():
   if len(ids)>1:issues.append({'kind':'multiple_ids_same_doi','doi':doi,'literature_ids':ids})
  result={'schema_version':1,'generated_at':now(),'record_count':len(records),'archived_primary_count':sum(r['file_exists'] for r in records),'source_record_count':source_count,'records':records,'issues':issues}
- out=root/'catalog';save(out/'文献索引.json',result)
+ out=meta(root)/'catalog';save(out/'文献索引.json',result)
  fields=['literature_id','title','authors','year','doi','venue','format','version','document_type','file','source_record','pages','sha256']
  atomic_text(out/'文献总目录.csv',csv_text(records,fields),True);save(out/'待核实项.json',{'generated_at':now(),'issues':issues})
  return result
 
 def read(root):
- p=Path(root)/'catalog/文献索引.json'
+ p=meta(root)/'catalog/文献索引.json'
  return load(p) if p.exists() and p.stat().st_mtime_ns>=(Path(root)/'README.md').stat().st_mtime_ns else build(root)
 def matches(catalog,doi):return [r for r in catalog['records'] if doi and r['doi']==normalize_doi(doi)]

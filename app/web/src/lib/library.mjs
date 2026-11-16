@@ -1,6 +1,7 @@
 import { readFile, writeFile, mkdir, rename, realpath, stat, readdir } from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { libraryPaths } from './paths.mjs';
 
 const statuses = new Set(['unread', 'reading', 'read']);
 const images = new Set(['.png', '.jpg', '.jpeg', '.webp', '.gif']);
@@ -25,7 +26,7 @@ export class Library {
   // No PDF parsing: bibliography and explicitly associated JSON sidecars only.
   async _load() {
     const root = await realpath(this.root);
-    const catalog = JSON.parse((await readFile(path.join(root, 'catalog', '文献索引.json'), 'utf8')).replace(/^\uFEFF/, ''));
+    const catalog = JSON.parse((await readFile(path.join(libraryPaths(root).catalog, '文献索引.json'), 'utf8')).replace(/^\uFEFF/, ''));
     const allowed = new Set();
     const add = value => {
       if (typeof value !== 'string') return;

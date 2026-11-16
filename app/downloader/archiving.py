@@ -27,7 +27,7 @@ def append_index(root,record,new_id=True):
 
 def archive(root,batch,item=None,category=None):
  root=Path(root);d,state=batches.read(root,batch);category=category or state.get('category') or configuration(root)['archive_category'];destdir=within(root/'papers',within(root,category));saved=[]
- with lock(root/'catalog/.write.lock',timeout=20):
+ with lock(meta(root)/'catalog/.write.lock',timeout=20):
   catalog=library.build(root);records=catalog['records']
   for e in selected(state,item):
    if e['status']=='archived':continue
@@ -55,7 +55,7 @@ def archive(root,batch,item=None,category=None):
    source=dest.with_suffix('.来源.json')
    if dest.exists() or source.exists():raise ValueError('目标归档路径已存在，请核对，未覆盖文件。')
    record={'literature_id':lid,'title':e['title'],'doi':e.get('doi',''),'authors':authors,'year':year,'venue':e.get('venue','待核实'),'version':version,'document_type':e.get('document_type','full_article'),'file':rel(root,dest),'source_record':rel(root,source),'sha256':actual,'pages':e['pages'],'format':'PDF','file_exists':True,'indexed_in_readme':True,'versions':[]}
-   backup=root/'tmp'/batch/'archive_backups';backup.mkdir(parents=True,exist_ok=True);readme=root/'README.md';backupname=backup/('README_'+sha256(readme)[:12]+'.md')
+   backup=meta(root)/'tmp'/batch/'archive_backups';backup.mkdir(parents=True,exist_ok=True);readme=root/'README.md';backupname=backup/('README_'+sha256(readme)[:12]+'.md')
    if not backupname.exists():shutil.copy2(readme,backupname)
    receipt={'at':now(),'state':'prepared','item_id':e['item_id'],'record':record};journal=backup/(e['item_id']+'_归档事务.json');save(journal,receipt)
    with src.open('rb') as a,dest.open('xb') as b:shutil.copyfileobj(a,b);b.flush();os.fsync(b.fileno())

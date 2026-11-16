@@ -5,7 +5,7 @@
   "description": "Zhiyue - local literature management, PDF reading and AI research assistant",
   "engines": { "node": ">=22" },
   "scripts": {
-    "start": "node app/web/server.mjs",
+    "start": "node app/web/src/server.mjs",
     "build:web": "vite build --config app/web/vite.config.mjs",
     "test": "npm run build:web && node --test app/web/test/*.test.mjs",
     "test:downloads": "powershell -NoProfile -ExecutionPolicy Bypass -File app/scripts/download.ps1 -RunTests",

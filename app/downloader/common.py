@@ -8,6 +8,7 @@ STATUSES={'pending','needs_metadata','needs_access','retry_later','downloaded','
 SECRET_NAMES={'apikey','api_key','key','token','access_token','insttoken','signature','authorization','cookie','password','email','mailto'}
 
 def now():return datetime.datetime.now().astimezone().isoformat(timespec='seconds')
+def meta(root):return Path(root)/'.zhiyue'
 def norm(value):return ''.join(c for c in unicodedata.normalize('NFKD',str(value)).casefold() if c.isalnum())
 def words(value):return set(re.findall(r'[^\W_]+',unicodedata.normalize('NFKC',str(value)).casefold(),re.UNICODE))
 def slug(value,limit=85):return re.sub(r'[<>:"/\\|?*\x00-\x1f]','_',str(value)).strip(' .')[:limit].rstrip(' .') or '待核实'
@@ -102,7 +103,7 @@ def lock(path,timeout=20):
 
 DEFAULT_CONFIG={'schema_version':1,'network':{'use_environment_proxy':False,'connect_timeout':12,'request_timeout':120,'max_bytes':134217728,'transient_retries':1,'minimum_interval':1.0},'render':{'enabled':True,'max_side':1200},'archive_category':'papers/09_情感综述调研','credentials':{'elsevier_api_key_env':'ELSEVIER_API_KEY','elsevier_insttoken_env':'ELSEVIER_INSTTOKEN','unpaywall_email_env':'UNPAYWALL_EMAIL','crossref_email_env':'CROSSREF_EMAIL'}}
 def configuration(root):
- config=json.loads(json.dumps(DEFAULT_CONFIG));extra=load(Path(root)/'tools/download/config.json',load(Path(__file__).with_name('config.json'),{}))
+ config=json.loads(json.dumps(DEFAULT_CONFIG));extra=load(meta(root)/'config.json',load(Path(__file__).with_name('config.json'),{}))
  for k,v in extra.items():
   if isinstance(v,dict) and isinstance(config.get(k),dict):config[k].update(v)
   else:config[k]=v

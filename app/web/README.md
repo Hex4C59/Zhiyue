@@ -10,7 +10,7 @@
 
 宽屏下可拖动分类栏、文献列表和助手栏之间的三条竖向分隔线调整宽度，阅读区随之伸缩。双击某条分隔线恢复对应栏的默认宽度；用 Tab 聚焦分隔线后，可按左右键微调（Shift 加速），Home/End 调到最小/最大宽度。拖动时按 Esc 撤销。宽度保存在当前浏览器，刷新后恢复；窗口缩小时自动限制各栏宽度，保留阅读空间。平板和手机继续使用原有的面板切换布局。
 
-连续阅读现支持直接选择 PDF 文字并按 Ctrl+C 复制，也可点击“复制本页文字”。页面图片上叠加从当前页提取的透明文字层，缩放和调整栏宽时同步缩放；选择中的页面不会因滚动而释放。纯扫描页、无文字页会显示“本页无文字层”，本功能不自动 OCR。文字编码缺失或图表、公式等特殊排版可能影响复制结果，可切换“浏览器阅读器”核对原文。文字层由本机 `pdfplumber` 生成，仅保存派生缓存，不更改原始 PDF。Python 依赖见 `app/tools/download/requirements.txt`（包含 pdfplumber）；提取失败时图片仍可阅读，并显示原因。
+连续阅读现支持直接选择 PDF 文字并按 Ctrl+C 复制，也可点击“复制本页文字”。页面图片上叠加从当前页提取的透明文字层，缩放和调整栏宽时同步缩放；选择中的页面不会因滚动而释放。纯扫描页、无文字页会显示“本页无文字层”，本功能不自动 OCR。文字编码缺失或图表、公式等特殊排版可能影响复制结果，可切换“浏览器阅读器”核对原文。文字层由本机 `pdfplumber` 生成，仅保存派生缓存，不更改原始 PDF。Python 依赖见 `app/downloader/requirements.txt`（包含 pdfplumber）；提取失败时图片仍可阅读，并显示原因。
 
 程序目录说明见[程序结构与维护](../README.md)。根目录可用 `npm start`、`npm test`、`npm run doctor` 统一操作。
 
@@ -28,24 +28,24 @@
 powershell -NoProfile -ExecutionPolicy Bypass -File .\start-web.ps1
 ```
 
-也可以在项目根目录运行 `node app/web/server.mjs`。端口被占用时用 `-Port 8766`；`-NoBrowser` 只启动服务。直接运行需要 Node.js 22+，Vue 3 运行时已打包在 dist/app.js 中，无需 npm install 或联网加载 CDN。修改前端和运行测试推荐 Node.js 24.15+，先在根目录执行 npm ci，再运行 npm run build:web 或 npm test。
+也可以在项目根目录运行 `node app/web/src/server.mjs`。端口被占用时用 `-Port 8766`；`-NoBrowser` 只启动服务。直接运行需要 Node.js 22+，Vue 3 运行时已打包在 dist/app.js 中，无需 npm install 或联网加载 CDN。修改前端和运行测试推荐 Node.js 24.15+，先在根目录执行 npm ci，再运行 npm run build:web 或 npm test。
 
 网站使用本机 Pi 的安装、模型列表与登录状态，先在终端运行 `pi` 完成配置；未配置时仍可浏览和整理文献。
 
-论文解析和下载复用已有 Python、pypdf、curl、Poppler 与 InstSci。启动前可运行 `./tools/文献工具.ps1 doctor` 检查。网站优先使用 `LITERATURE_PYTHON` 指定的 Python，其次为下载工具 `.venv`、本机已有的 Python 运行时（包括 `~/.cache/codex-runtimes` 下的环境）和 PATH。
+论文解析和下载复用已有 Python、pypdf、curl、Poppler 与 InstSci。启动前可运行 `.\app\scripts\download.ps1 doctor` 检查。网站优先使用 `LITERATURE_PYTHON` 指定的 Python，其次为 `app/downloader/.venv` 和 PATH。
 
 ## 阅读和提问
 
 2026-11-17：右侧只使用 Pi Agent，不再提供助手切换。Pi 复用本机安装、模型和认证配置；本机已验证 Pi 1.5.2 的托管安装。先在终端运行 `pi` 配置模型，随后启动网站；已有配置无需在网页重复填写。模型列表来自 Pi 的可用模型，选择模型只影响该网站会话，不更改 Pi 的全局默认模型。无法自动定位安装时，设置 `LITERATURE_PI_SDK` 为 Pi 包的 `dist/index.js` 路径；`PI_CODING_AGENT_DIR` 可指定 Pi 配置目录。
 
-Pi 的网页会话只开放现有六项文献工具，支持流式回答、停止、论文上下文、图片与提取后的文件附件。当前接入不加载 Pi 的全局扩展、技能或任意 shell/文件写入工具。Pi 没有可用模型时，页面提示在终端完成配置后重新检测；模型不支持图片时会明确报错。Pi 生成的笔记先作为草稿显示在右侧，用户点击“保存为笔记”后才写入 `library/notes/`，同名文件不会被覆盖，必要时自动添加序号；选择丢弃不会留下文件。Pi 聊天显示记录在 `library/web/data/pi/chats.json`，Pi SDK 会话在 `library/web/data/pi-sessions/`。旧 Codex 聊天仍保存在 `library/web/data/chats.json`，网站不再读取或显示。
+Pi 的网页会话只开放现有六项文献工具，支持流式回答、停止、论文上下文、图片与提取后的文件附件。当前接入不加载 Pi 的全局扩展、技能或任意 shell/文件写入工具。Pi 没有可用模型时，页面提示在终端完成配置后重新检测；模型不支持图片时会明确报错。Pi 生成的笔记先作为草稿显示在右侧，用户点击“保存为笔记”后才写入 `library/notes/`，同名文件不会被覆盖，必要时自动添加序号；选择丢弃不会留下文件。Pi 聊天显示记录在 `library/.zhiyue/data/pi/chats.json`，Pi SDK 会话在 `library/.zhiyue/data/pi-sessions/`。旧 Codex 聊天仍保存在 `library/.zhiyue/data/chats.json`，网站不再读取或显示。
 
 - 左侧按主题、年份、阅读进度或收藏筛选，也可以搜索题名、作者和 L 编号。中间默认使用“连续阅读”：PDF 页面纵向排列，滚轮可跨页阅读，工具栏自动显示当前物理页序；仍可用前后页按钮或页码跳转，并保持当前位置缩放。页面图像按需加载附近页，离得较远的图像会释放，再滚回时重新加载。也可切换已有 Markdown 笔记；原文可单独打开并使用浏览器 PDF 阅读器选择文字、搜索。
 - 选择论文会把编号和归档路径加入右侧上下文，最多 6 篇；上下文标签可移除。提供索引不等于已阅读全文，Pi Agent 可以继续调用原文页读取工具。
 - 右侧支持流式文字问答、模型选择、新会话、历史会话、停止生成、操作审批、笔记草稿预览和补充问题。这里保存的是网站独立创建的会话，不接管桌面应用已有聊天。
 - 点击附件按钮、拖入文件或粘贴图片。每次最多 8 个文件，每个最多 25 MB。支持 PNG/JPEG/WebP/GIF、PDF、TXT/MD/CSV/TSV/JSON、DOCX/XLSX/PPTX。
 - 图片作为图像交给 Pi Agent；PDF 初始提取前 8 个物理页，原文工具每次最多 12 页。扫描 PDF 不自动 OCR，空文字层会明确标出；需要时可继续读取或渲染所选原文。Office 附件提取有限的正文 XML 文字，不保证图表、公式、工作表结构和版式。
-- 收藏和阅读进度仅在用户操作时写入，生成笔记、打开原文或提问不会自动标记已读。网站标记独立存于 `web/data/reading.json`，不推断或覆盖旧笔记里的阅读状态。
+- 收藏和阅读进度仅在用户操作时写入，生成笔记、打开原文或提问不会自动标记已读。网站标记独立存于 `library/.zhiyue/data/reading.json`，不推断或覆盖旧笔记里的阅读状态。
 
 网站与附件存放在本机；发送问题时，所选论文索引、实际读取的原文内容、图片和附件提取文字会交给当前助手已配置的模型服务。Pi 使用其配置的模型服务、网络、计费及数据处理设置，并非默认离线运行。
 
@@ -62,7 +62,7 @@ Pi 的网页会话只开放现有六项文献工具，支持流式回答、停�
                      未通过项保留待办 → 修正信息或人工核对后续跑
 ```
 
-网页与 Pi Agent 均调用 [统一文献工具](../tools/download/README.md)，没有另一套下载器或书目数据库。新任务默认归入 `papers/09_情感综述调研/网站导入/`，可选择其他已有主题；旧批次继续使用原目录。
+网页与 Pi Agent 均调用 [统一文献工具](../downloader/README.md)，没有另一套下载器或书目数据库。新任务默认归入 `papers/09_情感综述调研/网站导入/`，可选择其他已有主题；旧批次继续使用原目录。
 
 | 渠道或按钮 | 实际作用 |
 | --- | --- |
@@ -77,7 +77,7 @@ Pi 的网页会话只开放现有六项文献工具，支持流式回答、停�
 
 任务显示“流程结束”表示命令流程结束；是否取得论文应查看“已归档 / 待人工核对 / 待获取权限”等统计与日志。机构浏览器任务异步运行，下载结束后点击“收集机构下载”，再核验和归档。
 
-题名修正、补充候选链接、手动导入外部文件、记录人工目视核对以及分享打包继续使用 [完整下载流程](../../library/docs/论文下载流程.md) 中的命令。网页不会把未查看的文件登记为人工审核通过。
+题名修正、补充候选链接、手动导入外部文件、记录人工目视核对以及分享打包继续使用 [完整下载流程](../../library/.zhiyue/docs/论文下载流程.md) 中的命令。网页不会把未查看的文件登记为人工审核通过。
 
 右侧可以直接提出：
 
@@ -94,21 +94,22 @@ Pi Agent 可用的具名工具：`library_search`、`read_paper_pages`、`downlo
 | `frontend/` | Vue 3 组件、响应式状态、Markdown 与阅读控制器 |
 | `dist/app.js`、`dist/LICENSE.vue.txt` | Vite 构建的浏览器入口及 Vue MIT 许可证 |
 | `public/index.html`、`public/css/` | 挂载入口与现有样式，无 CDN 依赖 |
-| `src/server.mjs` | 本机 HTTP、PDF 范围读取、上传和事件流；`server.mjs` 为兼容入口 |
-| `src/lib/library.mjs` | 读取现有 catalog、关联笔记、保存用户阅读标记 |
+| `src/server.mjs` | 本机 HTTP、PDF 范围读取、上传和事件流 |
+| `src/lib/paths.mjs` | 解析文献库根目录及各内容、程序状态、缓存路径 |
+| `src/lib/library.mjs` | 读取 `.zhiyue/catalog`、关联笔记、保存用户阅读标记 |
 | `src/lib/chat.mjs` | 聊天记录、助手协议、具名工具与审批 |
 | `src/lib/assistants.mjs`、`src/lib/pi.mjs` | Pi Agent 的接入、模型与连接状态 |
-| `src/lib/jobs.mjs` | 串行调用现有下载工具，保存断点与任务日志 |
+| `src/lib/jobs.mjs` | 串行调用下载工具，保存断点与任务日志 |
 | `src/lib/extract.py` | 只读附件提取，保留读取范围与截断提示 |
 | `src/lib/preview.mjs`、`src/lib/render.py` | 用现有 Poppler 按需渲染单页；源 PDF 保持原样 |
-| `../../library/web/data/` | 网站聊天、上传原文件、任务输入和阅读标记；全部被 Git 忽略 |
-| `../../library/batches/` | 长期下载批次、来源与状态记录 |
-| `../../library/tmp/<批次>/` | 下载候选、接口响应和核验预览 |
-| `../../library/tmp/web_pdf_preview/` | 浏览时生成的单页图像缓存，可从原文重新生成 |
+| `../../library/.zhiyue/data/` | 网站聊天、上传原文件、任务输入和阅读标记；全部被 Git 忽略 |
+| `../../library/.zhiyue/batches/` | 长期下载批次、来源与状态记录 |
+| `../../library/.zhiyue/tmp/<批次>/` | 下载候选、接口响应和核验预览 |
+| `../../library/.zhiyue/cache/pdf-preview/` | 浏览时生成的单页图像缓存，可从原文重新生成 |
 
-需要迁移时，另行备份论文原文及 `library/web/data/`；Git 不包含 PDF、上传文件或聊天。本服务只监听 `127.0.0.1`，并校验 Host、Origin 与可访问资料路径，没有公网或局域网登录功能。若助手请求审批，请求会显示在右侧，由用户选择允许或拒绝。
+需要迁移时，另行备份论文原文及 `library/.zhiyue/data/`；Git 不包含 PDF、上传文件或聊天。本服务只监听 `127.0.0.1`，并校验 Host、Origin 与可访问资料路径，没有公网或局域网登录功能。若助手请求审批，请求会显示在右侧，由用户选择允许或拒绝。
 
-正常关闭网站会停止当前聊天和网站创建的下载子进程，未完成任务保留中断状态；异常退出后会在下次启动时恢复中断标记。检查对应批次后再续跑。不要同时启动两份网站服务写同一个 `library/web/data/`。部分归档后遇到错误时，先检查批次与来源记录，必要时用“刷新索引”重建目录。
+正常关闭网站会停止当前聊天和网站创建的下载子进程，未完成任务保留中断状态；异常退出后会在下次启动时恢复中断标记。检查对应批次后再续跑。不要同时启动两份网站服务写同一个 `library/.zhiyue/data/`。部分归档后遇到错误时，先检查批次与来源记录，必要时用“刷新索引”重建目录。
 
 ## 验证与维护
 
@@ -125,9 +126,9 @@ npm test
 
 Pi 接入依据本机安装的 Pi 包导出接口与随包文档。升级 Pi 后先运行测试，并执行一次 `node app/scripts/check-pi.mjs` 验证实际连接。
 
-开发临时资料曾位于 `../../library/tmp/web_dev/`（协议 schema、合成测试附件及界面验收资料），已于2026-11-16清理，不影响论文归档；需要时可按测试代码重新生成。
+开发临时资料曾位于 `../../library/.zhiyue/tmp/web_dev/`（协议 schema、合成测试附件及界面验收资料），已于2026-11-16清理，不影响论文归档；需要时可按测试代码重新生成。
 
-`../../library/tmp/web_pdf_preview/` 只保存按 PDF 路径、大小、修改时间与页序区分的派生页面图片和文字坐标缓存；2026-11-16已清理，后续打开论文时会自动重新生成。
+`../../library/.zhiyue/cache/pdf-preview/` 只保存按 PDF 路径、大小、修改时间与页序区分的派生页面图片和文字坐标缓存；2026-11-16已清理，后续打开论文时会自动重新生成。
 
 
 ## Vue 前端维护
@@ -138,4 +139,4 @@ PDF 页图片与透明文字层由 lib/reader.js 管理，Vue 不重建其内部
 
 构建：在项目根目录执行 npm ci、npm run build:web。构建后刷新网页；只有服务端修改需要重启。npm test 先构建，再运行隔离的后端测试与 jsdom 交互测试；DOM 测试不能替代浏览器中的排版、字体与真实拖动验收。
 
-迁移前备份曾位于 `../../library/tmp/vue_migration_20261116/before/`，已于2026-11-16清理；回退参考以 `app/` 的 Git 历史为准。Vue 使用 MIT 许可证，随 dist/LICENSE.vue.txt 保存；不分发本机字体。
+迁移前备份曾位于 `../../library/.zhiyue/tmp/vue_migration_20261116/before/`，已于2026-11-16清理；回退参考以 `app/` 的 Git 历史为准。Vue 使用 MIT 许可证，随 dist/LICENSE.vue.txt 保存；不分发本机字体。

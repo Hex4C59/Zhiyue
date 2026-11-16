@@ -7,7 +7,7 @@ from common import *
 import batches,library,workflow
 from validation import verify,poppler
 
-ROOT=Path(__file__).resolve().parents[3]/'library'
+ROOT=Path(__file__).resolve().parents[2]/'library'
 def output(value):print(json.dumps(value,ensure_ascii=False,indent=2))
 def batch_parser(sub,name,help):
  p=sub.add_parser(name,help=help);p.add_argument('--batch',required=True);return p
@@ -32,14 +32,14 @@ def parser():
  return p
 
 def doctor(root,network=False):
- cfg=configuration(root);creds=cfg['credentials'];info={'python':sys.version.split()[0],'python_executable':sys.executable,'curl':shutil.which('curl.exe') or shutil.which('curl'),'pdftoppm':poppler(),'pypdf':None,'instsci_launcher_exists':(root/'tools/启动InstSci.ps1').is_file() or (ROOT.parent/'tools/启动InstSci.ps1').is_file(),'credential_values_saved':False,'environment_configured':{name:bool(os.environ.get(env)) for name,env in creds.items()}}
+ cfg=configuration(root);creds=cfg['credentials'];info={'python':sys.version.split()[0],'python_executable':sys.executable,'curl':shutil.which('curl.exe') or shutil.which('curl'),'pdftoppm':poppler(),'pypdf':None,'instsci_launcher_exists':(ROOT.parent/'tools/启动InstSci.ps1').is_file(),'credential_values_saved':False,'environment_configured':{name:bool(os.environ.get(env)) for name,env in creds.items()}}
  try:
   import importlib.metadata
   info['pypdf']=importlib.metadata.version('pypdf')
  except importlib.metadata.PackageNotFoundError:pass
  if network:
   from transport import Transport
-  t=Transport(root,root/'tmp/download_tool_setup_20261102/doctor');data,a=t.json('https://api.crossref.org/works/10.1109/ICASSP39728.2021.9414420');info['crossref_http']=a[-1]['http_status'];info['crossref_exact_doi_ok']=normalize_doi((data or {}).get('message',{}).get('DOI'))=='10.1109/icassp39728.2021.9414420'
+  t=Transport(root,meta(root)/'tmp/download_tool_setup_20261102/doctor');data,a=t.json('https://api.crossref.org/works/10.1109/ICASSP39728.2021.9414420');info['crossref_http']=a[-1]['http_status'];info['crossref_exact_doi_ok']=normalize_doi((data or {}).get('message',{}).get('DOI'))=='10.1109/icassp39728.2021.9414420'
  info['ready_for_pdf_workflow']=bool(info['curl'] and info['pdftoppm'] and info['pypdf']);return info
 
 def main(argv=None):
@@ -47,23 +47,23 @@ def main(argv=None):
  if not (root/'README.md').exists():raise ValueError('指定目录缺少README.md，请确认文献库根目录')
  if args.command=='doctor':return doctor(root,args.network)
  if args.command=='catalog':
-  with lock(root/'catalog/.write.lock'):c=library.build(root,not args.no_hash)
+  with lock(meta(root)/'catalog/.write.lock'):c=library.build(root,not args.no_hash)
   return {k:c[k] for k in ['record_count','archived_primary_count','source_record_count']}|{'issue_count':len(c['issues'])}
  if args.command=='migrate':
-  with lock(root/'batches/.migration.lock'):return batches.migrate_legacy(root)
+  with lock(meta(root)/'batches/.migration.lock'):return batches.migrate_legacy(root)
  if args.command=='status':
-  names=[args.batch] if args.batch else sorted(p.parent.name for p in (root/'batches').glob('*/下载状态.json'));result=[]
+  names=[args.batch] if args.batch else sorted(p.parent.name for p in (meta(root)/'batches').glob('*/下载状态.json'));result=[]
   for name in names:
    d,x=batches.read(root,name);result.append({'batch':name,'entries':len(x['entries']),'counts':x.get('counts',{}),'scope_note':x.get('scope_note','')})
   return result
  if args.command=='pack':
   from sharing import pack
-  names=sorted(p.parent.name for p in (root/'batches').glob('*/下载状态.json')) if args.all else [n for a in args.batch or [] for n in a.split(',')]
+  names=sorted(p.parent.name for p in (meta(root)/'batches').glob('*/下载状态.json')) if args.all else [n for a in args.batch or [] for n in a.split(',')]
   if not names:raise ValueError('请指定--batch或--all')
   if len(names)!=len(set(names)):raise ValueError('同一批次重复指定')
   return pack(root,names,args.output,args.mode,args.allow_partial,not args.no_related)
  d=batches.batch_dir(root,args.batch)
- with lock(root/'batches'/('.'+slug(args.batch)+'.lock'),timeout=20):
+ with lock(meta(root)/'batches'/('.'+slug(args.batch)+'.lock'),timeout=20):
   if args.command=='import':
    x=batches.create(root,args.batch,args.input,args.category);return {'batch':args.batch,'entries':len(x['entries'])}
   if args.command=='collect':return workflow.collect(root,args.batch,args.directory,args.item)
@@ -86,7 +86,7 @@ def main(argv=None):
    out=[]
    for e in entries:
     if not e.get('file'):continue
-    prior=e['status'];prior_hash=e.get('sha256');p=within(root,e['file']);check=verify(p,e,root/'tmp'/args.batch/e['item_id']/'preview',configuration(root),not args.no_render)
+    prior=e['status'];prior_hash=e.get('sha256');p=within(root,e['file']);check=verify(p,e,meta(root)/'tmp'/args.batch/e['item_id']/'preview',configuration(root),not args.no_render)
     check['file']=rel(root,p)
     for r in check.get('renders',[]):
      if r.get('image'):r['image']=rel(root,r['image'])

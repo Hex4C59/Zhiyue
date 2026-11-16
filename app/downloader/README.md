@@ -1,15 +1,15 @@
 # Zhiyue 文献工具
 
-入口：[../文献工具.ps1](../../../tools/文献工具.ps1)。完整操作：[论文下载流程](../../../library/docs/论文下载流程.md)。渠道、权限和故障：[下载渠道与问题处理](../../../library/docs/下载渠道与问题处理.md)。
+入口：[../scripts/download.ps1](../scripts/download.ps1)。完整操作：[论文下载流程](../../library/.zhiyue/docs/论文下载流程.md)。渠道、权限和故障：[下载渠道与问题处理](../../library/.zhiyue/docs/下载渠道与问题处理.md)。
 
 ## 快速入口
 
 在项目根目录的 PowerShell 中运行：
 
 ```powershell
-.\tools\文献工具.ps1 --help
-.\tools\文献工具.ps1 doctor
-.\tools\文献工具.ps1 status
+.\app\scripts\download.ps1 --help
+.\app\scripts\download.ps1 doctor
+.\app\scripts\download.ps1 status
 ```
 
 Python入口为`run.py`，默认以本工具所在项目为根目录，和当前终端工作目录无关。可通过全局参数`--root`指定另一份文献库；该目录须有README文献索引表。配置文件为[config.json](config.json)，只放选项和环境变量名称。
@@ -37,7 +37,7 @@ Python入口为`run.py`，默认以本工具所在项目为根目录，和当前
 
 ## 依赖和启动器
 
-本机验证环境：Python 3.12.14、pypdf 6.10.0、系统curl、已有Poppler及InstSci独立环境。启动器依次使用本目录`.venv`、本机已安装的Codex Python运行时、PATH中的Python。没有修改用户现有Python环境。
+本机验证环境：Python 3.12.14、pypdf 6.10.0、系统curl、已有Poppler及InstSci独立环境。启动器先使用本目录`.venv`，再使用PATH中的Python；`LITERATURE_PYTHON`可显式指定解释器。没有修改用户现有Python环境。
 
 需要独立部署时，可自行创建本目录`.venv`后按[requirements.txt](requirements.txt)安装pypdf。curl和Poppler为外部可执行程序；PDFTOPPM环境变量可以指定`pdftoppm.exe`。`doctor`会列出实际找到的路径。仅关闭渲染不能让文件通过archive的渲染要求。
 
@@ -55,7 +55,7 @@ Python入口为`run.py`，默认以本工具所在项目为根目录，和当前
 ```powershell
 $downloadKey = Read-Host '输入Elsevier API Key' -AsSecureString
 $env:ELSEVIER_API_KEY = [System.Net.NetworkCredential]::new('', $downloadKey).Password
-.\tools\文献工具.ps1 doctor
+.\app\scripts\download.ps1 doctor
 ```
 
 此设置只对当前终端及其子进程生效。`doctor`只报告是否配置，不显示值。不要把真实值填进`config.json`或清单。需要订阅访问的IEEE会话仍由现有InstSci维护，参见[本机说明](../../../tools/docs/InstSci_本机使用说明.md)。

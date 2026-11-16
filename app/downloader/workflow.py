@@ -33,7 +33,7 @@ def local_reuse(root,e,catalog,require_published=False):
 def ingest(root,d,state,e,path,source_url='',version='待核实',copy=True):
  original=Path(path).resolve()
  if not original.is_file():raise ValueError('待导入PDF不存在')
- work=Path(root)/'tmp'/state['batch_id']/e['item_id'];work.mkdir(parents=True,exist_ok=True);target=work/('candidate_'+sha256(original)[:12]+'.pdf')
+ work=meta(root)/'tmp'/state['batch_id']/e['item_id'];work.mkdir(parents=True,exist_ok=True);target=work/('candidate_'+sha256(original)[:12]+'.pdf')
  if copy and original!=target:
   if not target.exists():shutil.copy2(original,target)
  else:target=original
@@ -79,7 +79,7 @@ def download(root,batch,item=None,channel='auto',retry=False,limit=None,dry_run=
   if dry_run:continue
   if local_reuse(root,e,catalog,require_published):batches.write(root,d,state);continue
   if e['status']=='needs_review' and not retry:batches.write(root,d,state);continue
-  work=Path(root)/'tmp'/batch/e['item_id'];transport=Transport(root,work/'responses',cfg)
+  work=meta(root)/'tmp'/batch/e['item_id'];transport=Transport(root,work/'responses',cfg)
   metadata,candidates,attempts=public.discover(e,transport,cfg);e['attempts'].extend(attempts);e['candidates']=candidates;batches.write(root,d,state)
   if attempts and attempts[-1]['http_status']==429:e.update(status='retry_later',next_retry_at=retry_time(attempts[-1]),failure_reason='元数据服务限流，已保存断点。');batches.write(root,d,state);break
   if e.get('metadata_choices') and not metadata:e['status']='needs_metadata';batches.write(root,d,state);continue

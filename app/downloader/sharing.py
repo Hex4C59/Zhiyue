@@ -32,7 +32,7 @@ def pack(root,batch_names,output=None,mode='groups',allow_partial=False,include_
  root=Path(root);tag='_'.join(batch_names) if len(batch_names)<=2 else f'{len(batch_names)}组文献';stamp=__import__('datetime').datetime.now().strftime('%Y%m%d_%H%M%S');label=slug(tag+'_'+stamp,85)
  out=within(root/'outputs',within(root,output)) if output else root/'outputs/分享包'/(label+'.zip')
  if out.suffix.casefold()!='.zip':raise ValueError('输出路径必须以.zip结尾')
- stage=root/'tmp/download_packages'/label
+ stage=meta(root)/'tmp/download_packages'/label
  if stage.exists():stage=stage.with_name(stage.name+'_'+__import__('uuid').uuid4().hex[:6])
  stage.mkdir(parents=True);mapping={};allrows=[];group_maps={};notes=[];cat=library.read(root);byid={r['literature_id']:r for r in cat['records']}
  def generated(name,text,bom=False):

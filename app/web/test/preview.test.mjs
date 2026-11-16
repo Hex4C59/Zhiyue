@@ -11,24 +11,28 @@ import { resolvePython } from '../src/lib/jobs.mjs';
 import { createApp } from '../src/server.mjs';
 
 const project = fileURLToPath(new URL('../../', import.meta.url));
-const python = resolvePython(project);
+const python = resolvePython();
 
 test('real Poppler preview deduplicates concurrent requests, caches pages and validates bounds', { timeout: 30000 }, async t => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'literature-preview-'));
   t.after(() => rm(root, { recursive: true, force: true }));
-  await mkdir(path.join(root, 'tools/download'), { recursive: true });
+  const downloader = path.join(root, 'fixture-downloader');
+  await mkdir(downloader, { recursive: true });
   await mkdir(path.join(root, 'papers'), { recursive: true });
   // Reuse the project's real Poppler locator and dependencies, in an isolated fixture.
-  for (const name of ['validation.py', 'common.py']) await copyFile(path.join(project, 'tools/download', name), path.join(root, 'tools/download', name));
+  for (const name of ['validation.py', 'common.py']) await copyFile(path.join(project, 'downloader', name), path.join(downloader, name));
   const file = path.join(root, 'papers', 'two-pages.pdf');
   await promisify(execFile)(python, ['-c', 'from pypdf import PdfWriter; import sys; w=PdfWriter(); w.add_blank_page(width=300,height=400); w.add_blank_page(width=400,height=300); w.write(sys.argv[1])', file], { windowsHide: true, timeout: 10000 });
   const original = await readFile(file);
   // Count actual renderer invocations while retaining real Python/Poppler behavior.
-  await writeFile(path.join(root, 'tools/download/validation.py'), '\nwith open(__file__ + ".calls", "a") as counter: counter.write("render\\n")\n', { flag: 'a' });
+  await writeFile(path.join(downloader, 'validation.py'), '\nwith open(__file__ + ".calls", "a") as counter: counter.write("render\\n")\n', { flag: 'a' });
+  const previousDownloader = process.env.LITERATURE_DOWNLOADER;
+  process.env.LITERATURE_DOWNLOADER = downloader;
+  t.after(() => { if (previousDownloader === undefined) delete process.env.LITERATURE_DOWNLOADER; else process.env.LITERATURE_DOWNLOADER = previousDownloader; });
   const results = await Promise.all(Array.from({ length: 5 }, () => previewPaper({ root, python, file, page: 1 })));
   assert.ok(results.every(r => r.file === results[0].file && r.totalPages === 2 && r.page === 1));
-  assert.deepEqual((await readFile(path.join(root, 'tools/download/validation.py.calls'), 'utf8')).trim().split(/\r?\n/), ['render']);
-  assert.match(results[0].file, /web_pdf_preview[/\\][a-f0-9]{64}[/\\]page\.png$/);
+  assert.deepEqual((await readFile(path.join(downloader, 'validation.py.calls'), 'utf8')).trim().split(/\r?\n/), ['render']);
+  assert.match(results[0].file, /\.zhiyue[/\\]cache[/\\]pdf-preview[/\\][a-f0-9]{64}[/\\]page\.png$/);
   const png = await readFile(results[0].file);
   assert.equal(Math.max(png.readUInt32BE(16), png.readUInt32BE(20)), 1600);
   const before = (await stat(results[0].file)).mtimeMs;
@@ -59,19 +63,19 @@ test('cache rejects external ancestors and internal aliases before mkdir or cach
   t.after(async () => { await rm(root, { recursive: true, force: true }); await rm(outside, { recursive: true, force: true }); });
   const file = path.join(root, 'fixture.pdf'); await writeFile(file, '%PDF-fixture');
   const type = process.platform === 'win32' ? 'junction' : 'dir';
-  await symlink(outside, path.join(root, 'tmp'), type);
+  await symlink(outside, path.join(root, '.zhiyue'), type);
   await assert.rejects(previewPaper({ root, python, file, page: 1 }), e => e.statusCode === 400 && /缓存/.test(e.message));
   assert.deepEqual(await readdir(outside), []);
-  await rm(path.join(root, 'tmp'));
-  await mkdir(path.join(root, 'tmp')); await mkdir(path.join(root, 'alias-target'));
-  await symlink(path.join(root, 'alias-target'), path.join(root, 'tmp/web_pdf_preview'), type);
+  await rm(path.join(root, '.zhiyue'));
+  await mkdir(path.join(root, '.zhiyue')); await mkdir(path.join(root, 'alias-target'));
+  await symlink(path.join(root, 'alias-target'), path.join(root, '.zhiyue/cache'), type);
   await assert.rejects(previewPaper({ root, python, file, page: 1 }), e => e.statusCode === 400 && /缓存/.test(e.message));
   assert.deepEqual(await readdir(path.join(root, 'alias-target')), []);
 });
 
 test('PDF text boxes preserve selectable content, rotation, blank-page status and indexed HTTP boundaries', {timeout:30000}, async t=>{
   const root=await mkdtemp(path.join(os.tmpdir(),'literature-text-layer-'));
-  await mkdir(path.join(root,'papers'));await mkdir(path.join(root,'catalog'));
+  await mkdir(path.join(root,'papers'));await mkdir(path.join(root,'.zhiyue/catalog'),{recursive:true});
   const file=path.join(root,'papers','selectable.pdf');
   const fixture=`from pypdf import PdfWriter
 from pypdf.generic import DictionaryObject, NameObject, DecodedStreamObject
@@ -90,8 +94,8 @@ for i in range(5):
 w.write(sys.argv[1])`;
   await promisify(execFile)(python,['-c',fixture,file],{windowsHide:true,timeout:10000});
   const original=await readFile(file);
-  await writeFile(path.join(root,'catalog','文献索引.json'),JSON.stringify({records:[{literature_id:'L001',title:'Synthetic selection test',authors:[],year:2026,file:'papers/selectable.pdf',versions:[]}]}));
-  const app=await createApp({root,stateDir:path.join(root,'web/data'),connectPi:false});
+  await writeFile(path.join(root,'.zhiyue/catalog','文献索引.json'),JSON.stringify({records:[{literature_id:'L001',title:'Synthetic selection test',authors:[],year:2026,file:'papers/selectable.pdf',versions:[]}]}));
+  const app=await createApp({root,stateDir:path.join(root,'.zhiyue/data'),connectPi:false});
   await new Promise(resolve=>app.server.listen(0,'127.0.0.1',resolve));
   t.after(async()=>{await app.close();await rm(root,{recursive:true,force:true});});
   const base=`http://127.0.0.1:${app.server.address().port}`;

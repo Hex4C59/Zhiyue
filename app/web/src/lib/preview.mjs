@@ -3,6 +3,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { readFile, writeFile, mkdir, rename, realpath, stat, lstat, open } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { libraryPaths } from './paths.mjs';
 
 const script = fileURLToPath(new URL('./render.py', import.meta.url));
 const inflight = new Map();
@@ -99,7 +100,7 @@ export async function previewPaper({ root, python, file, page = 1 }) {
     const info = await stat(source);
     if (!info.isFile()) throw error('PDF文件不存在。');
     const key = createHash('sha256').update(JSON.stringify([source, info.size, info.mtimeMs, page])).digest('hex');
-    const directory = path.join(base, 'tmp/web_pdf_preview', key);
+    const directory = path.join(libraryPaths(base).pdfPreview, key);
     const png = path.join(directory, 'page.png');
     const metaFile = path.join(directory, 'meta.json');
     await validateCachePath(base, directory);

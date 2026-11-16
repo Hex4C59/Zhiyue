@@ -12,7 +12,7 @@ async function fixture(t) {
   const file = 'papers/08_SER/01_资源/paper.pdf';
   const source = 'papers/08_SER/01_资源/paper.来源.json';
   const records = [{ literature_id: 'L001', title: 'Paper', authors: 'Alice; Bob', file, source_record: source, versions: [] }];
-  await put('catalog/文献索引.json', JSON.stringify({ records }));
+  await put('.zhiyue/catalog/文献索引.json', JSON.stringify({ records }));
   await put(file, '%PDF-test');
   await put(source, JSON.stringify({ display_title_zh: '中文题名', 用户阅读状态: '已读' }));
   await put('notes/子目录/L001_笔记.md', '# Note');
@@ -20,7 +20,7 @@ async function fixture(t) {
   await put('synthesis/review.md');
   await put('outputs/正常/image.jpg');
   await put('outputs/RECOLA_申请资料/secret.png', 'private');
-  const library = new Library({ root, stateDir: path.join(root, 'web/data') });
+  const library = new Library({ root, stateDir: path.join(root, '.zhiyue/data') });
   return { root, put, records, file, source, library };
 }
 
@@ -39,11 +39,11 @@ test('catalog enrichment and user-only reading persistence; refresh sees catalog
   assert.equal((await library.getPaper('L001')).readStatus, 'reading');
   assert.equal((await library.getPaper('L001')).starred, true);
   assert.equal(await readFile(path.join(root, source), 'utf8'), before);
-  assert.equal(new Library({ root, stateDir: path.join(root, 'web/data') }).root, root);
+  assert.equal(new Library({ root, stateDir: path.join(root, '.zhiyue/data') }).root, root);
   await assert.rejects(library.updatePaper('L001', { readStatus: 'done' }));
   await assert.rejects(library.updatePaper('L002', { starred: true }));
   records.push({ literature_id: 'L002', file: 'papers/08_SER/second.pdf', authors: [] });
-  await put('catalog/文献索引.json', JSON.stringify({ records }));
+  await put('.zhiyue/catalog/文献索引.json', JSON.stringify({ records }));
   assert.equal((await library.getLibrary()).stats.total, 1);
   await library.refresh(); assert.equal((await library.getLibrary()).stats.total, 2);
 });

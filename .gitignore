@@ -2,9 +2,6 @@
 /library/
 /releases/
 /tools/
-!/tools/
-/tools/*
-!/tools/文献工具.ps1
 /app/scripts/export_share.py
 /.codex/
 /.agents/

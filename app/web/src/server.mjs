@@ -11,6 +11,7 @@ import { Library } from './lib/library.mjs';
 import { JobManager, resolvePython } from './lib/jobs.mjs';
 import { AssistantService } from './lib/assistants.mjs';
 import { previewPaper } from './lib/preview.mjs';
+import { libraryPaths, resolveLibraryRoot, ensureLibrary } from './lib/paths.mjs';
 
 const HERE=path.dirname(fileURLToPath(import.meta.url));
 const MIME={'.html':'text/html; charset=utf-8','.css':'text/css; charset=utf-8','.js':'text/javascript; charset=utf-8','.mjs':'text/javascript; charset=utf-8','.md':'text/plain; charset=utf-8','.txt':'text/plain; charset=utf-8','.json':'application/json; charset=utf-8','.pdf':'application/pdf','.png':'image/png','.jpg':'image/jpeg','.jpeg':'image/jpeg','.webp':'image/webp','.gif':'image/gif','.csv':'text/csv; charset=utf-8','.tsv':'text/tab-separated-values; charset=utf-8'};
@@ -67,15 +68,18 @@ export function extractFile(python,file,pages) {
   });
 }
 
-export async function createApp({root=path.resolve(HERE,'../../../library'),stateDir=path.resolve(HERE,'../../../library/web/data'),connectPi=true,piClient}={}) {
-  await fsp.mkdir(stateDir,{recursive:true});await fsp.mkdir(path.join(stateDir,'uploads'),{recursive:true});
+export async function createApp({root:configuredRoot,stateDir:configuredStateDir,connectPi=true,piClient}={}) {
+  const root=configuredRoot??resolveLibraryRoot(HERE);
+  const paths=libraryPaths(root);
+  const stateDir=configuredStateDir??paths.data;
+  await ensureLibrary(paths);
   const connections=new Set();
   const library=new Library({root,stateDir});
   const emit=event=>{
     if(event.type==='job'&&['completed','failed'].includes(event.job.status))library.refresh();
     const data=`data: ${JSON.stringify(event)}\n\n`;for(const res of connections)if(!res.writableEnded)res.write(data);
   };
-  const python=resolvePython(root);
+  const python=resolvePython();
   const jobs=new JobManager({root,stateDir,emit,python});
   const chats=new AssistantService({root,stateDir,library,jobs,emit,extract:(file,pages)=>extractFile(python,file,pages),piClient});
   const uploads=new Store(path.join(stateDir,'uploads.json'),{files:[]});
@@ -158,8 +162,8 @@ export async function createApp({root=path.resolve(HERE,'../../../library'),stat
       if((method==='GET'||method==='HEAD')&&!route.startsWith('/api/')){
         const staticFiles = {
           '/': 'index.html', '/index.html': 'index.html',
-          '/js/app.js': '../dist/app.js', '/app.js': '../dist/app.js',
-          '/css/styles.css': 'css/styles.css', '/styles.css': 'css/styles.css',
+          '/js/app.js': '../dist/app.js',
+          '/css/styles.css': 'css/styles.css',
         };
         const file=staticFiles[route];if(!file)throw error('页面不存在。',404);return await serveFile(req,res,path.resolve(HERE,'../public',file));
       }
@@ -179,20 +183,23 @@ export async function createApp({root=path.resolve(HERE,'../../../library'),stat
 }
 
 export async function startServer(){
-  const workspace=path.resolve(HERE,'../../../library');
-  await fsp.mkdir(workspace,{recursive:true});
-  if(!fs.existsSync(path.join(workspace,'README.md')))await fsp.copyFile(path.resolve(HERE,'../../templates/library-README.md'),path.join(workspace,'README.md'));
-  if(!fs.existsSync(path.join(workspace,'catalog/文献索引.json'))){
-    await fsp.mkdir(path.join(workspace,'catalog'),{recursive:true});
-    await fsp.writeFile(path.join(workspace,'catalog/文献索引.json'),JSON.stringify({schema_version:1,record_count:0,records:[],issues:[]}));
+  const workspace=resolveLibraryRoot(HERE);
+  const paths=libraryPaths(workspace);
+  await ensureLibrary(paths);
+  if(!fs.existsSync(paths.readme))await fsp.copyFile(path.resolve(HERE,'../../templates/library-README.md'),paths.readme);
+  if(!fs.existsSync(paths.agents))await fsp.copyFile(path.resolve(HERE,'../../templates/library-AGENTS.md'),paths.agents);
+  if(!fs.existsSync(path.join(paths.catalog,'文献索引.json'))){
+    await fsp.writeFile(path.join(paths.catalog,'文献索引.json'),JSON.stringify({schema_version:1,record_count:0,records:[],issues:[]}));
   }
   const port=Number(process.env.LITERATURE_PORT||8765);
-  if(!Number.isInteger(port)||port<1024||port>65535)throw new Error('LITERATURE_PORT须为1024–65535。');
-  const app=await createApp();
+  if(!Number.isInteger(port)||port<0||port>65535)throw new Error('LITERATURE_PORT须为0–65535。');
+  const app=await createApp({root:workspace});
   app.server.on('error',e=>{console.error(e.code==='EADDRINUSE'?`端口${port}已被占用，请修改LITERATURE_PORT。`:e.message);app.chats.client.close();process.exitCode=1;});
   app.server.listen(port,'127.0.0.1',()=>{
-    const url=`http://127.0.0.1:${port}`;
+    const actualPort=app.server.address().port;
+    const url=`http://127.0.0.1:${actualPort}`;
     console.log(`Zhiyue：${url}`);
+    if(process.env.ZHIYUE_URL)console.log(`ZHIYUE_URL=${url}`);
     if(process.argv.includes('--open-browser')){
       const command=process.platform==='win32'?'powershell.exe':process.platform==='darwin'?'open':'xdg-open';
       const args=process.platform==='win32'?['-NoProfile','-NonInteractive','-Command',`Start-Process '${url}'`]:[url];
