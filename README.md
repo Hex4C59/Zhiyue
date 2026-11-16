@@ -28,6 +28,8 @@ npm run doctor
 
 查找论文、编号与阅读成果请进入 [library/README.md](library/README.md)。前端采用 Vue 3，修改组件后需运行 `npm run build:web`；日常启动使用随项目保存的构建产物。修改程序请进入 [app/README.md](app/README.md)。文献目录中的 `papers/`、`notes/` 等相对路径，均以 `library/` 为基准。
 
+Windows 桌面版使用 Tauri 2 封装同一网站，程序在 `app/desktop/`，带原生窗口和托盘。`npm run desktop:dev` 用于开发调试；`npm run desktop:build` 生成 NSIS 安装包，输出在 `app/desktop/src-tauri/target/release/bundle/`。安装版默认以 `文档/Zhiyue/library` 为文献库，可用环境变量 `LITERATURE_LIBRARY` 指定其他位置；Pi Agent 登录配置、Python 与 Poppler 仍使用本机安装。安装包尚未签名，也还没有自动更新。
+
 `library/`、`tools/` 的本机安装和 `releases/` 均按本地资料处理，不进入 Git。只发送检查过的软件分享包，不要整体发送本项目。新的分享版可用 `npm run share -- --name new-name` 生成。
 
 当前可分享交付（仅本机完整工作区）：[2026-11-16 软件包，含 Vue 前端](releases/packages/literature-workbench_20261116_vue_share.zip)。旧交付集中保存在 `releases/`，不覆盖历史版本。

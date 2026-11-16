@@ -1,0 +1,6 @@
+{
+  "identifier": "default",
+  "description": "本地启动页使用的最小权限，不向文献页面提供桌面接口。",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}

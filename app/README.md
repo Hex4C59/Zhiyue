@@ -23,7 +23,10 @@ app/
 │  └─ test/               网站测试
 ├─ downloader/            下载、核验、归档、来源记录与测试
 ├─ scripts/               启动、下载与本机维护入口
-└─ templates/             文献库初始 AGENTS.md 与 README.md
+├─ templates/             文献库初始 AGENTS.md 与 README.md
+└─ desktop/               Tauri 2 桌面外壳（Rust 窗口、托盘与本地服务进程）
+   ├─ src-tauri/          Rust 程序、图标、NSIS 配置和生成的运行资源
+   └─ frontend/           启动页：等待本地服务就绪，失败时显示原因
 ```
 
 ## 统一命令
@@ -39,6 +42,9 @@ npm test
 npm run test:downloads
 npm run doctor
 npm run share -- --name new-name
+npm run desktop:dev
+npm run desktop:prepare
+npm run desktop:build
 ```
 
 分享导出检查是本机维护功能，分享包不附私人检查脚本，因而分享版无 share 命令。
@@ -51,9 +57,15 @@ CMD 启动入口显式调用系统 Windows PowerShell，避免 PATH 中同名程
 
 下载代码从 `app/downloader` 读取，配置使用同目录的 `config.json`。第三方机构入口从根 `tools/` 调用，不将浏览器会话搬入代码目录。
 
+## 桌面应用
+
+桌面版由 Tauri 2 启动原生窗口和托盘，并拉起内置 Node 运行 `app/web/src/server.mjs`；服务在标准输出给出地址后窗口跳转过去，关闭窗口只隐藏到托盘，托盘菜单可显示或退出。Rust 代码在 `app/desktop/src-tauri/src/`。调试构建从仓库根定位网站源码；发布构建读取 `resources/runtime/`，该目录由 `npm run desktop:prepare` 生成并被 Git 忽略，包含网站、下载器、文献库模板和当前机器的 Node 可执行文件。安装版默认使用 `文档/Zhiyue/library`，`LITERATURE_LIBRARY` 可覆盖；Pi Agent 登录配置、Python 和 Poppler 取用户本机安装。NSIS 安装包未签名，尚未接入自动更新。若首次打包在解压 NSIS 时提示 `os error 17`（不同磁盘驱动器），可把 `%LOCALAPPDATA%\tauri\nsis-3.13` 手动改名为同目录下的 `NSIS`，再把 `nsis_tauri_utils.dll` 放入 `NSIS\Plugins\x86-unicode\additional\` 后重试。
+
+WebView2 要求可执行文件所在目录的完整性级别为 Medium。旧沙箱工具可能在项目目录留下低完整性标签（Low mandatory level）和拒绝 ACE，表现为窗口空白、`msedgewebview2.exe` 在 `msedge_elf.dll` 崩溃。遇到时先用 `icacls 目录 /grant "用户名:(OI)(CI)(WO)"` 取得写所有者权限，再运行 `icacls 目录 /setintegritylevel (OI)(CI)M`，不要用代码绕开。
+
 ## 修改和检查
 
-前端组件改 web/frontend，样式改 web/public/css，业务改 web/src/lib，HTTP 改 web/src/server.mjs，下载改 app/downloader，启动维护改 app/scripts。前端使用 Vue 3 Composition API 与 Vite，依赖由根 package-lock.json 固定；不引入路由或全局状态库。dist/app.js 随源码保存，直接启动无需安装 npm 依赖；组件修改后在根目录运行 npm run build:web。npm test 自动先构建再运行后端与 DOM 测试。路径变更须同步检查分享文件清单、默认工作区与测试。
+前端组件改 web/frontend，样式改 web/public/css，业务改 web/src/lib，HTTP 改 web/src/server.mjs，下载改 app/downloader，启动维护改 app/scripts，桌面外壳与打包改 app/desktop。前端使用 Vue 3 Composition API 与 Vite，依赖由根 package-lock.json 固定；不引入路由或全局状态库。dist/app.js 随源码保存，直接启动无需安装 npm 依赖；组件修改后在根目录运行 npm run build:web。npm test 自动先构建再运行后端与 DOM 测试。路径变更须同步检查分享文件清单、默认工作区与测试。
 
 网站静态地址为 `/js/app.js` 和 `/css/styles.css`。
 

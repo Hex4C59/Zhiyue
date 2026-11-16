@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Zhiyue</title>
+<style>
+  :root { color-scheme: light; }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    display: grid;
+    place-items: center;
+    background: #f7f4ed;
+    color: #262522;
+    font-family: "Segoe UI", "Microsoft YaHei UI", sans-serif;
+  }
+  main { width: min(440px, calc(100vw - 64px)); text-align: center; }
+  .mark {
+    width: 56px;
+    height: 56px;
+    margin: 0 auto 28px;
+    border-radius: 14px;
+    background: #1f1e1d;
+    color: #fbf9f4;
+    display: grid;
+    place-items: center;
+    font: 700 30px/1 Georgia, "Songti SC", serif;
+  }
+  h1 { margin: 0 0 10px; font: 600 26px/1.25 Georgia, "Songti SC", serif; }
+  p { margin: 0; color: #6f6a61; font-size: 14px; line-height: 1.7; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .spinner {
+    width: 18px;
+    height: 18px;
+    margin: 26px auto 0;
+    border: 2px solid #d8d1c3;
+    border-top-color: #8a7f6d;
+    border-radius: 50%;
+    animation: turn .9s linear infinite;
+  }
+  body.error h1 { color: #8c3a2b; }
+  body.error p { color: #5f5a52; }
+  body.error .spinner { display: none; }
+  @keyframes turn { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+<main>
+  <div class="mark" aria-hidden="true">Z</div>
+  <h1>Zhiyue</h1>
+  <p id="status" role="status">正在启动本地服务…</p>
+  <div class="spinner" aria-hidden="true"></div>
+</main>
+<script>
+  window.showStartupError = (message) => {
+    document.body.classList.add('error');
+    document.getElementById('status').textContent = message;
+  };
+</script>
+</body>
+</html>
