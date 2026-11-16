@@ -70,7 +70,7 @@ def build(root,hash_files=True):
    actual=sha256(root/primary['file']);primary['integrity_status']='matched' if primary.get('sha256') else 'unrecorded'
    if primary.get('sha256') and actual!=primary['sha256']:
     primary['integrity_status']='mismatch'
-   if primary.get('sha256') and actual!=primary['sha256']:issues.append({'kind':'hash_mismatch','literature_id':lid,'file':primary['file']})
+    issues.append({'kind':'hash_mismatch','literature_id':lid,'file':primary['file']})
    primary['sha256']=actual;primary['bytes']=(root/primary['file']).stat().st_size
   primary['metadata_status']='existing_source_record' if primary.get('source_record') else 'index_only_unverified';primary['versions']=variants;primary['indexed_in_readme']=bool(row);records.append(primary)
  duplicates=defaultdict(list)

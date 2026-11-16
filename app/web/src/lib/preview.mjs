@@ -8,7 +8,7 @@ const script = fileURLToPath(new URL('./render.py', import.meta.url));
 const inflight = new Map();
 const waiting = [];
 let running = 0;
-const error = message => Object.assign(new Error(message), { statusCode: 400 });
+const error = (message, statusCode = 400) => Object.assign(new Error(message), { statusCode });
 const inside = (root, file) => { const rel = path.relative(root, file); return !path.isAbsolute(rel) && rel !== '..' && !rel.startsWith(`..${path.sep}`); };
 function validTextLayer(layer) {
   if(!layer||![layer.width,layer.height].every(v=>Number.isFinite(v)&&v>0)||typeof layer.text!=='string'||layer.text.length>200000||typeof layer.hasText!=='boolean'||!Array.isArray(layer.lines)||layer.lines.length>20000)return false;
@@ -72,16 +72,19 @@ function render(python, root, source, page, output) {
       if (stdout.length > 4_000_000) { tooLarge = true; stop(); }
     });
     proc.stderr.on('data', data => { stderr = (stderr + data.toString('utf8')).slice(-3000); });
-    proc.once('error', e => { clearTimeout(timer); reject(error(`无法启动PDF预览：${e.message}`)); });
+    proc.once('error', e => { clearTimeout(timer); reject(error(`无法启动PDF预览：${e.message}`, 500)); });
     proc.once('close', code => {
       clearTimeout(timer);
-      if (timedOut) return reject(error('PDF预览超过45秒，请稍后重试。'));
-      if (tooLarge) return reject(error('PDF预览返回数据过大。'));
+      if (timedOut) return reject(error('PDF预览超过45秒，请稍后重试。', 500));
+      if (tooLarge) return reject(error('PDF预览返回数据过大。', 500));
       try {
         const result = JSON.parse(stdout);
-        if (code !== 0 || result.error) throw error(result.error || 'PDF渲染失败。');
+        if (code !== 0 || result.error) {
+          const statusCode = result.code === 'invalid_request' ? 400 : 500;
+          throw error(result.error || 'PDF渲染失败。', statusCode);
+        }
         resolve(result);
-      } catch (e) { reject(error(e.statusCode ? e.message : `PDF渲染失败：${stderr || e.message}`)); }
+      } catch (e) { reject(e.statusCode ? e : error(`PDF渲染失败：${stderr || e.message}`, 500)); }
     });
   });
 }
@@ -115,9 +118,12 @@ export async function previewPaper({ root, python, file, page = 1 }) {
       await mkdir(directory, { recursive: true });
       await validateCachePath(base, directory);
       const data = await render(python, base, source, page, png);
-      if (data.page !== page || !Number.isSafeInteger(data.totalPages) || data.totalPages < page || !validTextLayer(data.textLayer) || !await isPng(png)) throw error('PDF预览输出无效。');
+      const invalid = data.page !== page || !Number.isSafeInteger(data.totalPages) || data.totalPages < page ||
+        !validTextLayer(data.textLayer) || !await isPng(png);
+      if (invalid) throw error('PDF预览输出无效。', 500);
       const after = await stat(source);
-      if (after.size !== info.size || after.mtimeMs !== info.mtimeMs) throw error('渲染过程中PDF已变化，请重新请求。');
+      const changed = after.size !== info.size || after.mtimeMs !== info.mtimeMs;
+      if (changed) throw error('渲染过程中PDF已变化，请重新请求。', 409);
       const meta = { key, page, totalPages: data.totalPages, source, size: info.size, mtimeMs: info.mtimeMs, scale: 1600, textLayer:data.textLayer };
       const temp = `${metaFile}.${randomUUID()}.tmp`;
       await writeFile(temp, JSON.stringify(meta, null, 2)); await rename(temp, metaFile);
@@ -126,5 +132,9 @@ export async function previewPaper({ root, python, file, page = 1 }) {
     inflight.set(directory, work);
     try { return await work; }
     finally { inflight.delete(directory); }
-  } catch (e) { throw error(e.message); }
+  } catch (e) {
+    if (e.statusCode) throw e;
+    const statusCode = e.code === 'ENOENT' ? 404 : 500;
+    throw Object.assign(new Error(`PDF预览失败：${e.message}`), { statusCode, cause: e });
+  }
 }

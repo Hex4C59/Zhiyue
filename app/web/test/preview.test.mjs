@@ -36,6 +36,7 @@ test('real Poppler preview deduplicates concurrent requests, caches pages and va
   assert.equal((await stat(results[0].file)).mtimeMs, before);
   const second = await previewPaper({ root, python, file, page: 2 });
   assert.notEqual(second.file, results[0].file); assert.equal(second.page, 2);
+  await assert.rejects(previewPaper({ root, python: path.join(root, 'missing-python'), file, page: 3 }), e => e.statusCode === 500);
   for (const page of [0, -1, 1.5, '1foo', '', null, 3]) {
     await assert.rejects(previewPaper({ root, python, file, page }), e => e.statusCode === 400);
   }

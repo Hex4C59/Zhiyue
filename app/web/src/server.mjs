@@ -70,11 +70,11 @@ export function extractFile(python,file,pages) {
 export async function createApp({root=path.resolve(HERE,'../../../library'),stateDir=path.resolve(HERE,'../../../library/web/data'),connectCodex=true,codexClient,piClient}={}) {
   await fsp.mkdir(stateDir,{recursive:true});await fsp.mkdir(path.join(stateDir,'uploads'),{recursive:true});
   const connections=new Set();
+  const library=new Library({root,stateDir});
   const emit=event=>{
     if(event.type==='job'&&['completed','failed'].includes(event.job.status))library.refresh();
     const data=`data: ${JSON.stringify(event)}\n\n`;for(const res of connections)if(!res.writableEnded)res.write(data);
   };
-  const library=new Library({root,stateDir});
   const python=resolvePython(root);
   const jobs=new JobManager({root,stateDir,emit,python});
   const chats=new AssistantService({root,stateDir,library,jobs,emit,extract:(file,pages)=>extractFile(python,file,pages),codexClient,piClient});

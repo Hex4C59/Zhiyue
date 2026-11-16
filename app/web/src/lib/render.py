@@ -10,6 +10,14 @@ import math
 from itertools import groupby
 
 
+class RenderError(ValueError):
+    """区分为客户端输入错误和服务端环境错误。"""
+
+    def __init__(self, message, code='invalid_request'):
+        super().__init__(message)
+        self.code = code
+
+
 def char_rotation(char):
     matrix = char.get('matrix', (1, 0, 0, 1, 0, 0))
     return (round(-math.degrees(math.atan2(matrix[1], matrix[0]))/90)*90) % 360
@@ -76,13 +84,13 @@ def render(root, file, page, output):
     with file.open('rb') as stream:
         reader = PdfReader(stream)
         if reader.is_encrypted and not reader.decrypt(''):
-            raise ValueError('PDF已加密，无法生成预览。')
+            raise RenderError('PDF已加密，无法生成预览。')
         total = len(reader.pages)
         if not 1 <= page <= total:
-            raise ValueError(f'PDF页序超出范围：应为1至{total}。')
+            raise RenderError(f'PDF页序超出范围：应为1至{total}。')
     executable = poppler()
     if not executable:
-        raise ValueError('未找到Poppler pdftoppm。')
+        raise RenderError('未找到Poppler pdftoppm。', 'environment')
     output.parent.mkdir(parents=True, exist_ok=True)
     prefix = output.parent / ('render_' + uuid.uuid4().hex)
     temporary = prefix.with_suffix('.png')
@@ -93,10 +101,11 @@ def render(root, file, page, output):
             shell=False, stdin=subprocess.DEVNULL, capture_output=True,
             timeout=40, creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
         if result.returncode or not temporary.is_file():
-            raise ValueError('Poppler渲染失败：' + result.stderr.decode('utf-8', errors='replace')[-1500:])
+            message = 'Poppler渲染失败：' + result.stderr.decode('utf-8', errors='replace')[-1500:]
+            raise RenderError(message, 'environment')
         with temporary.open('rb') as stream:
             if stream.read(8) != b'\x89PNG\r\n\x1a\n':
-                raise ValueError('Poppler未返回有效PNG。')
+                raise RenderError('Poppler未返回有效PNG。', 'environment')
         os.replace(temporary, output)
     finally:
         temporary.unlink(missing_ok=True)
@@ -118,5 +127,6 @@ if __name__ == '__main__':
         args = parser.parse_args()
         print(json.dumps(render(args.root.resolve(), args.file.resolve(), args.page, args.output.resolve()), ensure_ascii=True))
     except Exception as exc:
-        print(json.dumps({'error': str(exc)}, ensure_ascii=True))
+        code = getattr(exc, 'code', 'invalid_request' if isinstance(exc, ValueError) else 'internal')
+        print(json.dumps({'error': str(exc), 'code': code}, ensure_ascii=True))
         raise SystemExit(2)
