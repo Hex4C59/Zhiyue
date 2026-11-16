@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "network": {
+    "use_environment_proxy": false,
+    "connect_timeout": 12,
+    "request_timeout": 120,
+    "max_bytes": 134217728,
+    "transient_retries": 1,
+    "minimum_interval": 1.0
+  },
+  "render": { "enabled": true, "max_side": 1200 },
+  "archive_category": "papers/09_情感综述调研",
+  "credentials": {
+    "elsevier_api_key_env": "ELSEVIER_API_KEY",
+    "elsevier_insttoken_env": "ELSEVIER_INSTTOKEN",
+    "unpaywall_email_env": "UNPAYWALL_EMAIL",
+    "crossref_email_env": "CROSSREF_EMAIL"
+  }
+}

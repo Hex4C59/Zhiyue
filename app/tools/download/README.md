@@ -1,0 +1,79 @@
+# Zhiyue 文献工具
+
+入口：[../文献工具.ps1](../../../tools/文献工具.ps1)。完整操作：[论文下载流程](../../../library/docs/论文下载流程.md)。渠道、权限和故障：[下载渠道与问题处理](../../../library/docs/下载渠道与问题处理.md)。
+
+## 快速入口
+
+在项目根目录的 PowerShell 中运行：
+
+```powershell
+.\tools\文献工具.ps1 --help
+.\tools\文献工具.ps1 doctor
+.\tools\文献工具.ps1 status
+```
+
+Python入口为`run.py`，默认以本工具所在项目为根目录，和当前终端工作目录无关。可通过全局参数`--root`指定另一份文献库；该目录须有README文献索引表。配置文件为[config.json](config.json)，只放选项和环境变量名称。
+
+## 命令
+
+| 命令 | 用途 |
+| --- | --- |
+| doctor [--network] | 检查Python、pypdf、curl、Poppler、InstSci入口及凭据是否已配置；可选一次Crossref只读请求 |
+| catalog | 读取README和全部来源侧车，生成catalog的JSON、CSV及待核实项；不改写原来源 |
+| migrate | 将既有第01至06组关联到统一批次；已存在的新台账保留，不重新覆盖 |
+| import INPUT --batch NAME | 导入新清单，可指定--category；保留输入文件和组内原序号 |
+| status [--batch NAME] | 查看全部或单批任务状态 |
+| download --batch NAME | 查重、补充元数据并尝试下载；支持--item、--limit、--dry-run、--channel及--retry |
+| set --batch NAME --item ID | 补充准确DOI、题名、作者、版本、资料类型、候选链接或已有文献编号 |
+| attach --batch NAME --item ID --file PDF | 明确导入一个手动取得的文件，复制到暂存后统一核验 |
+| collect --batch NAME --directory DIR | 根据首页DOI/题名批量匹配浏览器/InstSci下载结果，保留歧义项 |
+| verify --batch NAME [--item ID] | 重新核验身份、全部页解析和首页末页渲染 |
+| review --batch NAME --item ID --note TEXT | 完成人工查看后记录核对；可指定--accept-identity、--visual-reviewed、--type、--version |
+| archive --batch NAME | 归档已核验项，分配或复用L编号，保留版本及更新README/catalog |
+| ieee --batch NAME [--submit] | 生成IEEE串行队列；明确--submit后使用现有可见InstSci机构会话 |
+| pack --batch NAME | 普通分组文件夹ZIP；重复--batch可合包；--mode nested先打各组ZIP再生成外层ZIP |
+
+每个子命令支持`--help`。`--item`接受I0001这样的条目ID或组内原序号。批量命令可用逗号列出多个条目；attach/review/set要求一次只选一个。
+
+## 依赖和启动器
+
+本机验证环境：Python 3.12.14、pypdf 6.10.0、系统curl、已有Poppler及InstSci独立环境。启动器依次使用本目录`.venv`、本机已安装的Codex Python运行时、PATH中的Python。没有修改用户现有Python环境。
+
+需要独立部署时，可自行创建本目录`.venv`后按[requirements.txt](requirements.txt)安装pypdf。curl和Poppler为外部可执行程序；PDFTOPPM环境变量可以指定`pdftoppm.exe`。`doctor`会列出实际找到的路径。仅关闭渲染不能让文件通过archive的渲染要求。
+
+## 认证配置
+
+凭据只从当前进程环境变量读取，不扫描聊天存档，不读取浏览器Cookie，不写入来源记录、CSV或分享包。
+
+- `ELSEVIER_API_KEY`：Elsevier调用方Key。
+- `ELSEVIER_INSTTOKEN`：仅在机构明确提供时设置；不能自行生成。
+- `UNPAYWALL_EMAIL`：Unpaywall要求的实际联系邮箱。
+- `CROSSREF_EMAIL`：可选的Crossref联系邮箱。
+
+当前终端隐藏输入Key的示例：
+
+```powershell
+$downloadKey = Read-Host '输入Elsevier API Key' -AsSecureString
+$env:ELSEVIER_API_KEY = [System.Net.NetworkCredential]::new('', $downloadKey).Password
+.\tools\文献工具.ps1 doctor
+```
+
+此设置只对当前终端及其子进程生效。`doctor`只报告是否配置，不显示值。不要把真实值填进`config.json`或清单。需要订阅访问的IEEE会话仍由现有InstSci维护，参见[本机说明](../../../tools/docs/InstSci_本机使用说明.md)。
+
+## 维护代码
+
+- `common.py`：路径边界、原子写入、锁、归一化与脱敏。
+- `library.py`：兼容旧来源格式并生成全库索引。
+- `batches.py`：输入解析、批次状态与历史关联。
+- `transport.py`：有限重试、显式重定向、TLS与主机范围内认证。
+- `providers/`：Crossref/公开链接/可选Unpaywall、Elsevier、现有IEEE入口。
+- `validation.py`：PDF身份、解析与渲染，区分人工目视状态。
+- `workflow.py`：查重、断点续跑、手动或目录收集。
+- `archiving.py`：编号、版本、归档与索引更新。
+- `sharing.py`：可复用的分组打包和ZIP合辑。
+
+```powershell
+npm run test:downloads
+```
+
+测试使用隔离目录和明确标记的合成PDF，涵盖错误页、截断文件、参考文献误匹配、摘要页、版本保留、查重、凭据重定向范围和ZIP成员完整性，不产生正式论文编号。

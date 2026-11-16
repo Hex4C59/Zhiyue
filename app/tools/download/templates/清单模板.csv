@@ -1,0 +1,3 @@
+doi,title,authors,year,venue,url
+10.1109/ICASSP39728.2021.9414420,Improving Ultrasound Tongue Contour Extraction Using U-Net and Shape Consistency-Based Regularizer,Ming Feng; Yin Wang; Kele Xu; Huaimin Wang; Bo Ding,2021,ICASSP 2021,
+10.1016/j.media.2012.07.001,Tongue contour tracking in dynamic ultrasound via higher-order MRFs and efficient fusion moves,Lisa Tang; Tim Bressmann; Ghassan Hamarneh,2012,Medical Image Analysis,https://www2.cs.sfu.ca/~hamarneh/ecopy/mia2012b.pdf

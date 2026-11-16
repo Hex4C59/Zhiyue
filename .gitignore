@@ -1,0 +1,41 @@
+# Private workspace, installed tools, exports and local maintenance
+/library/
+/releases/
+/tools/
+!/tools/
+/tools/*
+!/tools/文献工具.ps1
+/app/scripts/export_share.py
+/app/scripts/migrate_layout_20261105.py
+/.codex/
+/.agents/
+/.vscode/
+/.idea/
+
+# Environments, caches and authentication
+.venv/
+venv/
+node_modules/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.cache/
+.env
+.env.*
+*.pem
+*.key
+cookies*
+storage_state.json
+credentials.json
+secrets.json
+*.log
+*.writing
+
+# Originals and packaged data remain local at any path
+*.[pP][dD][fF]
+*.[zZ][iI][pP]
+*.7z
+*.rar
+*.tar*
+.DS_Store
+Thumbs.db

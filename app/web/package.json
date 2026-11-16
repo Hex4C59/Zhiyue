@@ -1,0 +1,12 @@
+{
+  "name": "zhiyue-web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node server.mjs",
+    "build": "npm --prefix ../.. run build:web",
+    "test": "npm --prefix ../.. test"
+  },
+  "engines": { "node": ">=22" }
+}

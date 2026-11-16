@@ -1,0 +1,23 @@
+{
+  "name": "zhiyue",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Zhiyue - local literature management, PDF reading and AI research assistant",
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "start": "node app/web/server.mjs",
+    "build:web": "vite build --config app/web/vite.config.mjs",
+    "test": "npm run build:web && node --test app/web/test/*.test.mjs",
+    "test:downloads": "powershell -NoProfile -ExecutionPolicy Bypass -File app/scripts/download.ps1 -RunTests",
+    "doctor": "powershell -NoProfile -ExecutionPolicy Bypass -File app/scripts/download.ps1 doctor",
+    "share": "python app/scripts/export_share.py"
+  },
+  "dependencies": {
+    "vue": "3.5.45"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "6.0.11",
+    "jsdom": "31.0.1",
+    "vite": "8.3.8"
+  }
+}
