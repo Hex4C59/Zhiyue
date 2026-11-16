@@ -107,6 +107,8 @@ export async function createApp({root=path.resolve(HERE,'../../../library'),stat
         if(method==='POST'&&action==='messages'){const data=await readJson(req);const result=await chats.send(id,{...data,attachments:validUploads(data.attachmentIds||[])});return json(res,result,202);}
         if(method==='POST'&&action==='interrupt')return json(res,await chats.interrupt(id));
       }
+      const noteDraft=/^\/api\/note-drafts\/([\w-]+)$/.exec(route);
+      if(method==='POST'&&noteDraft){const {action}=await readJson(req);return json(res,await chats.resolveNoteDraft(noteDraft[1],action));}
       const approval=/^\/api\/approvals\/([\w-]+)$/.exec(route);
       if(method==='POST'&&approval)return json(res,chats.approve(approval[1],await readJson(req)));
       const paper=/^\/api\/papers\/(L\d+)$/.exec(route);

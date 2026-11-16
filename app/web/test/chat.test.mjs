@@ -30,7 +30,7 @@ test('会话接入真实协议形状，图片以localImage输入，文件提取�
   const turn=client.calls.find(x=>x.method==='turn/start').params;
   assert.equal(turn.threadId,'thread-1');assert.equal(turn.input[1].type,'localImage');assert.match(turn.input[0].text,/文件内容/);
   assert.match(client.calls[0].params.developerInstructions,/文献研究助手/);
-  assert.equal(client.calls[0].params.dynamicTools.length,5);
+  assert.equal(client.calls[0].params.dynamicTools.length,6);
 });
 
 test('多条agent消息流可拼接并在turn完成后持久化',async t=>{
@@ -50,6 +50,37 @@ test('下载请求必须通过命名工具，审批只响应明确点击',async 
   assert.equal(client.responses.length,1);const a=events.find(x=>x.type==='approval');
   chats.approve(a.approval.id,{decision:'decline'});assert.equal(client.responses.at(-1).result.decision,'decline');
   assert.throws(()=>chats.approve(a.approval.id,{decision:'accept'}));
+});
+
+test('笔记草稿只在用户确认后写入 notes，且不覆盖同名文件',async t=>{
+  const {chats,client,events,dir}=await fixture(t);
+  chats.library={getPaper:async id=>({id,title:'测试论文',file:'papers/01_测试/test.pdf'}),refresh:async()=>{}};
+  const c=chats.create();await chats.send(c.id,{text:'整理笔记'});await until(()=>c.threadId);
+  const draftCall=(id,content)=>chats.serverRequest({id,method:'item/tool/call',params:{threadId:c.threadId,tool:'draft_note',arguments:{paperId:'L001',title:'测试 笔记',content}}});
+  await draftCall(90,'## 要点\n\n第一版');
+  const reply=JSON.parse(client.responses.at(-1).result.contentItems[0].text);
+  assert.equal(reply.status,'pending_confirmation');
+  assert.equal(reply.path,'notes/L001_测试 笔记.md');
+  assert.equal(c.noteDrafts.length,1);
+  assert.equal(events.filter(e=>e.type==='noteDraft').length,1);
+  assert.equal('noteDrafts' in chats.list()[0],false);
+  await assert.rejects(fs.readFile(path.join(dir,'notes','L001_测试 笔记.md')),/ENOENT/);
+  const saved=await chats.resolveNoteDraft(c.noteDrafts[0].id,'save');
+  assert.equal(saved.path,'notes/L001_测试 笔记.md');
+  const text=await fs.readFile(path.join(dir,'notes','L001_测试 笔记.md'),'utf8');
+  assert.match(text,/文献编号：L001/);assert.match(text,/papers\/01_测试\/test\.pdf/);assert.match(text,/## 要点/);
+  assert.equal(c.noteDrafts.length,0);
+  assert.equal(events.filter(e=>e.type==='noteDraftResolved').at(-1).path,'notes/L001_测试 笔记.md');
+  await draftCall(91,'第二版');
+  const second=await chats.resolveNoteDraft(c.noteDrafts[0].id,'save');
+  assert.equal(second.path,'notes/L001_测试 笔记 (2).md');
+  assert.match(await fs.readFile(path.join(dir,'notes','L001_测试 笔记.md'),'utf8'),/第一版/);
+  assert.match(await fs.readFile(path.join(dir,'notes','L001_测试 笔记 (2).md'),'utf8'),/第二版/);
+  assert.equal(c.noteDrafts.length,0);
+  await draftCall(92,'第三版');
+  assert.deepEqual(await chats.resolveNoteDraft(c.noteDrafts[0].id,'discard'),{discarded:true});
+  assert.equal(c.noteDrafts.length,0);
+  await assert.rejects(chats.resolveNoteDraft('missing','save'),/不存在/);
 });
 
 test('附件解析期间停止并重发，旧请求不会发送或结束新一轮',async t=>{

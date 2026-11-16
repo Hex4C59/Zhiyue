@@ -275,6 +275,19 @@ pre,code,kbd,samp { font-family:var(--font-mono); }
 .question-options { display:flex; flex-wrap:wrap; gap:5px; margin-top:6px; }
 .question-options button { font-size:11px; text-align:left; display:block; max-width:100%; }
 .question-options small { display:block; color:var(--muted); font-size:10px; line-height:1.7; margin-top:3px; }
+.note-drafts { max-height:38%; overflow:auto; padding:0 14px; }
+.note-draft { border:1px solid #d9ddd0; background:#fbfcfa; padding:12px; border-radius:6px; margin-bottom:10px; font-size:12px; }
+.note-draft header { display:flex; align-items:flex-start; justify-content:space-between; gap:10px; }
+.note-draft strong { display:block; font-size:13px; color:var(--ink); }
+.note-draft small { display:block; margin-top:4px; color:var(--muted); font-family:var(--font-mono); font-size:10px; overflow-wrap:anywhere; }
+.note-draft header .button { flex:none; padding:5px 8px; font-size:11px; }
+.note-preview { max-height:240px; overflow:auto; margin-top:10px; padding:10px 12px; background:#fff; border:1px solid var(--line); border-radius:5px; font-size:12px; }
+.note-preview.markdown h1 { font-size:18px; margin:14px 0 8px; }
+.note-preview.markdown h2 { font-size:16px; margin:14px 0 8px; }
+.note-preview.markdown h3 { font-size:14px; margin:12px 0 6px; }
+.note-preview.markdown p { margin-bottom:9px; }
+.note-draft-actions { display:flex; gap:8px; margin-top:10px; }
+.note-draft-actions .button { padding:7px 10px; font-size:11px; }
 
 /* Notes and rich text */
 .markdown { line-height:1.9; overflow-wrap:anywhere; }

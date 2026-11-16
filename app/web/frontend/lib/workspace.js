@@ -61,6 +61,7 @@ export function createWorkspace({
     jobs: new Map(),
     batches: [],
     sending: false,
+    noteSaving: '',
     creating: false,
     chatEpoch: 0,
     noteEpoch: 0,
@@ -354,6 +355,28 @@ export function createWorkspace({
       await uploadOne(item);
     }
   }
+  async function resolveNoteDraft(id, action) {
+    const chat = state.chat,
+      draft = (chat?.noteDrafts || []).find((item) => item.id === id);
+    if (!draft || state.noteSaving) return;
+    state.noteSaving = id;
+    try {
+      const result = await api(`/api/note-drafts/${endpoint(id)}`, json('POST', { action }));
+      chat.noteDrafts = (chat.noteDrafts || []).filter((item) => item.id !== id);
+      if (action === 'save') {
+        toast(`笔记已保存：${result.path}`);
+        await loadLibrary();
+      } else {
+        toast('已丢弃笔记草稿');
+      }
+    } catch (error) {
+      toast(error.message, true);
+    } finally {
+      state.noteSaving = '';
+    }
+  }
+  const saveNoteDraft = (id) => resolveNoteDraft(id, 'save');
+  const discardNoteDraft = (id) => resolveNoteDraft(id, 'discard');
   async function decideApproval(id, decision, answers = {}) {
     const approval = state.approvals.get(id);
     if (!approval || approval.submitting) return;
@@ -431,6 +454,15 @@ export function createWorkspace({
     if (data.type === 'approvalResolved') {
       state.approvals.delete(data.id);
       state.resolvedApprovals.add(data.id);
+    }
+    if (data.type === 'noteDraft' && data.chatId === state.chat?.id && data.draft?.id) {
+      const drafts = (state.chat.noteDrafts ||= []);
+      const index = drafts.findIndex((item) => item.id === data.draft.id);
+      if (index < 0) drafts.push(data.draft);
+      else drafts[index] = data.draft;
+    }
+    if (data.type === 'noteDraftResolved' && data.chatId === state.chat?.id) {
+      state.chat.noteDrafts = (state.chat.noteDrafts || []).filter((item) => item.id !== data.id);
     }
     if (data.type === 'message' && data.chatId === state.chat?.id && data.message?.id)
       upsertMessage(data.message);
@@ -555,6 +587,8 @@ export function createWorkspace({
     uploadFiles,
     uploadOne,
     decideApproval,
+    saveNoteDraft,
+    discardNoteDraft,
     loadDownloads,
     createDownload,
     batchAction,

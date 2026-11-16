@@ -57,7 +57,10 @@ test('Pi 复用流式消息、附件和文献工具',async t=>{
   assert.match(sdk.created[0].lastPrompt.text,/附件内容/);
   assert.equal(sdk.created[0].lastPrompt.images[0].data,Buffer.from('test-image').toString('base64'));
   assert.match(sdk.created[0].toolReply.content[0].text,/Test paper/);
-  assert.deepEqual(sdk.created[0].options.tools,['library_search','read_paper_pages','download_papers','continue_download_batch','get_download_status']);
+  assert.deepEqual(sdk.created[0].options.tools,[
+    'library_search','read_paper_pages','download_papers','continue_download_batch',
+    'get_download_status','draft_note'
+  ]);
   assert.equal(sdk.created[0].lastPrompt.expandPromptTemplates,false);
   assert.equal(pi.pending.size,0);
 });

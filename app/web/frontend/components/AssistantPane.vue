@@ -6,6 +6,7 @@ import PanelHandle from './PanelHandle.vue';
 import Composer from './Composer.vue';
 import ChatMessage from './ChatMessage.vue';
 import ApprovalCard from './ApprovalCard.vue';
+import NoteDraftCard from './NoteDraftCard.vue';
 const workspace = inject('workspace'),
   state = workspace.state;
 const { agent } = workspace,
@@ -37,6 +38,7 @@ const approvals = computed(() =>
     (approval) => approval.chatId === state.chat?.id && !state.resolvedApprovals.has(approval.id),
   ),
 );
+const noteDrafts = computed(() => state.chat?.noteDrafts || []);
 const presets = [
   ['book', '概括论文', '请结合当前选中的论文，解释它的研究问题、核心贡献与证据，并给出原文定位。'],
   ['spark', '解释方法', '请详细解释当前论文的核心方法、输入输出和关键假设，区分作者报告与补充解释。'],
@@ -165,6 +167,9 @@ function history() {
           </button>
         </div>
       </div>
+    </div>
+    <div v-if="noteDrafts.length" id="note-drafts" class="note-drafts" aria-live="polite">
+      <NoteDraftCard v-for="draft in noteDrafts" :key="draft.id" :draft="draft" />
     </div>
     <div id="approvals" class="approvals" aria-live="polite">
       <ApprovalCard v-for="approval in approvals" :key="approval.id" :approval="approval" />

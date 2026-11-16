@@ -27,6 +27,12 @@ test('本地HTTP服务提供目录、PDF范围读取和上传，拒绝跨站与�
   response=await fetch(base+'/api/file?path='+encodeURIComponent('papers/../catalog/文献索引.json'));assert.equal(response.status,403);
   response=await fetch(base+'/api/chats',{method:'POST',headers:{'Content-Type':'application/json',Origin:'https://evil.example'},body:'{}'});assert.equal(response.status,403);
   response=await fetch(base+'/api/chats',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({title:'问题'})});assert.equal(response.status,201);
+  const chat=await response.json();
+  app.chats.get(chat.id).noteDrafts.push({id:'draft-1',paperId:'L001',title:'测试笔记',content:'## 要点\n\n内容',createdAt:new Date().toISOString()});
+  response=await fetch(base+'/api/note-drafts/draft-1',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'save'})});assert.equal(response.status,200);
+  assert.equal((await response.json()).path,'notes/L001_测试笔记.md');
+  assert.match(await fs.readFile(path.join(root,'notes','L001_测试笔记.md'),'utf8'),/## 要点/);
+  response=await fetch(base+'/api/note-drafts/missing',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'save'})});assert.equal(response.status,404);
   const filename=encodeURIComponent('附件.txt');response=await fetch(base+'/api/uploads',{method:'POST',headers:{'X-Filename':filename,'Content-Type':'application/octet-stream'},body:'待解释的文字'});assert.equal(response.status,201);const attachment=await response.json();assert.equal(attachment.name,'附件.txt');assert.equal(attachment.path,undefined);
   response=await fetch(base+'/api/uploads/'+attachment.id);assert.equal(await response.text(),'待解释的文字');
   response=await fetch(base+'/api/uploads',{method:'POST',headers:{'X-Filename':'fake.png','Content-Type':'application/octet-stream'},body:'<script>attack</script>'});assert.equal(response.status,400);

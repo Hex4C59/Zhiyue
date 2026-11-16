@@ -82,6 +82,7 @@ async function fixture(t) {
   localStorage.clear();
   const calls = [],
     decisions = [],
+    noteDecisions = [],
     chats = new Map();
   const papers = [
     {
@@ -159,6 +160,12 @@ async function fixture(t) {
       decisions.push(body);
       return { resolved: true };
     }
+    if (path.startsWith('/api/note-drafts/')) {
+      noteDecisions.push({ id: path.split('/').pop(), body });
+      return body.action === 'save'
+        ? { saved: true, path: 'notes/L001_测试笔记.md' }
+        : { discarded: true };
+    }
     if (path.startsWith('/api/papers/') && options.method === 'PATCH') {
       const paper = papers.find((item) => path.endsWith(item.literature_id));
       Object.assign(paper, body);
@@ -215,6 +222,7 @@ async function fixture(t) {
     $: (selector) => target.querySelector(selector),
     calls,
     decisions,
+    noteDecisions,
     chats,
     status,
   };
@@ -313,6 +321,47 @@ test('流式增量只更新目标消息，保留已完成内容的选择范围�
     .dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
   await flush();
   assert.deepEqual(page.decisions[0].answers.question.answers, ['尚未提交的回答']);
+});
+
+test('笔记草稿先预览，保存或丢弃都由用户点击触发', async (t) => {
+  const page = await fixture(t),
+    { workspace } = page;
+  workspace.state.chat = { id: 'draft-chat', messages: [], noteDrafts: [] };
+  workspace.receive({
+    type: 'noteDraft',
+    chatId: 'draft-chat',
+    draft: {
+      id: 'd1',
+      paperId: 'L001',
+      title: '测试笔记',
+      path: 'notes/L001_测试笔记.md',
+      content: '## 要点\n\n正文 <img src=x onerror=alert(1)>',
+    },
+  });
+  await flush();
+  assert.ok(page.$('[data-note-draft="d1"]'));
+  assert.match(page.$('.note-preview').textContent, /要点/);
+  assert.equal(page.$('.note-preview img'), null);
+  assert.equal(workspace.state.chat.noteDrafts.length, 1);
+  click(page.$('[data-note-save="d1"]'));
+  await until(() => !page.$('[data-note-draft="d1"]'));
+  assert.deepEqual(page.noteDecisions[0], { id: 'd1', body: { action: 'save' } });
+  assert.equal(workspace.state.chat.noteDrafts.length, 0);
+  workspace.receive({
+    type: 'noteDraft',
+    chatId: 'draft-chat',
+    draft: {
+      id: 'd2',
+      paperId: 'L001',
+      title: '另一份笔记',
+      path: 'notes/L001_另一份笔记.md',
+      content: '## 另一份',
+    },
+  });
+  await flush();
+  click(page.$('[data-note-discard="d2"]'));
+  await until(() => !page.$('[data-note-draft="d2"]'));
+  assert.deepEqual(page.noteDecisions[1], { id: 'd2', body: { action: 'discard' } });
 });
 
 test('附件上传与删除、Pi 标题与空上下文按 Vue 状态更新', async (t) => {
