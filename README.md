@@ -11,7 +11,7 @@
 | `app/` | 网站、启动脚本、下载核心和测试 | [程序说明](app/README.md) |
 | `library/` | 论文、笔记、综合分析、索引、下载批次、成果、私有资料及临时文件 | [文献总索引](library/README.md) |
 | `tools/` | 本机第三方安装、机构登录环境和兼容启动入口 | [本机工具导航](tools/README.md) |
-| `releases/` | 已经过隐私检查的分享包与独立分享副本 | [分享检查记录](library/docs/分享版隐私检查_20261105.md) |
+| `releases/` | 已经过隐私检查的分享包与独立分享副本 | [分享检查记录](library/docs/分享版隐私检查_20261116.md) |
 
 根目录仅保留本导航、协作规则、Git 忽略规则、统一命令和网站启动入口。
 
@@ -30,6 +30,6 @@ npm run doctor
 
 `library/`、`tools/` 的本机安装和 `releases/` 均按本地资料处理，不进入 Git。只发送检查过的软件分享包，不要整体发送本项目。新的分享版可用 `npm run share -- --name new-name` 生成。
 
-当前可分享交付：[完整新布局的软件包](releases/packages/literature-workbench_20261105_layout_v2_share.zip)。旧交付集中保存在 `releases/`，不覆盖历史版本。
+当前可分享交付（仅本机完整工作区）：[2026-11-16 软件包，含 Vue 前端](releases/packages/literature-workbench_20261116_vue_share.zip)。旧交付集中保存在 `releases/`，不覆盖历史版本。
 
 本次目录迁移的清单、文本修改前备份和 PDF 校验记录保存在 `library/tmp/layout_migration_20261105/`。迁移没有删除论文、笔记、申请材料、聊天或旧交付。

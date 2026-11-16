@@ -124,9 +124,9 @@ npm test
 
 Codex 接入依据 [官方 app-server 文档](https://developers.openai.com/codex/app-server)，同时对照本机 CLI 生成的协议。CLI 升级后先运行测试并验证一次实际连接。
 
-开发临时资料在 `../../library/tmp/web_dev/`：包括协议 schema、合成测试附件及界面验收资料。确认代码和正式说明完整、无需复查且没有唯一材料后可清理，不影响论文归档。
+开发临时资料曾位于 `../../library/tmp/web_dev/`（协议 schema、合成测试附件及界面验收资料），已于2026-11-16清理，不影响论文归档；需要时可按测试代码重新生成。
 
-`../../library/tmp/web_pdf_preview/` 只保存按 PDF 路径、大小、修改时间与页序区分的派生页面图片和文字坐标缓存。确认没有额外手工标注或唯一材料后可清理，后续打开论文时会重新生成。
+`../../library/tmp/web_pdf_preview/` 只保存按 PDF 路径、大小、修改时间与页序区分的派生页面图片和文字坐标缓存；2026-11-16已清理，后续打开论文时会自动重新生成。
 
 
 ## Vue 前端维护
@@ -137,4 +137,4 @@ PDF 页图片与透明文字层由 lib/reader.js 管理，Vue 不重建其内部
 
 构建：在项目根目录执行 npm ci、npm run build:web。构建后刷新网页；只有服务端修改需要重启。npm test 先构建，再运行隔离的后端测试与 jsdom 交互测试；DOM 测试不能替代浏览器中的排版、字体与真实拖动验收。
 
-迁移前备份在 ../../library/tmp/vue_migration_20261116/before/，确认功能稳定且无需回退后可清理。Vue 使用 MIT 许可证，随 dist/LICENSE.vue.txt 保存；不分发本机字体。
+迁移前备份曾位于 `../../library/tmp/vue_migration_20261116/before/`，已于2026-11-16清理；回退参考以 `app/` 的 Git 历史为准。Vue 使用 MIT 许可证，随 dist/LICENSE.vue.txt 保存；不分发本机字体。

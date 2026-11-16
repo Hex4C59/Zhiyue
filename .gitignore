@@ -6,7 +6,6 @@
 /tools/*
 !/tools/文献工具.ps1
 /app/scripts/export_share.py
-/app/scripts/migrate_layout_20261105.py
 /.codex/
 /.agents/
 /.vscode/
