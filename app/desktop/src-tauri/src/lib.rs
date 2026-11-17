@@ -10,6 +10,8 @@ use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Manager, RunEvent, WebviewWindow, WindowEvent};
 
+mod update;
+
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
 
@@ -217,9 +219,10 @@ fn hide_on_close(window: &WebviewWindow) {
 
 fn build_tray(app: &AppHandle) -> tauri::Result<()> {
     let show = MenuItem::with_id(app, "show", "显示 Zhiyue", true, None::<&str>)?;
+    let check_update = MenuItem::with_id(app, "update", "检查更新", true, None::<&str>)?;
     let separator = PredefinedMenuItem::separator(app)?;
     let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&show, &separator, &quit])?;
+    let menu = Menu::with_items(app, &[&show, &check_update, &separator, &quit])?;
     let icon = match app.default_window_icon().cloned() {
         Some(icon) => icon,
         None => tauri::image::Image::from_bytes(include_bytes!("../icons/32x32.png"))?,
@@ -231,6 +234,7 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id.as_ref() {
             "show" => show_main(app),
+            "update" => update::check_updates(app.clone(), false),
             "quit" => app.exit(0),
             _ => {}
         })
@@ -253,6 +257,7 @@ pub fn run() {
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
             show_main(app);
         }))
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(Sidecar(Mutex::new(None)))
         .setup(|app| {
             let window = app
@@ -263,6 +268,7 @@ pub fn run() {
             if let Err(error) = spawn_sidecar(app.handle(), &window) {
                 fail_startup(&window, &error);
             }
+            update::schedule_startup_check(app.handle().clone());
             Ok(())
         })
         .build(tauri::generate_context!())

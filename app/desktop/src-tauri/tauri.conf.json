@@ -37,5 +37,14 @@
         "installMode": "currentUser"
       }
     }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDc2NEVGMEUyNTlGOTRGNUUKUldSZVQvbFo0dkJPZHMvNEZXTVJzb0JkbzJjdlhpT0pnZTdaRjdxZ01YZkkzMWQ2bWE1ZUV4MVQK",
+      "requireSignedVersion": true,
+      "windows": {
+        "installMode": "passive"
+      }
+    }
   }
 }

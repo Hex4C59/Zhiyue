@@ -59,7 +59,16 @@ CMD 启动入口显式调用系统 Windows PowerShell，避免 PATH 中同名程
 
 ## 桌面应用
 
-桌面版由 Tauri 2 启动原生窗口和托盘，并拉起内置 Node 运行 `app/web/src/server.mjs`；服务在标准输出给出地址后窗口跳转过去，关闭窗口只隐藏到托盘，托盘菜单可显示或退出。Rust 代码在 `app/desktop/src-tauri/src/`。调试构建从仓库根定位网站源码；发布构建读取 `resources/runtime/`，该目录由 `npm run desktop:prepare` 生成并被 Git 忽略，包含网站、下载器、文献库模板和当前机器的 Node 可执行文件。安装版默认使用 `文档/Zhiyue/library`，`LITERATURE_LIBRARY` 可覆盖；Pi Agent 登录配置、Python 和 Poppler 取用户本机安装。NSIS 安装包未签名，尚未接入自动更新。若首次打包在解压 NSIS 时提示 `os error 17`（不同磁盘驱动器），可把 `%LOCALAPPDATA%\tauri\nsis-3.13` 手动改名为同目录下的 `NSIS`，再把 `nsis_tauri_utils.dll` 放入 `NSIS\Plugins\x86-unicode\additional\` 后重试。
+桌面版由 Tauri 2 启动原生窗口和托盘，并拉起内置 Node 运行 `app/web/src/server.mjs`；服务在标准输出给出地址后窗口跳转过去，关闭窗口只隐藏到托盘，托盘菜单可显示、检查更新或退出。Rust 代码在 `app/desktop/src-tauri/src/`。调试构建从仓库根定位网站源码；发布构建读取 `resources/runtime/`，该目录由 `npm run desktop:prepare` 生成并被 Git 忽略，包含网站、下载器、文献库模板和当前机器的 Node 可执行文件。安装版默认使用 `文档/Zhiyue/library`，`LITERATURE_LIBRARY` 可覆盖；Pi Agent 登录配置、Python 和 Poppler 取用户本机安装。
+
+`npm run desktop:build` 默认生成未签名安装包。以下变量只在本机构建环境设置，不写入仓库配置：
+
+- `ZHIYUE_SIGN_THUMBPRINT`：代码签名证书指纹，设置后对可执行文件和安装包做 Authenticode 签名；可选 `ZHIYUE_SIGN_TIMESTAMP_URL` 加 RFC 3161 时间戳。自签名证书仅供本机验证，分发给他人需换成受信任 CA 签发的证书。
+- `TAURI_SIGNING_PRIVATE_KEY`：更新包签名私钥（Tauri 官方变量），设置后为安装包生成同名 `.sig` 更新签名。公钥固定在 `tauri.conf.json` 的 `plugins.updater.pubkey`，应用只接受用对应私钥签名、且签名内版本号与 `latest.json` 一致的更新包。
+
+应用启动后静默检查一次更新，失败不打扰用户；托盘“检查更新”会显示检查和安装结果。更新源通过运行环境变量 `ZHIYUE_UPDATE_ENDPOINT` 指定为 `latest.json` 地址，未设置时提示尚未配置。`latest.json` 中 `windows-x86_64` 平台的 `signature` 填 `.sig` 文件内容，`url` 指向安装包；正式发布的更新源必须使用 HTTPS，发布构建会拒绝 HTTP 地址。
+
+打包若在解压 NSIS 时提示 `os error 17`（不同磁盘驱动器），可把 `%LOCALAPPDATA%\tauri\nsis-3.13` 手动改名为同目录下的 `NSIS`，再把 `nsis_tauri_utils.dll` 放入 `NSIS\Plugins\x86-unicode\additional\` 后重试。目录被加密导致无法改名时，可把工具集放在其他磁盘的普通目录，用目录联接让 `%LOCALAPPDATA%\tauri\NSIS` 指向它。
 
 WebView2 要求可执行文件所在目录的完整性级别为 Medium。旧沙箱工具可能在项目目录留下低完整性标签（Low mandatory level）和拒绝 ACE，表现为窗口空白、`msedgewebview2.exe` 在 `msedge_elf.dll` 崩溃。遇到时先用 `icacls 目录 /grant "用户名:(OI)(CI)(WO)"` 取得写所有者权限，再运行 `icacls 目录 /setintegritylevel (OI)(CI)M`，不要用代码绕开。
 
