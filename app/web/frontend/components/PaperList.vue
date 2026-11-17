@@ -15,6 +15,16 @@ const years = computed(() =>
     ),
   ].sort((a, b) => (Number(b) || 0) - (Number(a) || 0)),
 );
+const filtering = computed(
+  () => !!(state.query.trim() || state.year || state.read || state.starred),
+);
+const emptyText = computed(() =>
+  filtering.value
+    ? '没有匹配的文献'
+    : state.category
+      ? '这个文件夹还没有文献'
+      : '文献库还没有文献',
+);
 const papers = computed(() => {
   const query = state.query.trim().toLocaleLowerCase();
   const result = state.papers.filter((paper) => {
@@ -138,8 +148,26 @@ const papers = computed(() => {
         </div>
       </article>
       <div v-if="!state.libraryError && !papers.length" class="empty">
-        <p>没有匹配的文献</p>
-        <button id="reset-filters" class="button subtle" @click="workspace.resetFilters">清除筛选</button>
+        <span v-if="!filtering && !state.category" class="empty-art"><Icon name="library" /></span>
+        <p>{{ emptyText }}</p>
+        <div class="empty-actions">
+          <button
+            v-if="!filtering && !state.category"
+            id="import-paper-empty"
+            class="button primary"
+            @click="state.importOpen = true"
+          >
+            <Icon name="upload" />导入 PDF
+          </button>
+          <button
+            v-if="filtering || state.category"
+            id="reset-filters"
+            class="button subtle"
+            @click="workspace.resetFilters"
+          >
+            {{ filtering ? '清除筛选' : '查看全部文献' }}
+          </button>
+        </div>
       </div>
     </div>
     <PanelHandle kind="papers" />

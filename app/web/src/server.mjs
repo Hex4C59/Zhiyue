@@ -100,6 +100,14 @@ export async function createApp({root:configuredRoot,stateDir:configuredStateDir
         connections.add(res);const timer=setInterval(()=>res.write(': keepalive\n\n'),20000);timer.unref();req.on('close',()=>{clearInterval(timer);connections.delete(res);});return;
       }
       if(method==='GET'&&route==='/api/library')return json(res,await library.getLibrary());
+      if(method==='POST'&&route==='/api/categories'){
+        const {name}=await readJson(req);
+        return json(res,await library.createCategory(name),201);
+      }
+      if(method==='POST'&&route==='/api/categories/rename'){
+        const {category,subcategory,name}=await readJson(req);
+        return json(res,await library.renameCategory(category,subcategory,name));
+      }
       if(method==='GET'&&route==='/api/status')return json(res,{...chats.snapshot(),python,node:process.version,root});
       if(method==='POST'&&route==='/api/agents/pi/connect')return json(res,await chats.connect());
       if(method==='GET'&&route==='/api/chats')return json(res,chats.list());
@@ -152,6 +160,13 @@ export async function createApp({root:configuredRoot,stateDir:configuredStateDir
       }
       const upload=/^\/api\/uploads\/([\w-]+)$/.exec(route);
       if((method==='GET'||method==='HEAD')&&upload){const file=validUploads([upload[1]])[0];return await serveFile(req,res,file.path,{filename:file.name,download:!file.mime.startsWith('image/')});}
+      if(method==='POST'&&route==='/api/library/import'){
+        const {uploadId,...data}=await readJson(req);
+        if(typeof uploadId!=='string'||!uploadId)throw error('请先选择 PDF 文件。');
+        const file=validUploads([uploadId])[0];
+        if(path.extname(file.name).toLowerCase()!=='.pdf')throw error('只能导入 PDF 文件。',415);
+        return json(res,await jobs.startLocalImport({...data,uploadPath:file.path}),202);
+      }
       if(method==='GET'&&route==='/api/downloads')return json(res,{batches:await jobs.listBatches(),jobs:jobs.listJobs()});
       if(method==='POST'&&route==='/api/downloads')return json(res,await jobs.startDownload(await readJson(req)),202);
       if(method==='POST'&&route==='/api/downloads/action')return json(res,await jobs.startAction(await readJson(req)),202);

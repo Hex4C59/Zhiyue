@@ -4,6 +4,7 @@ import { mkdtemp, mkdir, writeFile, readFile, rm, symlink, realpath } from 'node
 import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { JobManager, resolvePython } from '../src/lib/jobs.mjs';
 
 async function fixture(t) {
@@ -153,6 +154,57 @@ test('collect uses only the batch IEEE output and refuses caller paths, mismatch
   await rm(directory, { recursive: true });
   await symlink(outside, directory, process.platform === 'win32' ? 'junction' : 'dir');
   await assert.rejects(manager.startAction({ batch: job.batch, action: 'collect' }));
+});
+
+test('local PDF import reuses the batch pipeline and rejects unsafe or duplicate files', async t => {
+  const { root, manager, calls, stateDir } = await fixture(t);
+  const uploads = path.join(stateDir, 'uploads');
+  await mkdir(uploads, { recursive: true });
+  const file = path.join(uploads, 'candidate.pdf');
+  await writeFile(file, '%PDF-1.7\nlocal import fixture');
+  const job = await manager.startLocalImport({
+    uploadPath: file,
+    title: '本地论文',
+    authors: '张三; 李四',
+    year: '2024',
+    doi: 'https://doi.org/10.1234/local',
+  });
+  await manager.queue;
+  assert.equal(manager.getJob(job.id).status, 'completed');
+  assert.match(job.batch, /^\d{8}_local_[a-f0-9]{8}$/);
+  const recorded = await calls();
+  assert.deepEqual(recorded.map(call => call.command), ['import', 'attach', 'review', 'archive']);
+  assert.equal(recorded[0].args.at(-1), 'papers/09_情感综述调研/网站导入');
+  assert.ok(recorded[1].args.includes(file));
+  assert.ok(recorded[2].args.includes('--accept-identity'));
+  assert.deepEqual(recorded[3].args.slice(-2), ['--item', 'I0001']);
+  const input = JSON.parse(await readFile(path.join(stateDir, `${job.id}_input.json`), 'utf8'));
+  assert.deepEqual(input, [{
+    title: '本地论文', authors: ['张三', '李四'], year: '2024', doi: '10.1234/local',
+  }]);
+  await assert.rejects(manager.startLocalImport({ uploadPath: file, title: '' }), /题名/);
+  await assert.rejects(manager.startLocalImport({ uploadPath: file, title: 'x', year: '24' }), /四位/);
+  await assert.rejects(
+    manager.startLocalImport({ uploadPath: file, title: 'x', doi: 'https://example.com/x' }),
+    /DOI/,
+  );
+  const outside = path.join(root, 'fixture/outside.pdf');
+  await writeFile(outside, '%PDF-1.7');
+  await assert.rejects(manager.startLocalImport({ uploadPath: outside, title: 'x' }), /本网站上传/);
+  const fake = path.join(uploads, 'fake.pdf');
+  await writeFile(fake, 'not a pdf');
+  await assert.rejects(manager.startLocalImport({ uploadPath: fake, title: 'x' }), /不是有效PDF/);
+  const digest = createHash('sha256').update(await readFile(file)).digest('hex');
+  await mkdir(path.join(root, '.zhiyue/catalog'), { recursive: true });
+  await writeFile(
+    path.join(root, '.zhiyue/catalog/文献索引.json'),
+    JSON.stringify({ records: [{ literature_id: 'L009', title: '已归档论文', sha256: digest, file_exists: true }] }),
+  );
+  await assert.rejects(
+    manager.startLocalImport({ uploadPath: file, title: '重复论文' }),
+    error => error.statusCode === 409 && /L009/.test(error.message),
+  );
+  assert.equal(manager.listJobs().length, 1);
 });
 
 test('close kills its running process tree, prevents queued work and persists interrupted jobs', { timeout: 18000 }, async t => {

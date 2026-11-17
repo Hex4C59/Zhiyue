@@ -8,6 +8,7 @@ export const paths = {
   library: 'M4 4h4v16H4z M10 4h4v16h-4z M17 4l4 15-3 1-4-15z',
   search: 'M21 21l-5-5 M18 10a8 8 0 1 1-16 0 8 8 0 0 1 16 0',
   download: 'M12 3v12 M7 10l5 5 5-5 M4 16v5h16v-5',
+  upload: 'M12 16V4 M7 9l5-5 5 5 M4 20h16',
   refresh: 'M20 7a8 8 0 1 0 1 8 M20 3v5h-5',
   shield: 'M12 3l8 3v6c0 5-8 9-8 9s-8-4-8-9V6z M8 12l3 3 5-6',
   star: 'M12 3l2.8 5.8 6.4.9-4.6 4.5 1.1 6.4-5.7-3-5.7 3 1.1-6.4-4.6-4.5 6.4-.9z',
@@ -23,6 +24,7 @@ export const paths = {
   check: 'M5 12l4 4L19 6',
   external: 'M14 3h7v7 M21 3L10 14 M10 4H4v16h16v-6',
   folder: 'M3 5h7l2 3h9v12H3z',
+  edit: 'M4 20h4L19 9l-4-4L4 16z M13.5 6.5l4 4',
   user: 'M16 7a4 4 0 1 1-8 0 4 4 0 0 1 8 0 M4 21v-3a8 8 0 0 1 16 0v3',
 };
 export const icon = (name) =>
@@ -40,6 +42,24 @@ export const authorText = (paper) =>
   Array.isArray(paper.authors)
     ? paper.authors.map((a) => (typeof a === 'string' ? a : a.name || '')).join(', ')
     : paper.authors || '作者待核实';
+export function categoryChoices(categories, fallback = 'papers/09_情感综述调研/网站导入') {
+  const choices = new Map([[fallback, '情感综述调研 / 网站导入（默认）']]);
+  for (const category of categories) {
+    const id = typeof category === 'string' ? category : category.id || category.name;
+    if (!id) continue;
+    const parent = String(id)
+      .replace(/\\/g, '/')
+      .replace(/^papers\//, '')
+      .split('/')[0];
+    const value = `papers/${parent}/网站导入`;
+    if (!choices.has(value))
+      choices.set(
+        value,
+        `${String(typeof category === 'string' ? category : category.name || parent).replace(/^\d+_/, '')} / 网站导入`,
+      );
+  }
+  return [...choices];
+}
 export function safeURL(raw, basePath = '') {
   const value = String(raw || '').trim();
   if (!value || /[\u0000-\u001f\u007f]/.test(value) || value.startsWith('//')) return '';

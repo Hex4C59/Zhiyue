@@ -1,8 +1,8 @@
 import { spawn } from 'node:child_process';
-import { existsSync, mkdirSync, realpathSync, readFileSync } from 'node:fs';
-import { readFile, writeFile, rename, readdir, realpath, lstat } from 'node:fs/promises';
+import { createReadStream, existsSync, mkdirSync, realpathSync, readFileSync } from 'node:fs';
+import { readFile, writeFile, rename, readdir, realpath, lstat, open, stat } from 'node:fs/promises';
 import path from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { StringDecoder } from 'node:string_decoder';
 import { fileURLToPath } from 'node:url';
 import { libraryPaths } from './paths.mjs';
@@ -15,6 +15,7 @@ const fail = message => Object.assign(new Error(message), { statusCode: 400 });
 const stamp = () => new Date().toISOString();
 const validBatch = name => typeof name === 'string' && /^[\p{L}\p{N}_-]{1,100}$/u.test(name);
 const LOG_LIMIT = 100_000;
+const MAX_IMPORT_BYTES = 25 * 1024 * 1024;
 const INTERRUPTED = '服务关闭，任务已中断；请检查批次后手动续跑';
 
 // Honor an explicit interpreter override before the installed runtimes/PATH.
@@ -36,6 +37,37 @@ function redact(value) {
     .replace(/https?:\/\/[^\s<>"']+/gi, '[URL已隐藏]')
     .replace(/\b(?:Bearer|Basic)\s+[^\s,"'}]+/gi, '[认证已隐藏]')
     .replace(/\b(?:sk-[\w-]{8,}|eyJ[\w-]+\.[\w-]+\.[\w-]+)\b/g, '[密钥已隐藏]');
+}
+
+function cleanField(value, max, label) {
+  if (value == null || value === '') return '';
+  if (!['string', 'number'].includes(typeof value)) throw fail(`${label}格式无效`);
+  const text = String(value).replace(/[\u0000-\u001f\u007f]+/g, ' ').replace(/\s+/g, ' ').trim();
+  if (text.length > max) throw fail(`${label}过长`);
+  return text;
+}
+
+function splitAuthors(value) {
+  if (value == null || value === '') return [];
+  if (Array.isArray(value)) {
+    if (value.length > 100) throw fail('作者过多');
+    return value.map(item => cleanField(item, 120, '作者')).filter(Boolean);
+  }
+  return cleanField(value, 3000, '作者')
+    .split(/[;；]+/)
+    .map(item => item.trim())
+    .filter(Boolean)
+    .slice(0, 100);
+}
+
+async function fileDigest(file) {
+  return new Promise((resolve, reject) => {
+    const hash = createHash('sha256');
+    const stream = createReadStream(file);
+    stream.on('data', chunk => hash.update(chunk));
+    stream.once('error', reject);
+    stream.once('end', () => resolve(hash.digest('hex')));
+  });
 }
 
 function entriesFrom(input) {
@@ -218,6 +250,20 @@ export class JobManager {
     return { batch, entries: entries.length, counts, scope_note: state.scope_note ?? '' };
   }
 
+  async _catalogDuplicate(digest) {
+    let data;
+    try {
+      const catalogFile = path.join(libraryPaths(this.root).catalog, '文献索引.json');
+      data = JSON.parse((await readFile(catalogFile, 'utf8')).replace(/^\uFEFF/, ''));
+    } catch (e) {
+      if (e.code === 'ENOENT') return null;
+      throw e;
+    }
+    return (data.records ?? []).find(record =>
+      record.sha256 && String(record.sha256).toLowerCase() === digest &&
+      record.file_exists !== false) ?? null;
+  }
+
   async listBatches() {
     const result = [];
     const dirs = await readdir(libraryPaths(this.root).batches, { withFileTypes: true }).catch(e => { if (e.code === 'ENOENT') return []; throw e; });
@@ -332,6 +378,60 @@ export class JobManager {
         await this._category(category);
         await this._run(job, 'archive', ['--batch', batch]);
       }
+    });
+  }
+
+  async startLocalImport({ uploadPath, title, authors, year, doi, category = 'papers/09_情感综述调研/网站导入' }) {
+    const cleanTitle = cleanField(title, 300, '题名');
+    if (!cleanTitle) throw fail('请填写论文题名');
+    const cleanAuthors = splitAuthors(authors);
+    const cleanYear = cleanField(year, 16, '年份');
+    if (cleanYear && !/^\d{4}$/.test(cleanYear)) throw fail('年份需为四位数字');
+    let cleanDoi = cleanField(doi, 300, 'DOI').replace(/^https?:\/\/(?:dx\.)?doi\.org\//i, '');
+    if (cleanDoi && !/^10\.\d{4,9}\/\S+$/.test(cleanDoi)) throw fail('DOI格式不正确');
+    await this._category(category);
+    if (typeof uploadPath !== 'string' || !uploadPath) throw fail('请选择要导入的 PDF');
+    let file;
+    try { file = await realpath(uploadPath); }
+    catch (e) { if (e.code === 'ENOENT') throw fail('上传的 PDF 已不存在，请重新选择'); throw e; }
+    const uploads = path.join(this.stateDir, 'uploads');
+    if (!inside(uploads, file) || !inside(this.root, file)) throw fail('只能导入本网站上传的 PDF');
+    if (path.extname(file).toLowerCase() !== '.pdf') throw fail('只能导入 PDF 文件');
+    const info = await stat(file);
+    if (!info.isFile() || !info.size) throw fail('PDF 文件为空');
+    if (info.size > MAX_IMPORT_BYTES) throw fail('PDF 超过 25 MB');
+    const handle = await open(file, 'r');
+    let header;
+    try {
+      header = Buffer.alloc(Math.min(1024, info.size));
+      await handle.read(header, 0, header.length, 0);
+    } finally { await handle.close(); }
+    if (!header.includes(Buffer.from('%PDF-'))) throw fail('文件内容不是有效PDF');
+    const duplicate = await this._catalogDuplicate(await fileDigest(file));
+    if (duplicate) {
+      const message = `该 PDF 已归档为 ${duplicate.literature_id}：${duplicate.title}`;
+      throw Object.assign(new Error(message), { statusCode: 409 });
+    }
+    const entry = { title: cleanTitle, authors: cleanAuthors, year: cleanYear || '待核实', doi: cleanDoi };
+    const day = new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit',
+    }).format(new Date()).replaceAll('-', '');
+    const batch = `${day}_local_${randomUUID().slice(0, 8)}`;
+    return this._enqueue({ batch, title: `导入 PDF：${cleanTitle}` }, async job => {
+      await this._category(category);
+      const batchesDir = libraryPaths(this.root).batches;
+      mkdirSync(batchesDir, { recursive: true });
+      if (!inside(this.root, await realpath(batchesDir))) throw fail('批次目录不能位于项目外');
+      const inputPath = path.join(this.stateDir, `${job.id}_input.json`);
+      if (!inside(this.root, await realpath(this.stateDir))) throw fail('任务输入目录逃逸');
+      await writeFile(inputPath, JSON.stringify([entry], null, 2), { flag: 'wx', mode: 0o600 });
+      await this._run(job, 'import', [inputPath, '--batch', batch, '--category', category]);
+      await this._run(job, 'attach', ['--batch', batch, '--item', 'I0001', '--file', file]);
+      await this._run(job, 'review', [
+        '--batch', batch, '--item', 'I0001', '--accept-identity',
+        '--note', '用户在网站导入时确认题名与作者与 PDF 首页一致',
+      ]);
+      await this._run(job, 'archive', ['--batch', batch, '--item', 'I0001']);
     });
   }
 

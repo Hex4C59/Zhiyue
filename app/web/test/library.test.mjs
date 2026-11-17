@@ -48,6 +48,76 @@ test('catalog enrichment and user-only reading persistence; refresh sees catalog
   await library.refresh(); assert.equal((await library.getLibrary()).stats.total, 2);
 });
 
+test('empty folders appear as categories and new folders continue numbering', async t => {
+  const { root, library } = await fixture(t);
+  await mkdir(path.join(root, 'papers/09_空分类'), { recursive: true });
+  let data = await library.getLibrary();
+  const empty = data.categories.find(c => c.id === '09_空分类');
+  assert.ok(empty);
+  assert.equal(empty.count, 0);
+  assert.deepEqual(empty.children, []);
+  assert.deepEqual(data.categories.map(c => c.id), ['08_SER', '09_空分类']);
+
+  const created = await library.createCategory('临床_应用');
+  assert.equal(created.category, '10_临床_应用');
+  assert.equal(await readFile(path.join(root, 'papers/10_临床_应用/.keep')).catch(e => e.code), 'ENOENT');
+  data = await library.getLibrary();
+  assert.equal(data.categories.find(c => c.id === '10_临床_应用').count, 0);
+
+  await assert.rejects(library.createCategory('临床_应用'), /同名文件夹已存在/);
+  await assert.rejects(library.createCategory('08_临床_应用'), /同名文件夹已存在/);
+  await assert.rejects(library.createCategory('../逃逸'), /不允许的字符/);
+  await assert.rejects(library.createCategory('CON'), /不能用作文件夹/);
+  await assert.rejects(library.createCategory('   '), /请输入文件夹名称/);
+  await assert.rejects(library.createCategory(123), /文件夹名称无效/);
+});
+
+test('renaming a category moves the folder and rewrites index references', async t => {
+  const { root, put, library } = await fixture(t);
+  await put('README.md', '# 索引\n\n- [L001](papers/08_SER/01_资源/paper.pdf)\n- 分类目录 `papers/08_SER`\n');
+  await put('notes/子目录/L001_笔记.md', '# Note\n\n原文：papers/08_SER/01_资源/paper.pdf\n');
+  await put('outputs/正常/汇报.md', '见 papers/08_SER/01_资源/paper.pdf\n');
+  await put('.zhiyue/catalog/文献总目录.csv', 'file\npapers/08_SER/01_资源/paper.pdf\n');
+  await put('.zhiyue/catalog/待核实项.json', JSON.stringify([{ path: 'papers/08_SER/01_资源/paper.pdf' }]));
+
+  const top = await library.renameCategory('08_SER', '', '语音识别');
+  assert.deepEqual(top, { category: '08_语音识别', subcategory: '' });
+  assert.equal(await readFile(path.join(root, 'papers/08_语音识别/01_资源/paper.pdf'), 'utf8'), '%PDF-test');
+  await assert.rejects(readFile(path.join(root, 'papers/08_SER/01_资源/paper.pdf')), /ENOENT/);
+  const readme = await readFile(path.join(root, 'README.md'), 'utf8');
+  assert.match(readme, /papers\/08_语音识别\/01_资源\/paper\.pdf/);
+  assert.doesNotMatch(readme, /08_SER/);
+  assert.match(await readFile(path.join(root, 'notes/子目录/L001_笔记.md'), 'utf8'), /08_语音识别/);
+  assert.match(await readFile(path.join(root, 'outputs/正常/汇报.md'), 'utf8'), /08_语音识别/);
+  assert.match(await readFile(path.join(root, '.zhiyue/catalog/文献总目录.csv'), 'utf8'), /08_语音识别/);
+  assert.match(await readFile(path.join(root, '.zhiyue/catalog/待核实项.json'), 'utf8'), /08_语音识别/);
+  let catalog = JSON.parse(await readFile(path.join(root, '.zhiyue/catalog/文献索引.json'), 'utf8'));
+  assert.equal(catalog.records[0].file, 'papers/08_语音识别/01_资源/paper.pdf');
+  assert.equal(catalog.records[0].source_record, 'papers/08_语音识别/01_资源/paper.来源.json');
+  let data = await library.getLibrary();
+  assert.equal(data.papers[0].category, '08_语音识别');
+  assert.equal(data.categories.find(c => c.id === '08_语音识别').children[0].name, '01_资源');
+
+  const child = await library.renameCategory('08_语音识别', '01_资源', '资源整理');
+  assert.deepEqual(child, { category: '08_语音识别', subcategory: '01_资源整理' });
+  catalog = JSON.parse(await readFile(path.join(root, '.zhiyue/catalog/文献索引.json'), 'utf8'));
+  assert.equal(catalog.records[0].file, 'papers/08_语音识别/01_资源整理/paper.pdf');
+  assert.match(await readFile(path.join(root, 'README.md'), 'utf8'), /01_资源整理/);
+  data = await library.getLibrary();
+  assert.equal(data.papers[0].subcategory, '01_资源整理');
+  assert.equal(data.categories.find(c => c.id === '08_语音识别').children[0].name, '01_资源整理');
+
+  assert.deepEqual(await library.renameCategory('08_语音识别', '', '语音识别'), {
+    category: '08_语音识别',
+    subcategory: '',
+  });
+  await library.createCategory('其它');
+  await assert.rejects(library.renameCategory('08_语音识别', '', '其它'), /同名文件夹已存在/);
+  await assert.rejects(library.renameCategory('../x', '', 'a'), /文件夹路径无效/);
+  await assert.rejects(library.renameCategory('08_语音识别', '..', 'a'), /文件夹路径无效/);
+  await assert.rejects(library.renameCategory('不存在', '', 'a'), /文件夹不存在/);
+});
+
 test('file allowlist denies traversal, unindexed PDFs, private outputs and active content', async t => {
   const { library, root, file, source, put } = await fixture(t);
   for (const rel of [file, source, 'notes/子目录/L001_笔记.md', 'notes/assets/image.png', 'synthesis/review.md', 'outputs/正常/image.jpg']) {

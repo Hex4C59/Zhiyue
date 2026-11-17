@@ -76,6 +76,7 @@ export function createWorkspace({
     toasts: [],
     pendingPatches: new Set(),
     refreshing: false,
+    importOpen: false,
   });
   // 浏览器存储可能被隐私设置禁用，读取失败时使用默认会话与布局。
   const remember = (key, value) => {
@@ -177,6 +178,29 @@ export function createWorkspace({
       state.libraryError = '';
     } catch (error) {
       state.libraryError = error.message;
+    }
+  }
+  async function createCategory(name) {
+    try {
+      const result = await api('/api/categories', json('POST', { name }));
+      await loadLibrary();
+      return result;
+    } catch (error) {
+      toast(error.message, true);
+      return null;
+    }
+  }
+  async function renameCategory(category, subcategory, name) {
+    try {
+      const result = await api(
+        '/api/categories/rename',
+        json('POST', { category, subcategory, name }),
+      );
+      await loadLibrary();
+      return result;
+    } catch (error) {
+      toast(error.message, true);
+      return null;
     }
   }
   async function patchPaper(id, update) {
@@ -314,20 +338,23 @@ export function createWorkspace({
       toast(error.message, true);
     }
   }
+  async function uploadFile(file) {
+    const data = await api('/api/uploads', {
+      method: 'POST',
+      headers: {
+        'X-Filename': encodeURIComponent(file.name),
+        'Content-Type': file.type || 'application/octet-stream',
+      },
+      body: file,
+    });
+    if (!data.id) throw new Error('上传接口没有返回附件编号');
+    return data;
+  }
   async function uploadOne(item) {
     item.status = 'uploading';
     item.error = '';
     try {
-      const data = await api('/api/uploads', {
-        method: 'POST',
-        headers: {
-          'X-Filename': encodeURIComponent(item.file.name),
-          'Content-Type': item.file.type || 'application/octet-stream',
-        },
-        body: item.file,
-      });
-      if (!data.id) throw new Error('上传接口没有返回附件编号');
-      Object.assign(item, data, { status: 'ready' });
+      Object.assign(item, await uploadFile(item.file), { status: 'ready' });
     } catch (error) {
       item.status = 'error';
       item.error = error.message;
@@ -354,6 +381,15 @@ export function createWorkspace({
       state.attachments.push(item);
       await uploadOne(item);
     }
+  }
+  async function importPdf({ file, title, authors, year, doi, category }) {
+    const upload = await uploadFile(file);
+    const job = await api(
+      '/api/library/import',
+      json('POST', { uploadId: upload.id, title, authors, year, doi, category }),
+    );
+    state.jobs.set(job.id, job);
+    return job;
   }
   async function resolveNoteDraft(id, action) {
     const chat = state.chat,
@@ -575,6 +611,8 @@ export function createWorkspace({
     selectPaper,
     resetFilters,
     loadLibrary,
+    createCategory,
+    renameCategory,
     patchPaper,
     loadStatus,
     reconnectAgent,
@@ -586,6 +624,7 @@ export function createWorkspace({
     interrupt,
     uploadFiles,
     uploadOne,
+    importPdf,
     decideApproval,
     saveNoteDraft,
     discardNoteDraft,

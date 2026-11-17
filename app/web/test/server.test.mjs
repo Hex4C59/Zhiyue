@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 import { createApp,checkRequest } from '../src/server.mjs';
 
 test('本地HTTP服务提供目录、PDF范围读取和上传，拒绝跨站与越界资料',async t=>{
@@ -23,6 +24,18 @@ test('本地HTTP服务提供目录、PDF范围读取和上传，拒绝跨站与�
   }
   assert.equal((await fetch(base + '/dist/../frontend/main.js')).status, 404);
   let response=await fetch(base+'/api/library');assert.equal(response.status,200);assert.equal((await response.json()).papers[0].readStatus,'unread');
+  const postCategory=(route,body)=>fetch(base+route,{
+    method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)
+  });
+  response=await postCategory('/api/categories',{name:'新分类'});
+  assert.equal(response.status,201);assert.equal((await response.json()).category,'01_新分类');
+  assert.ok((await fs.stat(path.join(root,'papers/01_新分类'))).isDirectory());
+  response=await postCategory('/api/categories',{name:'新分类'});
+  assert.equal(response.status,409);
+  response=await postCategory('/api/categories/rename',{category:'01_新分类',subcategory:'',name:'改名分类'});
+  assert.equal(response.status,200);assert.equal((await response.json()).category,'01_改名分类');
+  const libraryAfterRename=await (await fetch(base+'/api/library')).json();
+  assert.ok(libraryAfterRename.categories.some(category=>category.id==='01_改名分类'));
   response=await fetch(base+'/api/file?path='+encodeURIComponent('papers/论文.pdf'),{headers:{Range:'bytes=0-3'}});assert.equal(response.status,206);assert.equal(await response.text(),'%PDF');assert.match(response.headers.get('content-range'),/^bytes 0-3\//);
   response=await fetch(base+'/api/file?path='+encodeURIComponent('papers/../.zhiyue/catalog/文献索引.json'));assert.equal(response.status,403);
   response=await fetch(base+'/api/chats',{method:'POST',headers:{'Content-Type':'application/json',Origin:'https://evil.example'},body:'{}'});assert.equal(response.status,403);
@@ -37,6 +50,23 @@ test('本地HTTP服务提供目录、PDF范围读取和上传，拒绝跨站与�
   response=await fetch(base+'/api/uploads/'+attachment.id);assert.equal(await response.text(),'待解释的文字');
   response=await fetch(base+'/api/uploads',{method:'POST',headers:{'X-Filename':'fake.png','Content-Type':'application/octet-stream'},body:'<script>attack</script>'});assert.equal(response.status,400);
   response=await fetch(base+'/api/uploads',{method:'POST',headers:{'X-Filename':'test.html','Content-Type':'application/octet-stream'},body:'html'});assert.equal(response.status,415);
+  const postJson=(route,body)=>fetch(base+route,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  response=await postJson('/api/library/import',{uploadId:attachment.id});
+  assert.equal(response.status,415);
+  response=await postJson('/api/library/import',{});
+  assert.equal(response.status,400);
+  const pdfBody='%PDF-1.4\nduplicate-import';
+  response=await fetch(base+'/api/uploads',{method:'POST',headers:{'X-Filename':'import.pdf','Content-Type':'application/pdf'},body:pdfBody});
+  assert.equal(response.status,201);
+  const pdfUpload=await response.json();
+  response=await postJson('/api/library/import',{uploadId:pdfUpload.id});
+  assert.equal(response.status,400);
+  assert.match((await response.json()).error,/题名/);
+  const pdfHash=createHash('sha256').update(pdfBody).digest('hex');
+  await fs.writeFile(path.join(root,'.zhiyue/catalog','文献索引.json'),JSON.stringify({records:[{literature_id:'L001',title:'测试论文',authors:['作者'],year:2001,file:'papers/论文.pdf',versions:[],sha256:pdfHash,file_exists:true}]}));
+  response=await postJson('/api/library/import',{uploadId:pdfUpload.id,title:'重复导入'});
+  assert.equal(response.status,409);
+  assert.match((await response.json()).error,/L001/);
   response=await fetch(base+'/api/downloads/action',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({batch:'../x',action:'delete'})});assert.equal(response.status,400);
   assert.throws(()=>checkRequest({headers:{host:'evil.example'},method:'GET',url:'/api/library'}),/本机/);
 });

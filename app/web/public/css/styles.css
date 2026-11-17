@@ -65,14 +65,28 @@ svg { width:17px; height:17px; flex-shrink:0; vertical-align:middle; stroke:curr
 .nav-item.active { color:var(--ink); background:#ebebed; font-weight:600; }
 .count { margin-left:auto; font-size:11px; font-weight:400; color:#777b82; font-variant-numeric:tabular-nums; }
 .section-label { color:#92959c; font-size:11px; margin:27px 10px 9px; }
+.section-head { display:flex; align-items:center; justify-content:space-between; margin:27px 8px 6px 10px; }
+.section-head .section-label { margin:0; }
+.category-add { width:22px; height:22px; border-radius:4px; display:inline-flex; align-items:center; justify-content:center; flex-shrink:0; color:#92959c; }
+.category-add:hover { background:#ececee; color:var(--ink); }
+.category-add svg { width:14px; height:14px; }
 .categories { overflow:auto; flex:1; min-height:0; }
 .category-button { display:flex; align-items:center; width:100%; text-align:left; padding:9px 10px; color:#6c6f76; gap:8px; border-radius:5px; line-height:1.55; font-size:12px; }
 .category-button svg { width:15px; height:15px; color:#90939a; }
 .category-button:hover { background:#f0f0f1; color:var(--ink); }
 .category-button.active { background:#ebebed; color:var(--ink); }
-.cat-name { flex:1; }
+.cat-name { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .cat-count { font-size:10px; color:#9699a0; font-variant-numeric:tabular-nums; }
 .category-child { padding-left:29px; font-size:12px; }
+.category-row { position:relative; display:flex; align-items:center; }
+.category-row .category-button { padding-right:34px; }
+.category-action { position:absolute; right:4px; width:24px; height:24px; border-radius:4px; display:flex; align-items:center; justify-content:center; color:#8d9097; opacity:0; visibility:hidden; transition:opacity 120ms; }
+.category-row:hover .category-action,.category-row:focus-within .category-action { opacity:1; visibility:visible; }
+.category-action:hover { background:#e6e6e9; color:var(--ink); }
+.category-action svg { width:13px; height:13px; }
+.category-editor { display:flex; padding:2px 10px; }
+.category-editor.category-child { padding-left:29px; }
+.category-editor input { width:100%; min-width:0; padding:7px 9px; font-size:12px; border-radius:5px; }
 .sidebar-bottom { display:flex; align-items:center; gap:8px; color:#95989e; font-size:11px; padding:14px 10px 0; margin-top:16px; }
 .workspace-dot { width:5px; height:5px; background:#92969b; border-radius:50%; }
 .main { flex:1; min-width:0; display:flex; flex-direction:column; }
@@ -335,6 +349,44 @@ pre,code,kbd,samp { font-family:var(--font-mono); }
 .job-card details { margin-top:12px; font-size:11px; color:var(--muted); }
 .job-log { font:11px/1.8 var(--font-mono); background:#f7f7f9; border-radius:4px; padding:11px; white-space:pre-wrap; overflow-wrap:anywhere; max-height:260px; overflow:auto; color:#797e88; }
 .batch-actions { display:flex; flex-wrap:wrap; gap:6px; margin-top:12px; }
+
+/* Import PDF */
+.empty-actions { display:flex; justify-content:center; gap:8px; margin-top:14px; }
+.import-dialog { width:min(620px,calc(100vw - 32px)); max-height:calc(100dvh - 48px); padding:0; border:0; border-radius:9px; background:transparent; color:var(--text); }
+.import-dialog::backdrop { background:#1d1e2047; }
+.import-sheet { display:flex; flex-direction:column; max-height:calc(100dvh - 48px); border-radius:9px; background:#fff; box-shadow:0 18px 60px #0003; overflow:hidden; }
+.import-head { display:flex; align-items:flex-start; justify-content:space-between; gap:20px; padding:20px 22px 14px; border-bottom:1px solid #f0f0f2; }
+.import-head h2 { margin:0; font-size:16px; font-weight:600; }
+.import-head p { margin:6px 0 0; color:var(--muted); font-size:12px; }
+.import-body { display:grid; gap:16px; padding:18px 22px; overflow:auto; }
+.import-file { display:flex; align-items:center; gap:13px; width:100%; padding:17px; text-align:left; border:1px dashed #d6d7db; border-radius:7px; background:#fbfbfc; color:var(--muted); }
+.import-file:hover,.import-file.dragging { border-color:#a9acb3; background:#f5f5f7; }
+.import-file-icon { display:grid; place-items:center; width:36px; height:36px; flex-shrink:0; border-radius:6px; background:#efeff2; color:#6c7078; }
+.import-file-icon svg { width:18px; height:18px; }
+.import-file-text { display:flex; flex-direction:column; gap:5px; min-width:0; }
+.import-file-text strong { max-width:100%; overflow:hidden; color:var(--ink); font-size:13px; font-weight:500; text-overflow:ellipsis; white-space:nowrap; }
+.import-file-text small { color:#8a8e95; font-size:11px; }
+.import-fields { display:grid; grid-template-columns:1fr 1fr; gap:13px 14px; }
+.import-field { display:flex; flex-direction:column; gap:6px; min-width:0; font-size:12px; }
+.import-field.wide { grid-column:1/-1; }
+.import-field>span { color:#555960; }
+.import-field em { margin-left:3px; color:var(--danger); font-size:10px; font-style:normal; }
+.import-field small { margin-left:4px; color:#9a9da3; font-size:10px; }
+.import-field input,.import-field select { width:100%; font-size:13px; }
+.import-check { display:flex; align-items:flex-start; gap:9px; color:#666a71; font-size:12px; line-height:1.6; cursor:pointer; }
+.import-check input { margin:2px 0 0; accent-color:#3b3c40; }
+.import-error { margin:0; padding:9px 11px; border-radius:5px; background:#fbf1f0; color:var(--danger); font-size:12px; line-height:1.6; }
+.import-progress { display:flex; align-items:center; color:var(--muted); font-size:12px; }
+.import-log-wrap { color:var(--muted); font-size:11px; }
+.import-log-wrap summary { cursor:pointer; }
+.import-log { max-height:180px; margin:9px 0 0; padding:11px; overflow:auto; border-radius:5px; background:#f7f7f9; color:#797e88; font:11px/1.7 var(--font-mono); white-space:pre-wrap; overflow-wrap:anywhere; }
+.import-actions { display:flex; justify-content:flex-end; gap:8px; padding:14px 22px 18px; border-top:1px solid #f0f0f2; }
+@media(max-width:560px) {
+  .import-dialog { width:calc(100vw - 20px); }
+  .import-fields { grid-template-columns:1fr; }
+  .import-head { padding-left:16px; padding-right:16px; }
+  .import-body,.import-actions { padding-left:16px; padding-right:16px; }
+}
 .batch-actions button { font-size:11px; padding:7px 9px; }
 .toast-region { position:fixed; right:22px; bottom:22px; z-index:100; display:grid; gap:8px; max-width:min(430px,calc(100vw - 32px)); }
 .toast { padding:12px 17px; background:#383b43; color:#fff; border-radius:6px; box-shadow:0 4px 18px #0001; font-size:12px; line-height:1.7; overflow-wrap:anywhere; }

@@ -1,6 +1,7 @@
 <script setup>
 import { computed, inject, reactive, ref } from 'vue';
 import { statusLabels } from '../lib/workspace.js';
+import { categoryChoices } from '../lib/content.js';
 import Icon from './Icon.vue';
 const workspace = inject('workspace'),
   state = workspace.state;
@@ -14,24 +15,7 @@ const form = reactive({
 });
 const submitting = ref(false),
   pendingActions = reactive(new Set());
-const categories = computed(() => {
-  const choices = new Map([[defaultCategory, '情感综述调研 / 网站导入（默认）']]);
-  for (const category of state.categories) {
-    const id = typeof category === 'string' ? category : category.id || category.name;
-    if (!id) continue;
-    const parent = String(id)
-      .replace(/\\/g, '/')
-      .replace(/^papers\//, '')
-      .split('/')[0];
-    const value = `papers/${parent}/网站导入`;
-    if (!choices.has(value))
-      choices.set(
-        value,
-        `${String(typeof category === 'string' ? category : category.name || parent).replace(/^\d+_/, '')} / 网站导入`,
-      );
-  }
-  return [...choices];
-});
+const categories = computed(() => categoryChoices(state.categories, defaultCategory));
 const jobs = computed(() => [...state.jobs.values()].reverse());
 const counts = (value) =>
   Object.entries(value || {})
