@@ -123,8 +123,16 @@ body.resizing-panels,body.resizing-panels * { cursor:col-resize!important; user-
 .search-box kbd { font:11px var(--font-mono); color:#a3a6ad; }
 .filter-row { display:flex; gap:6px; margin-top:9px; }
 .filter-row select { min-width:0; flex:1; background:#fff; border-color:#ebebee; font-size:11px; }
-.list-meta { display:flex; align-items:center; justify-content:space-between; margin:17px 0 10px; font-size:11px; color:#90939a; }
+.list-meta { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:6px 10px; margin:17px 0 10px; font-size:11px; color:#90939a; }
+.list-meta-info { display:flex; align-items:center; gap:8px; }
+.list-meta-actions { display:flex; align-items:center; gap:2px; margin-left:auto; }
 .list-meta select { background:none; border:0; font-size:11px; padding:0; max-width:118px; color:var(--muted); }
+.list-action { display:inline-flex; align-items:center; gap:4px; height:26px; padding:0 6px; border:1px solid #e4e4e7; border-radius:5px; background:#fff; color:#5f636b; font-size:11px; white-space:nowrap; }
+.list-action:hover { background:#f6f6f7; color:var(--ink); }
+.list-action svg { width:14px; height:14px; }
+.icon-button.compact { width:26px; height:26px; }
+.icon-button.compact svg { width:15px; height:15px; }
+.icon-button.refreshing svg { animation:spin .9s linear infinite; }
 .paper-list { overflow-y:auto; flex:1; padding:0 8px 24px; scrollbar-width:thin; }
 .paper-card { padding:13px 12px 14px; border:0; border-bottom:1px solid #f0f0f1; border-radius:0; position:relative; cursor:pointer; margin:0; }
 .paper-card:hover { background:#fafafa; }
@@ -471,8 +479,6 @@ pre,code,kbd,samp { font-family:var(--font-mono); }
   .nav-item .count { display:none; }
   .topbar { height:54px; min-height:54px; padding:0 15px; }
   h1 { font-size:14px; }
-  .top-actions .button { font-size:0; padding:7px; border:0; }
-  .top-actions .button svg { width:16px; height:16px; }
   .library-layout,.library-layout[data-panel="chat"] { display:flex; }
   .library-layout>.paper-panel,.library-layout>.reader-panel,.library-layout>.chat-panel { display:none; width:100%; border:0; }
   .library-layout[data-panel="list"]>.paper-panel { display:flex; }

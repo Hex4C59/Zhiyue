@@ -7,7 +7,6 @@ import ReaderPane from './components/ReaderPane.vue';
 import AssistantPane from './components/AssistantPane.vue';
 import DownloadPanel from './components/DownloadPanel.vue';
 import ImportPaperDialog from './components/ImportPaperDialog.vue';
-import Icon from './components/Icon.vue';
 
 const props = defineProps({ workspace: { type: Object, required: true } });
 provide('workspace', props.workspace);
@@ -56,24 +55,6 @@ onBeforeUnmount(() => {
           <span id="library-summary" class="muted"
             >{{ state.papers.length }} 篇文献 · {{ noteCount }} 篇有笔记</span
           >
-          <button
-            v-if="state.view === 'library'"
-            id="import-paper"
-            class="button primary"
-            title="从本机导入 PDF 并归档"
-            @click="state.importOpen = true"
-          >
-            <Icon name="upload" /><span>导入 PDF</span>
-          </button>
-          <button
-            id="refresh-catalog"
-            class="button subtle"
-            title="重新扫描目录并更新索引"
-            :disabled="state.refreshing"
-            @click="workspace.refreshCatalog"
-          >
-            <Icon name="refresh" /><span>刷新索引</span>
-          </button>
         </div>
       </header>
       <div v-show="state.view === 'library'" class="mobile-tabs" aria-label="工作面板">

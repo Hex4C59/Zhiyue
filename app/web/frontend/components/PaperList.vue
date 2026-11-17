@@ -93,13 +93,36 @@ const papers = computed(() => {
         </button>
       </div>
       <div class="list-meta">
-        <span id="result-count">{{ state.libraryError ? '加载失败' : `${papers.length} 篇文献` }}</span>
-        <select id="sort" v-model="state.sort" aria-label="排序">
-          <option value="id">编号顺序</option>
-          <option value="year-desc">年份从新到旧</option>
-          <option value="year-asc">年份从旧到新</option>
-          <option value="title">题名顺序</option>
-        </select>
+        <div class="list-meta-info">
+          <span id="result-count">{{ state.libraryError ? '加载失败' : `${papers.length} 篇文献` }}</span>
+          <select id="sort" v-model="state.sort" aria-label="排序">
+            <option value="id">编号顺序</option>
+            <option value="year-desc">年份从新到旧</option>
+            <option value="year-asc">年份从旧到新</option>
+            <option value="title">题名顺序</option>
+          </select>
+        </div>
+        <div class="list-meta-actions">
+          <button
+            id="import-paper"
+            class="list-action"
+            title="从本机导入 PDF 并归档"
+            @click="state.importOpen = true"
+          >
+            <Icon name="upload" /><span>导入 PDF</span>
+          </button>
+          <button
+            id="refresh-catalog"
+            class="icon-button compact"
+            :class="{ refreshing: state.refreshing }"
+            title="重新扫描目录并更新索引"
+            aria-label="刷新索引"
+            :disabled="state.refreshing"
+            @click="workspace.refreshCatalog"
+          >
+            <Icon name="refresh" />
+          </button>
+        </div>
       </div>
     </div>
     <div id="paper-list" class="paper-list" tabindex="0" aria-label="论文列表">

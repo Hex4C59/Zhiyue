@@ -3224,33 +3224,33 @@ var mo = {
 	id: "paper-panel",
 	class: "paper-panel",
 	"aria-label": "文献筛选与列表"
-}, Po = { class: "list-controls" }, Fo = { class: "search-box" }, Io = { class: "filter-row" }, Lo = ["value"], Ro = ["aria-pressed"], zo = { class: "list-meta" }, Bo = { id: "result-count" }, Vo = {
+}, Po = { class: "list-controls" }, Fo = { class: "search-box" }, Io = { class: "filter-row" }, Lo = ["value"], Ro = ["aria-pressed"], zo = { class: "list-meta" }, Bo = { class: "list-meta-info" }, Vo = { id: "result-count" }, Ho = { class: "list-meta-actions" }, Uo = ["disabled"], Wo = {
 	id: "paper-list",
 	class: "paper-list",
 	tabindex: "0",
 	"aria-label": "论文列表"
-}, Ho = {
+}, Go = {
 	key: 0,
 	class: "empty"
-}, Uo = { class: "error-text" }, Wo = [
+}, Ko = { class: "error-text" }, qo = [
 	"data-paper",
 	"aria-label",
 	"aria-current",
 	"onClick",
 	"onKeydown"
-], Go = { class: "paper-top" }, Ko = { class: "paper-id" }, qo = [
+], Jo = { class: "paper-top" }, Yo = { class: "paper-id" }, Xo = [
 	"aria-pressed",
 	"title",
 	"aria-label",
 	"disabled",
 	"onClick"
-], Jo = ["title"], Yo = { class: "paper-bottom" }, Xo = ["title"], Zo = {
+], Zo = ["title"], Qo = { class: "paper-bottom" }, $o = ["title"], es = {
 	key: 2,
 	class: "empty"
-}, Qo = {
+}, ts = {
 	key: 0,
 	class: "empty-art"
-}, $o = { class: "empty-actions" }, es = {
+}, ns = { class: "empty-actions" }, rs = {
 	__name: "PaperList",
 	setup(e) {
 		let t = Mn("workspace"), n = t.state, r = X(() => [...new Set(n.papers.map((e) => e.year).filter(Boolean).map(String))].sort((e, t) => (Number(t) || 0) - (Number(e) || 0))), i = X(() => !!(n.query.trim() || n.year || n.read || n.starred)), a = X(() => i.value ? "没有匹配的文献" : n.category ? "这个文件夹还没有文献" : "文献库还没有文献"), o = X(() => {
@@ -3279,19 +3279,19 @@ var mo = {
 						placeholder: "搜索题名、作者、编号…",
 						"aria-label": "搜索文献"
 					}, null, 512), [[Fa, R(n).query]]),
-					s[8] ||= K("kbd", null, "/", -1)
+					s[10] ||= K("kbd", null, "/", -1)
 				]),
 				K("div", Io, [
 					B(K("select", {
 						id: "year-filter",
 						"onUpdate:modelValue": s[1] ||= (e) => R(n).year = e,
 						"aria-label": "按年份筛选"
-					}, [s[9] ||= K("option", { value: "" }, "全部年份", -1), (W(!0), G(U, null, V(r.value, (e) => (W(), G("option", { key: e }, j(e), 1))), 128))], 512), [[Ra, R(n).year]]),
+					}, [s[11] ||= K("option", { value: "" }, "全部年份", -1), (W(!0), G(U, null, V(r.value, (e) => (W(), G("option", { key: e }, j(e), 1))), 128))], 512), [[Ra, R(n).year]]),
 					B(K("select", {
 						id: "read-filter",
 						"onUpdate:modelValue": s[2] ||= (e) => R(n).read = e,
 						"aria-label": "按阅读状态筛选"
-					}, [s[10] ||= K("option", { value: "" }, "全部进度", -1), (W(!0), G(U, null, V(R(fo), (e, t) => (W(), G("option", {
+					}, [s[12] ||= K("option", { value: "" }, "全部进度", -1), (W(!0), G(U, null, V(R(fo), (e, t) => (W(), G("option", {
 						key: t,
 						value: t
 					}, j(e), 9, Lo))), 128))], 512), [[Ra, R(n).read]]),
@@ -3304,20 +3304,32 @@ var mo = {
 						onClick: s[3] ||= (e) => R(n).starred = !R(n).starred
 					}, [q($, { name: "star" })], 10, Ro)
 				]),
-				K("div", zo, [K("span", Bo, j(R(n).libraryError ? "加载失败" : `${o.value.length} 篇文献`), 1), B(K("select", {
+				K("div", zo, [K("div", Bo, [K("span", Vo, j(R(n).libraryError ? "加载失败" : `${o.value.length} 篇文献`), 1), B(K("select", {
 					id: "sort",
 					"onUpdate:modelValue": s[4] ||= (e) => R(n).sort = e,
 					"aria-label": "排序"
-				}, [...s[11] ||= [
+				}, [...s[13] ||= [
 					K("option", { value: "id" }, "编号顺序", -1),
 					K("option", { value: "year-desc" }, "年份从新到旧", -1),
 					K("option", { value: "year-asc" }, "年份从旧到新", -1),
 					K("option", { value: "title" }, "题名顺序", -1)
-				]], 512), [[Ra, R(n).sort]])])
+				]], 512), [[Ra, R(n).sort]])]), K("div", Ho, [K("button", {
+					id: "import-paper",
+					class: "list-action",
+					title: "从本机导入 PDF 并归档",
+					onClick: s[5] ||= (e) => R(n).importOpen = !0
+				}, [q($, { name: "upload" }), s[14] ||= K("span", null, "导入 PDF", -1)]), K("button", {
+					id: "refresh-catalog",
+					class: k(["icon-button compact", { refreshing: R(n).refreshing }]),
+					title: "重新扫描目录并更新索引",
+					"aria-label": "刷新索引",
+					disabled: R(n).refreshing,
+					onClick: s[6] ||= (...e) => R(t).refreshCatalog && R(t).refreshCatalog(...e)
+				}, [q($, { name: "refresh" })], 10, Uo)])])
 			]),
-			K("div", Vo, [R(n).libraryError ? (W(), G("div", Ho, [K("p", Uo, j(R(n).libraryError), 1), K("button", {
+			K("div", Wo, [R(n).libraryError ? (W(), G("div", Go, [K("p", Ko, j(R(n).libraryError), 1), K("button", {
 				class: "button subtle",
-				onClick: s[5] ||= (...e) => R(t).loadLibrary && R(t).loadLibrary(...e)
+				onClick: s[7] ||= (...e) => R(t).loadLibrary && R(t).loadLibrary(...e)
 			}, "重新连接")])) : (W(!0), G(U, { key: 1 }, V(o.value, (e) => (W(), G("article", {
 				key: e.literature_id,
 				class: k(["paper-card", { active: R(n).current === e.literature_id }]),
@@ -3328,8 +3340,8 @@ var mo = {
 				onClick: (n) => R(t).selectPaper(e.literature_id),
 				onKeydown: [Ka(Z((n) => R(t).selectPaper(e.literature_id), ["self", "prevent"]), ["enter"]), Ka(Z((n) => R(t).selectPaper(e.literature_id), ["self", "prevent"]), ["space"])]
 			}, [
-				K("div", Go, [
-					K("span", Ko, j(e.literature_id), 1),
+				K("div", Jo, [
+					K("span", Yo, j(e.literature_id), 1),
 					K("span", null, "· " + j(e.year || "年份待核实"), 1),
 					K("button", {
 						class: k(["icon-button", { selected: e.starred }]),
@@ -3338,30 +3350,30 @@ var mo = {
 						"aria-label": e.starred ? "取消收藏" : "收藏论文",
 						disabled: R(n).pendingPatches.has(e.literature_id),
 						onClick: Z((n) => R(t).patchPaper(e.literature_id, { starred: !e.starred }), ["stop"])
-					}, [q($, { name: "star" })], 10, qo)
+					}, [q($, { name: "star" })], 10, Xo)
 				]),
 				K("h3", null, j(R(ao)(e)), 1),
 				K("div", {
 					class: "paper-authors",
 					title: R(oo)(e)
-				}, j(R(oo)(e)), 9, Jo),
-				K("div", Yo, [K("span", {
+				}, j(R(oo)(e)), 9, Zo),
+				K("div", Qo, [K("span", {
 					class: "tag",
 					title: e.subcategory || e.venue || ""
-				}, j((e.subcategory || e.venue || e.category || "未分类").replace(/^\d+_/, "")), 9, Xo), K("span", { class: k(R(po)(e.readStatus)) }, [s[12] ||= K("i", { class: "read-dot" }, null, -1), J(j(R(fo)[R(po)(e.readStatus)]), 1)], 2)])
-			], 42, Wo))), 128)), !R(n).libraryError && !o.value.length ? (W(), G("div", Zo, [
-				!i.value && !R(n).category ? (W(), G("span", Qo, [q($, { name: "library" })])) : Y("", !0),
+				}, j((e.subcategory || e.venue || e.category || "未分类").replace(/^\d+_/, "")), 9, $o), K("span", { class: k(R(po)(e.readStatus)) }, [s[15] ||= K("i", { class: "read-dot" }, null, -1), J(j(R(fo)[R(po)(e.readStatus)]), 1)], 2)])
+			], 42, qo))), 128)), !R(n).libraryError && !o.value.length ? (W(), G("div", es, [
+				!i.value && !R(n).category ? (W(), G("span", ts, [q($, { name: "library" })])) : Y("", !0),
 				K("p", null, j(a.value), 1),
-				K("div", $o, [!i.value && !R(n).category ? (W(), G("button", {
+				K("div", ns, [!i.value && !R(n).category ? (W(), G("button", {
 					key: 0,
 					id: "import-paper-empty",
 					class: "button primary",
-					onClick: s[6] ||= (e) => R(n).importOpen = !0
-				}, [q($, { name: "upload" }), s[13] ||= J("导入 PDF ", -1)])) : Y("", !0), i.value || R(n).category ? (W(), G("button", {
+					onClick: s[8] ||= (e) => R(n).importOpen = !0
+				}, [q($, { name: "upload" }), s[16] ||= J("导入 PDF ", -1)])) : Y("", !0), i.value || R(n).category ? (W(), G("button", {
 					key: 1,
 					id: "reset-filters",
 					class: "button subtle",
-					onClick: s[7] ||= (...e) => R(t).resetFilters && R(t).resetFilters(...e)
+					onClick: s[9] ||= (...e) => R(t).resetFilters && R(t).resetFilters(...e)
 				}, j(i.value ? "清除筛选" : "查看全部文献"), 1)) : Y("", !0)])
 			])) : Y("", !0)]),
 			q(_o, { kind: "papers" })
@@ -3369,7 +3381,7 @@ var mo = {
 	}
 };
 // app/web/frontend/lib/reader.js
-function ts({ state: e, api: t, toast: n, patchPaper: r, setPanel: i, setDraft: a, scope: o }) {
+function is({ state: e, api: t, toast: n, patchPaper: r, setPanel: i, setDraft: a, scope: o }) {
 	let s = (e) => o.querySelector(e), c = (e) => [...o.querySelectorAll(e)], l = () => e.papers.find((t) => t.literature_id === e.current), u = new o.ownerDocument.defaultView.AbortController();
 	function d() {
 		let t = e.pdfSession;
@@ -3692,12 +3704,12 @@ function ts({ state: e, api: t, toast: n, patchPaper: r, setPanel: i, setDraft: 
 	};
 }
 // app/web/frontend/components/ReaderPane.vue
-var ns = {
+var as = {
 	__name: "ReaderPane",
 	setup(e) {
 		let t = Mn("workspace"), n = t.state, r = /* @__PURE__ */ L(null), i;
 		return $n(() => {
-			i = ts({
+			i = is({
 				state: n,
 				scope: r.value,
 				api: t.api,
@@ -3735,20 +3747,20 @@ var ns = {
 			}, null, -1)
 		]], 512));
 	}
-}, rs = [
+}, os = [
 	"disabled",
 	"aria-label",
 	"aria-expanded",
 	"title"
-], is = { id: "model-name" }, as = { class: "model-search" }, os = [
+], ss = { id: "model-name" }, cs = { class: "model-search" }, ls = [
 	"data-model-value",
 	"aria-selected",
 	"title",
 	"onClick"
-], ss = {
+], us = {
 	key: 0,
 	class: "model-empty"
-}, cs = {
+}, ds = {
 	__name: "ModelPicker",
 	setup(e) {
 		let t = Mn("workspace"), n = t.state, r = /* @__PURE__ */ L(!1), i = /* @__PURE__ */ L(""), a = /* @__PURE__ */ L(null), o = /* @__PURE__ */ L(null), s = /* @__PURE__ */ L(null), c = X(() => [{
@@ -3806,12 +3818,12 @@ var ns = {
 			"aria-controls": "model-list",
 			title: u.value.label,
 			onClick: p
-		}, [K("span", is, j(u.value.label.replace(/ · 默认$/, "").split(" · ")[0]), 1), q($, { name: "chevron" })], 8, rs), r.value ? (W(), G("div", {
+		}, [K("span", ss, j(u.value.label.replace(/ · 默认$/, "").split(" · ")[0]), 1), q($, { name: "chevron" })], 8, os), r.value ? (W(), G("div", {
 			key: 0,
 			id: "model-menu",
 			class: "model-menu",
 			onKeydown: h
-		}, [K("div", as, [q($, { name: "search" }), B(K("input", {
+		}, [K("div", cs, [q($, { name: "search" }), B(K("input", {
 			id: "model-search",
 			ref_key: "search",
 			ref: o,
@@ -3841,15 +3853,15 @@ var ns = {
 		}, [K("span", null, j(e.label.replace(/ · 默认$/, "")), 1), e.id === R(n).model ? (W(), si($, {
 			key: 0,
 			name: "check"
-		})) : Y("", !0)], 8, os))), 128)), l.value.length ? Y("", !0) : (W(), G("div", ss, "未找到模型"))], 512)], 32)) : Y("", !0)], 64));
+		})) : Y("", !0)], 8, ls))), 128)), l.value.length ? Y("", !0) : (W(), G("div", us, "未找到模型"))], 512)], 32)) : Y("", !0)], 64));
 	}
-}, ls = {
+}, fs = {
 	id: "attachments",
 	class: "attachments"
-}, us = ["src", "alt"], ds = ["title"], fs = ["onClick"], ps = ["aria-label", "onClick"], ms = { class: "composer-toolbar" }, hs = { class: "composer-tools" }, gs = {
+}, ps = ["src", "alt"], ms = ["title"], hs = ["onClick"], gs = ["aria-label", "onClick"], _s = { class: "composer-toolbar" }, vs = { class: "composer-tools" }, ys = {
 	class: "icon-button upload-button",
 	title: "添加附件"
-}, _s = ["disabled"], vs = ["disabled"], ys = {
+}, bs = ["disabled"], xs = ["disabled"], Ss = {
 	__name: "Composer",
 	setup(e) {
 		let t = Mn("workspace"), n = t.state, { canSend: r, generating: i } = t, a = /* @__PURE__ */ L(null), o = /* @__PURE__ */ L(null), s = /* @__PURE__ */ L(!1);
@@ -3890,7 +3902,7 @@ var ns = {
 			onDragover: c[2] ||= Z(() => {}, ["prevent"]),
 			onDrop: c[3] ||= Z((e) => R(t).uploadFiles([...e.dataTransfer?.files || []]), ["prevent"])
 		}, [
-			K("div", ls, [(W(!0), G(U, null, V(R(n).attachments, (e) => (W(), G("div", {
+			K("div", fs, [(W(!0), G(U, null, V(R(n).attachments, (e) => (W(), G("div", {
 				key: e.key,
 				class: k(["attachment", { error: e.status === "error" }])
 			}, [
@@ -3898,24 +3910,24 @@ var ns = {
 					key: 0,
 					src: `/api/uploads/${R(ro)(e.id)}`,
 					alt: e.name
-				}, null, 8, us)) : (W(), si($, {
+				}, null, 8, ps)) : (W(), si($, {
 					key: 1,
 					name: "attach"
 				})),
 				K("span", {
 					class: "attachment-name",
 					title: e.error || e.name
-				}, j(e.name) + " " + j(e.status === "uploading" ? " · 上传中" : e.status === "error" ? " · 失败" : ""), 9, ds),
+				}, j(e.name) + " " + j(e.status === "uploading" ? " · 上传中" : e.status === "error" ? " · 失败" : ""), 9, ms),
 				e.status === "error" ? (W(), G("button", {
 					key: 2,
 					type: "button",
 					onClick: (n) => R(t).uploadOne(e)
-				}, "重试", 8, fs)) : Y("", !0),
+				}, "重试", 8, hs)) : Y("", !0),
 				K("button", {
 					type: "button",
 					"aria-label": `移除附件 ${e.name}`,
 					onClick: (t) => f(e.key)
-				}, "×", 8, ps)
+				}, "×", 8, gs)
 			], 2))), 128))]),
 			c[4] ||= K("label", {
 				class: "sr-only",
@@ -3931,13 +3943,13 @@ var ns = {
 				onKeydown: l,
 				onPaste: u
 			}, null, 544), [[Fa, R(n).draft]]),
-			K("div", ms, [K("div", hs, [K("label", gs, [q($, { name: "plus" }), K("input", {
+			K("div", _s, [K("div", vs, [K("label", ys, [q($, { name: "plus" }), K("input", {
 				id: "file-input",
 				type: "file",
 				multiple: "",
 				"aria-label": "添加图片或文件",
 				onChange: d
-			}, null, 32)]), q(cs)]), R(i) ? (W(), G("button", {
+			}, null, 32)]), q(ds)]), R(i) ? (W(), G("button", {
 				key: 0,
 				id: "interrupt",
 				type: "button",
@@ -3946,7 +3958,7 @@ var ns = {
 				"aria-label": "停止生成",
 				disabled: s.value,
 				onClick: p
-			}, [q($, { name: "stop" })], 8, _s)) : (W(), G("button", {
+			}, [q($, { name: "stop" })], 8, bs)) : (W(), G("button", {
 				key: 1,
 				id: "send",
 				type: "submit",
@@ -3954,12 +3966,12 @@ var ns = {
 				title: "发送",
 				"aria-label": "发送消息",
 				disabled: !R(r)
-			}, [q($, { name: "arrow" })], 8, vs))])
+			}, [q($, { name: "arrow" })], 8, xs))])
 		], 544));
 	}
 };
 // app/web/frontend/lib/api.js
-async function bs(e, t = {}) {
+async function Cs(e, t = {}) {
 	let n = new AbortController(), r = setTimeout(() => n.abort(), 45e3);
 	try {
 		let r = await fetch(e, {
@@ -3975,14 +3987,14 @@ async function bs(e, t = {}) {
 	}
 }
 // app/web/frontend/lib/workspace.js
-var xs = [
+var ws = [
 	"streaming",
 	"pending",
 	"running",
 	"in_progress",
 	"inProgress",
 	"queued"
-], Ss = {
+], Ts = {
 	queued: "排队中",
 	pending: "等待中",
 	running: "进行中",
@@ -4000,13 +4012,13 @@ var xs = [
 	needs_access: "待获取权限",
 	needs_review: "待人工核对",
 	unknown: "状态待核实"
-}, Cs = (e) => [
+}, Es = (e) => [
 	"queued",
 	"pending",
 	"running",
 	"in_progress"
 ].includes(e.status);
-function ws({ api: e = bs, EventSourceImpl: t = globalThis.EventSource, pollInterval: n = 8e3 } = {}) {
+function Ds({ api: e = Cs, EventSourceImpl: t = globalThis.EventSource, pollInterval: n = 8e3 } = {}) {
 	let r = /* @__PURE__ */ Ft({
 		papers: [],
 		categories: [],
@@ -4076,7 +4088,7 @@ function ws({ api: e = bs, EventSourceImpl: t = globalThis.EventSource, pollInte
 			label: e.displayName || e.display_name || e.name || t,
 			isDefault: e.isDefault
 		};
-	}).filter((e) => e.id)), l = X(() => r.chat?.messages?.some((e) => xs.includes(e.status)) || !1), u = X(() => r.sending || l.value), d = X(() => !r.statusError && !u.value && !r.creating && !!(r.draft.trim() || r.attachments.length) && r.attachments.every((e) => e.status === "ready") && s.value.available === !0 && s.value.authenticated === !0 && r.eventsOpen), f, p = !1, m, h = 0, g = 0, _ = !1, v = /* @__PURE__ */ new Set();
+	}).filter((e) => e.id)), l = X(() => r.chat?.messages?.some((e) => ws.includes(e.status)) || !1), u = X(() => r.sending || l.value), d = X(() => !r.statusError && !u.value && !r.creating && !!(r.draft.trim() || r.attachments.length) && r.attachments.every((e) => e.status === "ready") && s.value.available === !0 && s.value.authenticated === !0 && r.eventsOpen), f, p = !1, m, h = 0, g = 0, _ = !1, v = /* @__PURE__ */ new Set();
 	function y(e, t = !1) {
 		let n = ++g;
 		r.toasts.push({
@@ -4416,7 +4428,7 @@ function ws({ api: e = bs, EventSourceImpl: t = globalThis.EventSource, pollInte
 				r.jobs.set(e.job.id, {
 					...t,
 					...e.job
-				}), t && Cs(t) && !Cs(e.job) && (y(`任务${Ss[e.job.status] || e.job.status}：${e.job.title || e.job.id}`, ["error", "failed"].includes(e.job.status)), T(), r.view === "downloads" && he());
+				}), t && Es(t) && !Es(e.job) && (y(`任务${Ts[e.job.status] || e.job.status}：${e.job.title || e.job.id}`, ["error", "failed"].includes(e.job.status)), T(), r.view === "downloads" && he());
 			}
 		}
 	}
@@ -4426,8 +4438,8 @@ function ws({ api: e = bs, EventSourceImpl: t = globalThis.EventSource, pollInte
 			try {
 				let t = [ne()];
 				r.chat && (!r.eventsOpen || u.value) && t.push(ae(r.chat.id));
-				for (let n of r.jobs.values()) Cs(n) && t.push(e(`/api/jobs/${ro(n.id)}`).then((e) => {
-					r.jobs.set(e.id, e), Cs(e) || (T(), r.view === "downloads" && he());
+				for (let n of r.jobs.values()) Es(n) && t.push(e(`/api/jobs/${ro(n.id)}`).then((e) => {
+					r.jobs.set(e.id, e), Es(e) || (T(), r.view === "downloads" && he());
 				}));
 				await Promise.allSettled(t);
 			} finally {
@@ -4505,21 +4517,21 @@ function ws({ api: e = bs, EventSourceImpl: t = globalThis.EventSource, pollInte
 	};
 }
 // app/web/frontend/components/ChatMessage.vue
-var Ts = ["data-message"], Es = { class: "message-label sr-only" }, Ds = {
+var Os = ["data-message"], ks = { class: "message-label sr-only" }, As = {
 	key: 0,
 	class: "message-body"
-}, Os = ["innerHTML"], ks = {
+}, js = ["innerHTML"], Ms = {
 	key: 2,
 	class: "message-attachments"
-}, As = ["href"], js = ["src", "alt"], Ms = {
+}, Ns = ["href"], Ps = ["src", "alt"], Fs = {
 	key: 3,
 	class: "message-status",
 	role: "status",
 	"aria-label": "正在生成"
-}, Ns = {
+}, Is = {
 	key: 4,
 	class: "message-status"
-}, Ps = {
+}, Ls = {
 	__name: "ChatMessage",
 	props: { message: {
 		type: Object,
@@ -4536,7 +4548,7 @@ var Ts = ["data-message"], Es = { class: "message-label sr-only" }, Ds = {
 			assistant: "Pi Agent",
 			tool: "工具",
 			system: "系统"
-		})[n.value]), i = X(() => xs.includes(t.message.status)), a = X(() => ["error", "failed"].includes(t.message.status)), o = X(() => uo(t.message.text)), s = X(() => t.message.error?.message || t.message.error), c = X(() => ["interrupted", "cancelled"].includes(t.message.status)), l = X(() => (t.message.attachments || t.message.attachmentIds || []).map((e) => typeof e == "string" ? { id: e } : e).filter((e) => e.id));
+		})[n.value]), i = X(() => ws.includes(t.message.status)), a = X(() => ["error", "failed"].includes(t.message.status)), o = X(() => uo(t.message.text)), s = X(() => t.message.error?.message || t.message.error), c = X(() => ["interrupted", "cancelled"].includes(t.message.status)), l = X(() => (t.message.attachments || t.message.attachmentIds || []).map((e) => typeof e == "string" ? { id: e } : e).filter((e) => e.id));
 		return (t, u) => (W(), G("article", {
 			class: k(["message", [n.value, {
 				streaming: i.value,
@@ -4544,13 +4556,13 @@ var Ts = ["data-message"], Es = { class: "message-label sr-only" }, Ds = {
 			}]]),
 			"data-message": e.message.id
 		}, [
-			K("div", Es, j(r.value), 1),
-			n.value === "user" ? (W(), G("div", Ds, j(e.message.text), 1)) : (W(), G("div", {
+			K("div", ks, j(r.value), 1),
+			n.value === "user" ? (W(), G("div", As, j(e.message.text), 1)) : (W(), G("div", {
 				key: 1,
 				class: "message-body markdown",
 				innerHTML: o.value
-			}, null, 8, Os)),
-			l.value.length ? (W(), G("div", ks, [(W(!0), G(U, null, V(l.value, (e) => (W(), G("a", {
+			}, null, 8, js)),
+			l.value.length ? (W(), G("div", Ms, [(W(!0), G(U, null, V(l.value, (e) => (W(), G("a", {
 				key: e.id,
 				href: `/api/uploads/${R(ro)(e.id)}`,
 				target: "_blank",
@@ -4560,25 +4572,25 @@ var Ts = ["data-message"], Es = { class: "message-label sr-only" }, Ds = {
 				src: `/api/uploads/${R(ro)(e.id)}`,
 				alt: e.name || "上传的图片",
 				loading: "lazy"
-			}, null, 8, js)) : (W(), G(U, { key: 1 }, [J(j(e.name || "附件"), 1)], 64))], 8, As))), 128))])) : Y("", !0),
-			i.value && !s.value ? (W(), G("div", Ms, [...u[0] ||= [K("span", {
+			}, null, 8, Ps)) : (W(), G(U, { key: 1 }, [J(j(e.name || "附件"), 1)], 64))], 8, Ns))), 128))])) : Y("", !0),
+			i.value && !s.value ? (W(), G("div", Fs, [...u[0] ||= [K("span", {
 				class: "typing-indicator",
 				"aria-hidden": "true"
 			}, [
 				K("i"),
 				K("i"),
 				K("i")
-			], -1)]])) : s.value || a.value || c.value ? (W(), G("div", Ns, j(s.value || (a.value ? "生成失败" : "已停止")), 1)) : Y("", !0)
-		], 10, Ts));
+			], -1)]])) : s.value || a.value || c.value ? (W(), G("div", Is, j(s.value || (a.value ? "生成失败" : "已停止")), 1)) : Y("", !0)
+		], 10, Os));
 	}
-}, Fs = ["data-approval"], Is = { class: "approval-question" }, Ls = [
+}, Rs = ["data-approval"], zs = { class: "approval-question" }, Bs = [
 	"onUpdate:modelValue",
 	"data-answer",
 	"aria-label"
-], Rs = {
+], Vs = {
 	key: 0,
 	class: "question-options"
-}, zs = ["title", "onClick"], Bs = { key: 1 }, Vs = { class: "approval-actions" }, Hs = ["disabled"], Us = ["disabled"], Ws = {
+}, Hs = ["title", "onClick"], Us = { key: 1 }, Ws = { class: "approval-actions" }, Gs = ["disabled"], Ks = ["disabled"], qs = {
 	__name: "ApprovalCard",
 	props: { approval: {
 		type: Object,
@@ -4600,33 +4612,33 @@ var Ts = ["data-message"], Es = { class: "message-label sr-only" }, Ds = {
 			onSubmit: Z(o, ["prevent"])
 		}, [
 			K("h4", null, j(i.value.length ? "需要你的回答" : "等待你的审批"), 1),
-			i.value.length ? (W(!0), G(U, { key: 0 }, V(i.value, (e) => (W(), G("div", { key: e.id }, [K("label", Is, [K("strong", null, j(e.text), 1), B(K("textarea", {
+			i.value.length ? (W(!0), G(U, { key: 0 }, V(i.value, (e) => (W(), G("div", { key: e.id }, [K("label", zs, [K("strong", null, j(e.text), 1), B(K("textarea", {
 				"onUpdate:modelValue": (t) => r[e.id] = t,
 				"data-answer": e.id,
 				rows: "2",
 				required: "",
 				"aria-label": e.text,
 				placeholder: "输入你的回答…"
-			}, null, 8, Ls), [[Fa, r[e.id]]])]), e.options?.length ? (W(), G("div", Rs, [(W(!0), G(U, null, V(e.options, (t, n) => (W(), G("button", {
+			}, null, 8, Bs), [[Fa, r[e.id]]])]), e.options?.length ? (W(), G("div", Vs, [(W(!0), G(U, null, V(e.options, (t, n) => (W(), G("button", {
 				key: n,
 				type: "button",
 				class: "button subtle",
 				title: t.description || "",
 				onClick: (n) => r[e.id] = a(t)
-			}, j(a(t)), 9, zs))), 128))])) : Y("", !0)]))), 128)) : (W(), G("pre", Bs, j(JSON.stringify(e.approval.params || {}, null, 2)), 1)),
-			K("div", Vs, [K("button", {
+			}, j(a(t)), 9, Hs))), 128))])) : Y("", !0)]))), 128)) : (W(), G("pre", Us, j(JSON.stringify(e.approval.params || {}, null, 2)), 1)),
+			K("div", Ws, [K("button", {
 				class: "button primary",
 				type: "submit",
 				disabled: e.approval.submitting
-			}, j(i.value.length ? "提交回答" : "允许本次"), 9, Hs), K("button", {
+			}, j(i.value.length ? "提交回答" : "允许本次"), 9, Gs), K("button", {
 				class: "button subtle",
 				type: "button",
 				disabled: e.approval.submitting,
 				onClick: s[0] ||= (t) => R(n).decideApproval(e.approval.id, "decline")
-			}, " 拒绝 ", 8, Us)])
-		], 40, Fs));
+			}, " 拒绝 ", 8, Ks)])
+		], 40, Rs));
 	}
-}, Gs = ["data-note-draft"], Ks = ["data-note-preview"], qs = ["innerHTML"], Js = { class: "note-draft-actions" }, Ys = ["data-note-save", "disabled"], Xs = ["data-note-discard", "disabled"], Zs = {
+}, Js = ["data-note-draft"], Ys = ["data-note-preview"], Xs = ["innerHTML"], Zs = { class: "note-draft-actions" }, Qs = ["data-note-save", "disabled"], $s = ["data-note-discard", "disabled"], ec = {
 	__name: "NoteDraftCard",
 	props: { draft: {
 		type: Object,
@@ -4643,67 +4655,67 @@ var Ts = ["data-message"], Es = { class: "message-label sr-only" }, Ds = {
 				type: "button",
 				"data-note-preview": e.draft.id,
 				onClick: o[0] ||= (e) => r.value = !r.value
-			}, j(r.value ? "收起" : "预览"), 9, Ks)]),
+			}, j(r.value ? "收起" : "预览"), 9, Ys)]),
 			r.value ? (W(), G("div", {
 				key: 0,
 				class: "markdown note-preview",
 				innerHTML: i.value
-			}, null, 8, qs)) : Y("", !0),
-			K("div", Js, [K("button", {
+			}, null, 8, Xs)) : Y("", !0),
+			K("div", Zs, [K("button", {
 				class: "button primary",
 				type: "button",
 				"data-note-save": e.draft.id,
 				disabled: a.value,
 				onClick: o[1] ||= (t) => R(n).saveNoteDraft(e.draft.id)
-			}, j(a.value ? "保存中…" : "保存为笔记"), 9, Ys), K("button", {
+			}, j(a.value ? "保存中…" : "保存为笔记"), 9, Qs), K("button", {
 				class: "button subtle",
 				type: "button",
 				"data-note-discard": e.draft.id,
 				disabled: a.value,
 				onClick: o[2] ||= (t) => R(n).discardNoteDraft(e.draft.id)
-			}, " 丢弃 ", 8, Xs)])
-		], 8, Gs));
+			}, " 丢弃 ", 8, $s)])
+		], 8, Js));
 	}
-}, Qs = {
+}, tc = {
 	id: "assistant-panel",
 	class: "chat-panel",
 	"aria-label": "文献研究助手"
-}, $s = { class: "chat-header" }, ec = { class: "assistant-title" }, tc = [
+}, nc = { class: "chat-header" }, rc = { class: "assistant-title" }, ic = [
 	"aria-label",
 	"title",
 	"data-state"
-], nc = { class: "chat-actions" }, rc = ["aria-expanded"], ic = ["disabled"], ac = {
+], ac = { class: "chat-actions" }, oc = ["aria-expanded"], sc = ["disabled"], cc = {
 	key: 0,
 	id: "chat-history",
 	class: "chat-history"
-}, oc = ["data-chat", "onClick"], sc = {
+}, lc = ["data-chat", "onClick"], uc = {
 	key: 0,
 	class: "empty"
-}, cc = {
+}, dc = {
 	key: 1,
 	id: "auth-banner",
 	class: "auth-banner"
-}, lc = {
+}, fc = {
 	key: 2,
 	class: "chat-context"
-}, uc = { id: "context-papers" }, dc = [
+}, pc = { id: "context-papers" }, mc = [
 	"data-context-remove",
 	"title",
 	"aria-label",
 	"onClick"
-], fc = {
+], hc = {
 	key: 0,
 	class: "chat-empty"
-}, pc = { class: "presets" }, mc = ["data-prompt", "onClick"], hc = {
+}, gc = { class: "presets" }, _c = ["data-prompt", "onClick"], vc = {
 	key: 3,
 	id: "note-drafts",
 	class: "note-drafts",
 	"aria-live": "polite"
-}, gc = {
+}, yc = {
 	id: "approvals",
 	class: "approvals",
 	"aria-live": "polite"
-}, _c = {
+}, bc = {
 	__name: "AssistantPane",
 	setup(e) {
 		let t = Mn("workspace"), n = t.state, { agent: r } = t, i = /* @__PURE__ */ L(null), a = X(() => r.value.loading === !0 || r.value.available == null || r.value.authenticated == null || r.value.available === "loading"), o = X(() => r.value.available === !0 && r.value.authenticated === !0), s = X(() => n.statusError || r.value.available === !1 ? "error" : a.value || !n.eventsOpen || !o.value ? "loading" : "connected"), c = X(() => n.statusError || r.value.error || (o.value && n.eventsOpen ? "已连接" : a.value ? "正在连接" : "等待配置")), l = X(() => n.statusError || !a.value && !o.value), u = X(() => [...n.approvals.values()].filter((e) => e.chatId === n.chat?.id && !n.resolvedApprovals.has(e.id))), d = X(() => n.chat?.noteDrafts || []), f = [
@@ -4745,48 +4757,48 @@ var Ts = ["data-message"], Es = { class: "message-label sr-only" }, Ds = {
 		function m() {
 			n.historyOpen = !n.historyOpen, n.historyOpen && t.loadChats();
 		}
-		return (e, a) => (W(), G("aside", Qs, [
+		return (e, a) => (W(), G("aside", tc, [
 			q(_o, { kind: "assistant" }),
-			K("div", $s, [K("div", ec, [a[3] ||= K("span", { class: "agent-name" }, "Pi Agent", -1), K("span", {
+			K("div", nc, [K("div", rc, [a[3] ||= K("span", { class: "agent-name" }, "Pi Agent", -1), K("span", {
 				id: "connection-status",
 				class: "connection-indicator",
 				role: "status",
 				"aria-label": c.value,
 				title: c.value,
 				"data-state": s.value
-			}, null, 8, tc)]), K("div", nc, [K("button", {
+			}, null, 8, ic)]), K("div", ac, [K("button", {
 				id: "chat-history-toggle",
 				class: "icon-button",
 				title: "会话列表",
 				"aria-label": "会话列表",
 				"aria-expanded": R(n).historyOpen,
 				onClick: m
-			}, [q($, { name: "history" })], 8, rc), K("button", {
+			}, [q($, { name: "history" })], 8, oc), K("button", {
 				id: "new-chat",
 				class: "icon-button",
 				title: "新建会话",
 				"aria-label": "新建会话",
 				disabled: R(n).creating || R(n).sending,
 				onClick: a[0] ||= (...e) => R(t).newChat && R(t).newChat(...e)
-			}, [q($, { name: "plus" })], 8, ic)])]),
-			R(n).historyOpen ? (W(), G("div", ac, [(W(!0), G(U, null, V(R(n).chats, (e) => (W(), G("button", {
+			}, [q($, { name: "plus" })], 8, sc)])]),
+			R(n).historyOpen ? (W(), G("div", cc, [(W(!0), G(U, null, V(R(n).chats, (e) => (W(), G("button", {
 				key: e.id,
 				class: k(["history-item", { active: R(n).chat?.id === e.id }]),
 				"data-chat": e.id,
 				onClick: (n) => R(t).openChat(e.id)
-			}, [J(j(e.title || "新会话") + " ", 1), K("small", null, j(new Date(e.createdAt).toLocaleString("zh-CN")) + " " + j((e.paperIds || []).join(" · ")), 1)], 10, oc))), 128)), R(n).chats.length ? Y("", !0) : (W(), G("div", sc, "暂无会话"))])) : Y("", !0),
-			l.value ? (W(), G("div", cc, [J(j(R(n).statusError || R(r).error || "请在终端运行 pi 配置模型或登录。") + " ", 1), K("button", {
+			}, [J(j(e.title || "新会话") + " ", 1), K("small", null, j(new Date(e.createdAt).toLocaleString("zh-CN")) + " " + j((e.paperIds || []).join(" · ")), 1)], 10, lc))), 128)), R(n).chats.length ? Y("", !0) : (W(), G("div", uc, "暂无会话"))])) : Y("", !0),
+			l.value ? (W(), G("div", dc, [J(j(R(n).statusError || R(r).error || "请在终端运行 pi 配置模型或登录。") + " ", 1), K("button", {
 				id: "retry-status",
 				onClick: a[1] ||= (...e) => R(t).reconnectAgent && R(t).reconnectAgent(...e)
 			}, "重新检测")])) : Y("", !0),
-			R(n).context.size ? (W(), G("div", lc, [K("div", uc, [(W(!0), G(U, null, V(R(n).context, (e) => (W(), G("button", {
+			R(n).context.size ? (W(), G("div", fc, [K("div", pc, [(W(!0), G(U, null, V(R(n).context, (e) => (W(), G("button", {
 				key: e,
 				class: "context-chip",
 				"data-context-remove": e,
 				title: p(e),
 				"aria-label": `移除 ${e}`,
 				onClick: (t) => R(n).context.delete(e)
-			}, [J(j(e), 1), q($, { name: "close" })], 8, dc))), 128))]), K("button", {
+			}, [J(j(e), 1), q($, { name: "close" })], 8, mc))), 128))]), K("button", {
 				id: "clear-context",
 				class: "icon-button",
 				title: "清空论文上下文",
@@ -4801,54 +4813,54 @@ var Ts = ["data-message"], Es = { class: "message-label sr-only" }, Ds = {
 				role: "log",
 				"aria-label": "对话消息",
 				"aria-live": "off"
-			}, [(W(!0), G(U, null, V(R(n).chat?.messages || [], (e) => (W(), si(Ps, {
+			}, [(W(!0), G(U, null, V(R(n).chat?.messages || [], (e) => (W(), si(Ls, {
 				key: e.id,
 				message: e
-			}, null, 8, ["message"]))), 128)), R(n).chat?.messages?.length ? Y("", !0) : (W(), G("div", fc, [a[4] ||= K("h2", null, "从一个问题开始", -1), K("div", pc, [(W(), G(U, null, V(f, ([e, n, r]) => K("button", {
+			}, null, 8, ["message"]))), 128)), R(n).chat?.messages?.length ? Y("", !0) : (W(), G("div", hc, [a[4] ||= K("h2", null, "从一个问题开始", -1), K("div", gc, [(W(), G(U, null, V(f, ([e, n, r]) => K("button", {
 				key: n,
 				class: "preset",
 				"data-prompt": r,
 				onClick: (e) => R(t).setDraft(r)
-			}, [q($, { name: e }, null, 8, ["name"]), J(j(n), 1)], 8, mc)), 64))])]))], 512),
-			d.value.length ? (W(), G("div", hc, [(W(!0), G(U, null, V(d.value, (e) => (W(), si(Zs, {
+			}, [q($, { name: e }, null, 8, ["name"]), J(j(n), 1)], 8, _c)), 64))])]))], 512),
+			d.value.length ? (W(), G("div", vc, [(W(!0), G(U, null, V(d.value, (e) => (W(), si(ec, {
 				key: e.id,
 				draft: e
 			}, null, 8, ["draft"]))), 128))])) : Y("", !0),
-			K("div", gc, [(W(!0), G(U, null, V(u.value, (e) => (W(), si(Ws, {
+			K("div", yc, [(W(!0), G(U, null, V(u.value, (e) => (W(), si(qs, {
 				key: e.id,
 				approval: e
 			}, null, 8, ["approval"]))), 128))]),
-			q(ys)
+			q(Ss)
 		]));
 	}
-}, vc = {
+}, xc = {
 	id: "downloads-view",
 	class: "downloads-view"
-}, yc = { class: "download-columns" }, bc = { class: "surface-heading" }, xc = ["value"], Sc = { class: "download-options" }, Cc = { class: "check-label" }, wc = ["disabled"], Tc = { class: "download-results" }, Ec = { class: "section-heading" }, Dc = { id: "download-jobs" }, Oc = {
+}, Sc = { class: "download-columns" }, Cc = { class: "surface-heading" }, wc = ["value"], Tc = { class: "download-options" }, Ec = { class: "check-label" }, Dc = ["disabled"], Oc = { class: "download-results" }, kc = { class: "section-heading" }, Ac = { id: "download-jobs" }, jc = {
 	key: 0,
 	class: "surface empty"
-}, kc = { class: "job-heading" }, Ac = {
+}, Mc = { class: "job-heading" }, Nc = {
 	key: 0,
 	class: "error-text"
-}, jc = {
+}, Pc = {
 	key: 1,
 	class: "job-counts"
-}, Mc = ["data-job-details"], Nc = { class: "job-log" }, Pc = {
+}, Fc = ["data-job-details"], Ic = { class: "job-log" }, Lc = {
 	key: 2,
 	class: "surface empty"
-}, Fc = { class: "empty-art" }, Ic = { id: "download-batches" }, Lc = {
+}, Rc = { class: "empty-art" }, zc = { id: "download-batches" }, Bc = {
 	key: 0,
 	class: "section-heading"
-}, Rc = { class: "job-heading" }, zc = { class: "status-badge" }, Bc = { class: "batch-actions" }, Vc = ["disabled", "onClick"], Hc = "papers/09_情感综述调研/网站导入", Uc = {
+}, Vc = { class: "job-heading" }, Hc = { class: "status-badge" }, Uc = { class: "batch-actions" }, Wc = ["disabled", "onClick"], Gc = "papers/09_情感综述调研/网站导入", Kc = {
 	__name: "DownloadPanel",
 	setup(e) {
 		let t = Mn("workspace"), n = t.state, r = /* @__PURE__ */ Ft({
 			title: "",
 			input: "",
-			category: Hc,
+			category: Gc,
 			channel: "public",
 			autoArchive: !1
-		}), i = /* @__PURE__ */ L(!1), a = /* @__PURE__ */ Ft(/* @__PURE__ */ new Set()), o = X(() => so(n.categories, Hc)), s = X(() => [...n.jobs.values()].reverse()), c = (e) => Object.entries(e || {}).map(([e, t]) => `${Ss[e] || e} ${t}`).join(" · "), l = (e) => typeof e == "string" ? e : JSON.stringify(e), u = (e) => Array.isArray(e) ? e.map((e) => typeof e == "string" ? e : JSON.stringify(e)).join("\n") : e || "暂无日志", d = [
+		}), i = /* @__PURE__ */ L(!1), a = /* @__PURE__ */ Ft(/* @__PURE__ */ new Set()), o = X(() => so(n.categories, Gc)), s = X(() => [...n.jobs.values()].reverse()), c = (e) => Object.entries(e || {}).map(([e, t]) => `${Ts[e] || e} ${t}`).join(" · "), l = (e) => typeof e == "string" ? e : JSON.stringify(e), u = (e) => Array.isArray(e) ? e.map((e) => typeof e == "string" ? e : JSON.stringify(e)).join("\n") : e || "暂无日志", d = [
 			["download", "继续下载"],
 			["verify", "核验文件"],
 			["archive", "归档入库"],
@@ -4880,12 +4892,12 @@ var Ts = ["data-message"], Es = { class: "message-label sr-only" }, Ds = {
 				}
 			}
 		}
-		return (e, m) => (W(), G("section", vc, [m[21] ||= K("div", { class: "download-intro" }, [K("h2", null, "添加论文"), K("p", null, "输入 DOI 或题名，查看下载、核验与归档进度。")], -1), K("div", yc, [K("form", {
+		return (e, m) => (W(), G("section", xc, [m[21] ||= K("div", { class: "download-intro" }, [K("h2", null, "添加论文"), K("p", null, "输入 DOI 或题名，查看下载、核验与归档进度。")], -1), K("div", Sc, [K("form", {
 			id: "download-form",
 			class: "surface download-form",
 			onSubmit: Z(f, ["prevent"])
 		}, [
-			K("div", bc, [q($, { name: "download" }), m[7] ||= K("h3", null, "新建下载任务", -1)]),
+			K("div", Cc, [q($, { name: "download" }), m[7] ||= K("h3", null, "新建下载任务", -1)]),
 			m[12] ||= K("label", { for: "download-title" }, [J("任务名称 "), K("span", { class: "muted" }, "可选")], -1),
 			B(K("input", {
 				id: "download-title",
@@ -4907,15 +4919,15 @@ var Ts = ["data-message"], Es = { class: "message-label sr-only" }, Ds = {
 			}, [(W(!0), G(U, null, V(o.value, ([e, t]) => (W(), G("option", {
 				key: e,
 				value: e
-			}, j(t), 9, xc))), 128))], 512), [[Ra, r.category]]),
-			K("div", Sc, [K("label", null, [m[9] ||= J("获取渠道", -1), B(K("select", {
+			}, j(t), 9, wc))), 128))], 512), [[Ra, r.category]]),
+			K("div", Tc, [K("label", null, [m[9] ||= J("获取渠道", -1), B(K("select", {
 				id: "download-channel",
 				"onUpdate:modelValue": m[3] ||= (e) => r.channel = e
 			}, [...m[8] ||= [
 				K("option", { value: "public" }, "公开来源", -1),
 				K("option", { value: "auto" }, "自动选择", -1),
 				K("option", { value: "ieee" }, "IEEE / 机构渠道", -1)
-			]], 512), [[Ra, r.channel]])]), K("label", Cc, [B(K("input", {
+			]], 512), [[Ra, r.channel]])]), K("label", Ec, [B(K("input", {
 				id: "auto-archive",
 				"onUpdate:modelValue": m[4] ||= (e) => r.autoArchive = e,
 				type: "checkbox"
@@ -4925,95 +4937,95 @@ var Ts = ["data-message"], Es = { class: "message-label sr-only" }, Ds = {
 				type: "submit",
 				class: "button primary",
 				disabled: i.value
-			}, [q($, { name: "plus" }), m[11] ||= J("创建下载任务 ", -1)], 8, wc),
+			}, [q($, { name: "plus" }), m[11] ||= J("创建下载任务 ", -1)], 8, Dc),
 			m[15] ||= K("p", { class: "muted form-note" }, "机构认证与需要确认的操作，由后端工具返回状态。", -1)
-		], 32), K("div", Tc, [
-			K("div", Ec, [m[17] ||= K("h3", null, "任务与批次", -1), K("button", {
+		], 32), K("div", Oc, [
+			K("div", kc, [m[17] ||= K("h3", null, "任务与批次", -1), K("button", {
 				id: "refresh-downloads",
 				class: "button subtle",
 				onClick: m[5] ||= (...e) => R(t).loadDownloads && R(t).loadDownloads(...e)
 			}, [q($, { name: "refresh" }), m[16] ||= J("刷新 ", -1)])]),
-			K("div", Dc, [R(n).downloadsError ? (W(), G("div", Oc, [K("p", null, j(R(n).downloadsError), 1), K("button", {
+			K("div", Ac, [R(n).downloadsError ? (W(), G("div", jc, [K("p", null, j(R(n).downloadsError), 1), K("button", {
 				class: "button subtle",
 				onClick: m[6] ||= (...e) => R(t).loadDownloads && R(t).loadDownloads(...e)
 			}, "重试")])) : (W(!0), G(U, { key: 1 }, V(s.value, (e) => (W(), G("article", {
 				key: e.id,
 				class: "job-card"
 			}, [
-				K("div", kc, [K("h4", null, j(e.title || e.batch || e.id), 1), K("span", { class: k(["status-badge", { failed: ["error", "failed"].includes(e.status) }]) }, j(R(Ss)[e.status] || e.status || "状态待确认"), 3)]),
-				e.error ? (W(), G("p", Ac, j(l(e.error)), 1)) : Y("", !0),
+				K("div", Mc, [K("h4", null, j(e.title || e.batch || e.id), 1), K("span", { class: k(["status-badge", { failed: ["error", "failed"].includes(e.status) }]) }, j(R(Ts)[e.status] || e.status || "状态待确认"), 3)]),
+				e.error ? (W(), G("p", Nc, j(l(e.error)), 1)) : Y("", !0),
 				K("p", null, j(e.message || e.action || ""), 1),
-				e.result?.counts ? (W(), G("p", jc, " 批次结果：" + j(c(e.result.counts) || "暂无计数"), 1)) : Y("", !0),
-				K("details", { "data-job-details": e.id }, [m[18] ||= K("summary", null, "查看任务日志", -1), K("pre", Nc, j(u(e.log)), 1)], 8, Mc)
-			]))), 128)), !R(n).downloadsError && !s.value.length ? (W(), G("div", Pc, [K("span", Fc, [q($, { name: "download" })]), m[19] ||= K("p", null, "暂无下载任务", -1)])) : Y("", !0)]),
-			K("div", Ic, [R(n).batches.length ? (W(), G("div", Lc, [...m[20] ||= [K("h3", null, "已有下载批次", -1)]])) : Y("", !0), (W(!0), G(U, null, V(R(n).batches, (e) => (W(), G("article", {
+				e.result?.counts ? (W(), G("p", Pc, " 批次结果：" + j(c(e.result.counts) || "暂无计数"), 1)) : Y("", !0),
+				K("details", { "data-job-details": e.id }, [m[18] ||= K("summary", null, "查看任务日志", -1), K("pre", Ic, j(u(e.log)), 1)], 8, Fc)
+			]))), 128)), !R(n).downloadsError && !s.value.length ? (W(), G("div", Lc, [K("span", Rc, [q($, { name: "download" })]), m[19] ||= K("p", null, "暂无下载任务", -1)])) : Y("", !0)]),
+			K("div", zc, [R(n).batches.length ? (W(), G("div", Bc, [...m[20] ||= [K("h3", null, "已有下载批次", -1)]])) : Y("", !0), (W(!0), G(U, null, V(R(n).batches, (e) => (W(), G("article", {
 				key: e.batch,
 				class: "batch-card"
 			}, [
-				K("div", Rc, [K("h4", null, j(e.batch), 1), K("span", zc, j(Array.isArray(e.entries) ? e.entries.length : e.entries ?? "—") + " 条", 1)]),
+				K("div", Vc, [K("h4", null, j(e.batch), 1), K("span", Hc, j(Array.isArray(e.entries) ? e.entries.length : e.entries ?? "—") + " 条", 1)]),
 				K("p", null, j(c(e.counts)), 1),
-				K("div", Bc, [(W(), G(U, null, V(d, ([t, n]) => K("button", {
+				K("div", Uc, [(W(), G(U, null, V(d, ([t, n]) => K("button", {
 					key: t,
 					class: "button subtle",
 					disabled: a.has(`${e.batch}:${t}`),
 					onClick: (n) => p(e.batch, t)
-				}, j(n), 9, Vc)), 64))])
+				}, j(n), 9, Wc)), 64))])
 			]))), 128))])
 		])])]));
 	}
-}, Wc = { class: "import-head" }, Gc = ["disabled"], Kc = { class: "import-body" }, qc = { class: "import-pick" }, Jc = ["disabled"], Yc = { class: "import-file-icon" }, Xc = { class: "import-file-text" }, Zc = ["disabled"], Qc = {
+}, qc = { class: "import-head" }, Jc = ["disabled"], Yc = { class: "import-body" }, Xc = { class: "import-pick" }, Zc = ["disabled"], Qc = { class: "import-file-icon" }, $c = { class: "import-file-text" }, el = ["disabled"], tl = {
 	key: 0,
 	class: "import-list"
-}, $c = { class: "import-list-head" }, el = ["disabled"], tl = { class: "import-items" }, nl = { class: "import-item-head" }, rl = { class: "import-item-index" }, il = { class: "import-item-main" }, al = [
+}, nl = { class: "import-list-head" }, rl = ["disabled"], il = { class: "import-items" }, al = { class: "import-item-head" }, ol = { class: "import-item-index" }, sl = { class: "import-item-main" }, cl = [
 	"onUpdate:modelValue",
 	"aria-label",
 	"disabled"
-], ol = { class: "import-item-file" }, sl = {
+], ll = { class: "import-item-file" }, ul = {
 	key: 0,
 	class: "import-item-badge"
-}, cl = {
+}, dl = {
 	key: 1,
 	class: "import-item-badge failed"
-}, ll = [
+}, fl = [
 	"title",
 	"aria-label",
 	"aria-expanded",
 	"disabled",
 	"onClick"
-], ul = ["disabled", "onClick"], dl = {
+], pl = ["disabled", "onClick"], ml = {
 	key: 0,
 	class: "import-item-extra"
-}, fl = { class: "import-field wide" }, pl = [
+}, hl = { class: "import-field wide" }, gl = [
 	"onUpdate:modelValue",
 	"aria-label",
 	"disabled"
-], ml = { class: "import-field" }, hl = [
+], _l = { class: "import-field" }, vl = [
 	"onUpdate:modelValue",
 	"aria-label",
 	"disabled"
-], gl = { class: "import-field" }, _l = [
+], yl = { class: "import-field" }, bl = [
 	"onUpdate:modelValue",
 	"aria-label",
 	"disabled"
-], vl = { class: "import-fields" }, yl = { class: "import-field wide" }, bl = ["disabled"], xl = ["value"], Sl = {
+], xl = { class: "import-fields" }, Sl = { class: "import-field wide" }, Cl = ["disabled"], wl = ["value"], Tl = {
 	key: 1,
 	class: "import-check"
-}, Cl = ["disabled"], wl = {
+}, El = ["disabled"], Dl = {
 	key: 2,
 	class: "import-error",
 	role: "alert"
-}, Tl = {
+}, Ol = {
 	key: 3,
 	class: "import-summary",
 	role: "status"
-}, El = {
+}, kl = {
 	key: 4,
 	class: "import-progress",
 	role: "status"
-}, Dl = {
+}, Al = {
 	key: 5,
 	class: "import-log-wrap"
-}, Ol = { class: "import-log" }, kl = { class: "import-actions" }, Al = ["disabled"], jl = ["disabled"], Ml = 100, Nl = {
+}, jl = { class: "import-log" }, Ml = { class: "import-actions" }, Nl = ["disabled"], Pl = ["disabled"], Fl = 100, Il = {
 	__name: "ImportPaperDialog",
 	emits: ["close", "imported"],
 	setup(e, { emit: t }) {
@@ -5073,8 +5085,8 @@ var Ts = ["data-message"], Es = { class: "message-label sr-only" }, Ds = {
 					t.push(`${r.name} 为空`);
 					continue;
 				}
-				if (l.length >= Ml) {
-					t.push(`每次最多导入 ${Ml} 个 PDF`);
+				if (l.length >= Fl) {
+					t.push(`每次最多导入 ${Fl} 个 PDF`);
 					break;
 				}
 				let e = r.webkitRelativePath || r.name;
@@ -5113,7 +5125,7 @@ var Ts = ["data-message"], Es = { class: "message-label sr-only" }, Ds = {
 				let e = await new Promise((e, t) => n.readEntries(e, t));
 				if (!e.length) break;
 				for (let n of e) await O(n, t);
-				if (t.length > Ml) break;
+				if (t.length > Fl) break;
 			}
 		}
 		async function ae(e) {
@@ -5233,15 +5245,15 @@ var Ts = ["data-message"], Es = { class: "message-label sr-only" }, Ds = {
 			class: "import-sheet",
 			onSubmit: Z(fe, ["prevent"])
 		}, [
-			K("header", Wc, [t[4] ||= K("div", null, [K("h2", { id: "import-title" }, "导入 PDF"), K("p", null, "可多选或添加文件夹，核对题名后批量归档。")], -1), K("button", {
+			K("header", qc, [t[4] ||= K("div", null, [K("h2", { id: "import-title" }, "导入 PDF"), K("p", null, "可多选或添加文件夹，核对题名后批量归档。")], -1), K("button", {
 				type: "button",
 				class: "icon-button",
 				title: "关闭",
 				"aria-label": "关闭",
 				disabled: b.value,
 				onClick: T
-			}, [q($, { name: "close" })], 8, Gc)]),
-			K("div", Kc, [
+			}, [q($, { name: "close" })], 8, Jc)]),
+			K("div", Yc, [
 				K("input", {
 					ref_key: "fileInput",
 					ref: o,
@@ -5262,7 +5274,7 @@ var Ts = ["data-message"], Es = { class: "message-label sr-only" }, Ds = {
 					hidden: "",
 					onChange: ne
 				}, null, 544),
-				K("div", qc, [K("button", {
+				K("div", Xc, [K("button", {
 					type: "button",
 					class: k(["import-file", {
 						dragging: d.value,
@@ -5273,31 +5285,31 @@ var Ts = ["data-message"], Es = { class: "message-label sr-only" }, Ds = {
 					onDragover: t[0] ||= Z((e) => d.value = !0, ["prevent"]),
 					onDragleave: t[1] ||= (e) => d.value = !1,
 					onDrop: Z(ae, ["prevent"])
-				}, [K("span", Yc, [q($, { name: "upload" })]), K("span", Xc, [K("strong", null, j(l.length ? "继续添加 PDF" : "选择 PDF 文件"), 1), K("small", null, j(l.length ? "可多选，或把文件、文件夹拖到这里" : "可多选，或把文件、文件夹拖到这里，单个最大 25 MB"), 1)])], 42, Jc), K("button", {
+				}, [K("span", Qc, [q($, { name: "upload" })]), K("span", $c, [K("strong", null, j(l.length ? "继续添加 PDF" : "选择 PDF 文件"), 1), K("small", null, j(l.length ? "可多选，或把文件、文件夹拖到这里" : "可多选，或把文件、文件夹拖到这里，单个最大 25 MB"), 1)])], 42, Zc), K("button", {
 					type: "button",
 					class: "import-folder",
 					disabled: b.value,
 					onClick: re
-				}, [q($, { name: "folder" }), t[5] ||= K("span", null, "选择文件夹", -1)], 8, Zc)]),
-				l.length ? (W(), G("div", Qc, [K("div", $c, [K("span", null, [J(j(l.length) + " 个 PDF ", 1), h.value.length ? (W(), G(U, { key: 0 }, [J(" · 跳过 " + j(h.value.length) + " 个", 1)], 64)) : Y("", !0)]), K("button", {
+				}, [q($, { name: "folder" }), t[5] ||= K("span", null, "选择文件夹", -1)], 8, el)]),
+				l.length ? (W(), G("div", tl, [K("div", nl, [K("span", null, [J(j(l.length) + " 个 PDF ", 1), h.value.length ? (W(), G(U, { key: 0 }, [J(" · 跳过 " + j(h.value.length) + " 个", 1)], 64)) : Y("", !0)]), K("button", {
 					type: "button",
 					class: "text-button",
 					disabled: b.value,
 					onClick: ce
-				}, " 清空 ", 8, el)]), K("div", tl, [(W(!0), G(U, null, V(l, (e, n) => (W(), G("article", {
+				}, " 清空 ", 8, rl)]), K("div", il, [(W(!0), G(U, null, V(l, (e, n) => (W(), G("article", {
 					key: e.key,
 					class: k(["import-item", e.status])
-				}, [K("div", nl, [
-					K("span", rl, j(n + 1), 1),
-					K("div", il, [B(K("input", {
+				}, [K("div", al, [
+					K("span", ol, j(n + 1), 1),
+					K("div", sl, [B(K("input", {
 						"onUpdate:modelValue": (t) => e.title = t,
 						class: "import-item-title",
 						maxlength: "300",
 						placeholder: "题名（必填，与 PDF 首页一致）",
 						"aria-label": `第 ${n + 1} 个文件的题名`,
 						disabled: b.value
-					}, null, 8, al), [[Fa, e.title]]), K("small", ol, [J(j(e.relative) + " · " + j(te(e.size)), 1), e.note ? (W(), G(U, { key: 0 }, [J(" · " + j(e.note), 1)], 64)) : Y("", !0)])]),
-					e.status === "skipped" ? (W(), G("span", sl, "已跳过")) : e.status === "error" ? (W(), G("span", cl, "未完成")) : Y("", !0),
+					}, null, 8, cl), [[Fa, e.title]]), K("small", ll, [J(j(e.relative) + " · " + j(te(e.size)), 1), e.note ? (W(), G(U, { key: 0 }, [J(" · " + j(e.note), 1)], 64)) : Y("", !0)])]),
+					e.status === "skipped" ? (W(), G("span", ul, "已跳过")) : e.status === "error" ? (W(), G("span", dl, "未完成")) : Y("", !0),
 					K("button", {
 						type: "button",
 						class: k(["icon-button import-item-more", { open: u.value === e.key }]),
@@ -5306,7 +5318,7 @@ var Ts = ["data-message"], Es = { class: "message-label sr-only" }, Ds = {
 						"aria-expanded": u.value === e.key,
 						disabled: b.value,
 						onClick: (t) => oe(e)
-					}, [q($, { name: "chevron" })], 10, ll),
+					}, [q($, { name: "chevron" })], 10, fl),
 					K("button", {
 						type: "button",
 						class: "icon-button",
@@ -5314,53 +5326,53 @@ var Ts = ["data-message"], Es = { class: "message-label sr-only" }, Ds = {
 						"aria-label": "移除",
 						disabled: b.value,
 						onClick: (t) => se(e)
-					}, [q($, { name: "close" })], 8, ul)
-				]), u.value === e.key ? (W(), G("div", dl, [
-					K("label", fl, [t[6] ||= K("span", null, [J("作者 "), K("small", null, "多位作者用分号隔开")], -1), B(K("input", {
+					}, [q($, { name: "close" })], 8, pl)
+				]), u.value === e.key ? (W(), G("div", ml, [
+					K("label", hl, [t[6] ||= K("span", null, [J("作者 "), K("small", null, "多位作者用分号隔开")], -1), B(K("input", {
 						"onUpdate:modelValue": (t) => e.authors = t,
 						maxlength: "3000",
 						placeholder: "例如：张三; 李四",
 						"aria-label": `第 ${n + 1} 个文件的作者`,
 						disabled: b.value
-					}, null, 8, pl), [[Fa, e.authors]])]),
-					K("label", ml, [t[7] ||= K("span", null, "年份", -1), B(K("input", {
+					}, null, 8, gl), [[Fa, e.authors]])]),
+					K("label", _l, [t[7] ||= K("span", null, "年份", -1), B(K("input", {
 						"onUpdate:modelValue": (t) => e.year = t,
 						inputmode: "numeric",
 						maxlength: "4",
 						placeholder: "2024",
 						"aria-label": `第 ${n + 1} 个文件的年份`,
 						disabled: b.value
-					}, null, 8, hl), [[Fa, e.year]])]),
-					K("label", gl, [t[8] ||= K("span", null, [J("DOI "), K("small", null, "可选")], -1), B(K("input", {
+					}, null, 8, vl), [[Fa, e.year]])]),
+					K("label", yl, [t[8] ||= K("span", null, [J("DOI "), K("small", null, "可选")], -1), B(K("input", {
 						"onUpdate:modelValue": (t) => e.doi = t,
 						maxlength: "300",
 						placeholder: "10.xxxx/xxxxx",
 						"aria-label": `第 ${n + 1} 个文件的 DOI`,
 						disabled: b.value
-					}, null, 8, _l), [[Fa, e.doi]])])
+					}, null, 8, bl), [[Fa, e.doi]])])
 				])) : Y("", !0)], 2))), 128))])])) : Y("", !0),
-				K("div", vl, [K("label", yl, [t[9] ||= K("span", null, "归档分类", -1), B(K("select", {
+				K("div", xl, [K("label", Sl, [t[9] ||= K("span", null, "归档分类", -1), B(K("select", {
 					"onUpdate:modelValue": t[2] ||= (e) => c.category = e,
 					disabled: b.value || f.value === "done"
 				}, [(W(!0), G(U, null, V(y.value, ([e, t]) => (W(), G("option", {
 					key: e,
 					value: e
-				}, j(t), 9, xl))), 128))], 8, bl), [[Ra, c.category]])])]),
-				f.value === "done" ? Y("", !0) : (W(), G("label", Sl, [B(K("input", {
+				}, j(t), 9, wl))), 128))], 8, Cl), [[Ra, c.category]])])]),
+				f.value === "done" ? Y("", !0) : (W(), G("label", Tl, [B(K("input", {
 					"onUpdate:modelValue": t[3] ||= (e) => c.confirmed = e,
 					type: "checkbox",
 					disabled: b.value
-				}, null, 8, Cl), [[Ia, c.confirmed]]), K("span", null, j(l.length > 1 ? "我已核对以上文件的题名与作者信息，并有权保存这些文件。" : "我已核对题名与作者与 PDF 首页一致，并有权保存该文件。"), 1)])),
-				p.value ? (W(), G("p", wl, j(p.value), 1)) : Y("", !0),
-				f.value === "done" ? (W(), G("p", Tl, [
+				}, null, 8, El), [[Ia, c.confirmed]]), K("span", null, j(l.length > 1 ? "我已核对以上文件的题名与作者信息，并有权保存这些文件。" : "我已核对题名与作者与 PDF 首页一致，并有权保存该文件。"), 1)])),
+				p.value ? (W(), G("p", Dl, j(p.value), 1)) : Y("", !0),
+				f.value === "done" ? (W(), G("p", Ol, [
 					J(" 已归档 " + j(g.value?.archived || 0) + " 篇", 1),
 					g.value?.skipped ? (W(), G(U, { key: 0 }, [J("，跳过 " + j(g.value.skipped) + " 个重复文件", 1)], 64)) : Y("", !0),
 					t[10] ||= J("。 ", -1)
 				])) : Y("", !0),
-				b.value ? (W(), G("div", El, [t[11] ||= K("span", { class: "busy-spinner" }, null, -1), f.value === "uploading" ? (W(), G(U, { key: 0 }, [J(" 正在上传第 " + j(m.value) + " / " + j(l.length) + " 个文件… ", 1)], 64)) : (W(), G(U, { key: 1 }, [J(" 正在核验并归档 " + j(C.value) + " / " + j(S.value) + " 篇… ", 1)], 64))])) : Y("", !0),
-				(f.value === "failed" || f.value === "done") && x.value ? (W(), G("details", Dl, [t[12] ||= K("summary", null, "查看任务日志", -1), K("pre", Ol, j(x.value), 1)])) : Y("", !0)
+				b.value ? (W(), G("div", kl, [t[11] ||= K("span", { class: "busy-spinner" }, null, -1), f.value === "uploading" ? (W(), G(U, { key: 0 }, [J(" 正在上传第 " + j(m.value) + " / " + j(l.length) + " 个文件… ", 1)], 64)) : (W(), G(U, { key: 1 }, [J(" 正在核验并归档 " + j(C.value) + " / " + j(S.value) + " 篇… ", 1)], 64))])) : Y("", !0),
+				(f.value === "failed" || f.value === "done") && x.value ? (W(), G("details", Al, [t[12] ||= K("summary", null, "查看任务日志", -1), K("pre", jl, j(x.value), 1)])) : Y("", !0)
 			]),
-			K("footer", kl, [f.value === "done" ? (W(), G("button", {
+			K("footer", Ml, [f.value === "done" ? (W(), G("button", {
 				key: 0,
 				type: "button",
 				class: "button primary",
@@ -5370,29 +5382,29 @@ var Ts = ["data-message"], Es = { class: "message-label sr-only" }, Ds = {
 				class: "button subtle",
 				disabled: b.value,
 				onClick: T
-			}, " 取消 ", 8, Al), K("button", {
+			}, " 取消 ", 8, Nl), K("button", {
 				id: "import-paper-submit",
 				type: "submit",
 				class: "button primary",
 				disabled: b.value || !l.length
-			}, [q($, { name: "upload" }), J(j(w.value), 1)], 8, jl)], 64))])
+			}, [q($, { name: "upload" }), J(j(w.value), 1)], 8, Pl)], 64))])
 		], 32)], 544));
 	}
-}, Pl = {
+}, Ll = {
 	class: "shell",
 	"data-framework": "vue"
-}, Fl = { class: "main" }, Il = { class: "topbar" }, Ll = { id: "page-title" }, Rl = { class: "top-actions" }, zl = {
+}, Rl = { class: "main" }, zl = { class: "topbar" }, Bl = { id: "page-title" }, Vl = { class: "top-actions" }, Hl = {
 	id: "library-summary",
 	class: "muted"
-}, Bl = ["disabled"], Vl = {
+}, Ul = {
 	class: "mobile-tabs",
 	"aria-label": "工作面板"
-}, Hl = ["data-panel", "onClick"], Ul = ["data-panel"], Wl = {
+}, Wl = ["data-panel", "onClick"], Gl = ["data-panel"], Kl = {
 	id: "toast-region",
 	class: "toast-region",
 	role: "status",
 	"aria-live": "polite"
-}, Gl = {
+}, ql = {
 	__name: "Workspace",
 	props: { workspace: {
 		type: Object,
@@ -5412,27 +5424,11 @@ var Ts = ["data-message"], Es = { class: "message-label sr-only" }, Ds = {
 			}, { signal: s.signal });
 		}), er(() => {
 			o?.(), s?.abort(), n.stop();
-		}), (e, t) => (W(), G(U, null, [K("div", Pl, [
+		}), (e, t) => (W(), G(U, null, [K("div", Ll, [
 			q(Mo),
-			K("main", Fl, [
-				K("header", Il, [K("h1", Ll, j(R(r).view === "library" ? "文献" : "下载任务"), 1), K("div", Rl, [
-					K("span", zl, j(R(r).papers.length) + " 篇文献 · " + j(i.value) + " 篇有笔记", 1),
-					R(r).view === "library" ? (W(), G("button", {
-						key: 0,
-						id: "import-paper",
-						class: "button primary",
-						title: "从本机导入 PDF 并归档",
-						onClick: t[0] ||= (e) => R(r).importOpen = !0
-					}, [q($, { name: "upload" }), t[3] ||= K("span", null, "导入 PDF", -1)])) : Y("", !0),
-					K("button", {
-						id: "refresh-catalog",
-						class: "button subtle",
-						title: "重新扫描目录并更新索引",
-						disabled: R(r).refreshing,
-						onClick: t[1] ||= (...e) => R(n).refreshCatalog && R(n).refreshCatalog(...e)
-					}, [q($, { name: "refresh" }), t[4] ||= K("span", null, "刷新索引", -1)], 8, Bl)
-				])]),
-				B(K("div", Vl, [(W(), G(U, null, V([
+			K("main", Rl, [
+				K("header", zl, [K("h1", Bl, j(R(r).view === "library" ? "文献" : "下载任务"), 1), K("div", Vl, [K("span", Hl, j(R(r).papers.length) + " 篇文献 · " + j(i.value) + " 篇有笔记", 1)])]),
+				B(K("div", Ul, [(W(), G(U, null, V([
 					["list", "文献"],
 					["reader", "阅读"],
 					["chat", "研究助手"]
@@ -5441,32 +5437,32 @@ var Ts = ["data-message"], Es = { class: "message-label sr-only" }, Ds = {
 					class: k({ active: R(r).panel === e }),
 					"data-panel": e,
 					onClick: (t) => R(n).setPanel(e)
-				}, j(t), 11, Hl)), 64))], 512), [[ea, R(r).view === "library"]]),
+				}, j(t), 11, Wl)), 64))], 512), [[ea, R(r).view === "library"]]),
 				B(K("section", {
 					id: "library-view",
 					class: "library-layout",
 					"data-panel": R(r).panel
 				}, [
-					q(es),
-					q(ns),
-					q(_c)
-				], 8, Ul), [[ea, R(r).view === "library"]]),
-				B(q(Uc, null, null, 512), [[ea, R(r).view === "downloads"]])
+					q(rs),
+					q(as),
+					q(bc)
+				], 8, Gl), [[ea, R(r).view === "library"]]),
+				B(q(Kc, null, null, 512), [[ea, R(r).view === "downloads"]])
 			]),
-			R(r).importOpen ? (W(), si(Nl, {
+			R(r).importOpen ? (W(), si(Il, {
 				key: 0,
-				onClose: t[2] ||= (e) => R(r).importOpen = !1,
+				onClose: t[0] ||= (e) => R(r).importOpen = !1,
 				onImported: a
 			})) : Y("", !0)
-		]), K("div", Wl, [(W(!0), G(U, null, V(R(r).toasts, (e) => (W(), G("div", {
+		]), K("div", Kl, [(W(!0), G(U, null, V(R(r).toasts, (e) => (W(), G("div", {
 			key: e.id,
 			class: k(["toast", { error: e.error }])
 		}, j(e.message), 3))), 128))])], 64));
 	}
 };
 // app/web/frontend/main.js
-function Kl(e, t = {}) {
-	let n = ws(t), r = Xa(Gl, { workspace: n });
+function Jl(e, t = {}) {
+	let n = Ds(t), r = Xa(ql, { workspace: n });
 	return r.mount(e), {
 		app: r,
 		workspace: n,
@@ -5475,5 +5471,5 @@ function Kl(e, t = {}) {
 		unmount: () => r.unmount()
 	};
 }
-typeof document < "u" && document.querySelector("#app") && Kl("#app");
-export { ws as createWorkspace, Kl as mountWorkspace };
+typeof document < "u" && document.querySelector("#app") && Jl("#app");
+export { Ds as createWorkspace, Jl as mountWorkspace };
