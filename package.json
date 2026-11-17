@@ -10,6 +10,7 @@
     "start": "node app/web/src/server.mjs",
     "build:web": "vite build --config app/web/vite.config.mjs",
     "test": "npm run build:web && node --test app/web/test/*.test.mjs",
+    "test:desktop": "node --test app/desktop/test/*.test.mjs",
     "test:downloads": "powershell -NoProfile -ExecutionPolicy Bypass -File app/scripts/download.ps1 -RunTests",
     "doctor": "powershell -NoProfile -ExecutionPolicy Bypass -File app/scripts/download.ps1 doctor",
     "desktop:dev": "npm run build:web && cd app/desktop && tauri dev",
