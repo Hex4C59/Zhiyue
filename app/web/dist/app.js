@@ -3250,7 +3250,10 @@ var mo = {
 }, ts = {
 	key: 0,
 	class: "empty-art"
-}, ns = { class: "empty-actions" }, rs = {
+}, ns = {
+	key: 1,
+	class: "empty-actions"
+}, rs = {
 	__name: "PaperList",
 	setup(e) {
 		let t = Mn("workspace"), n = t.state, r = X(() => [...new Set(n.papers.map((e) => e.year).filter(Boolean).map(String))].sort((e, t) => (Number(t) || 0) - (Number(e) || 0))), i = X(() => !!(n.query.trim() || n.year || n.read || n.starred)), a = X(() => i.value ? "没有匹配的文献" : n.category ? "这个文件夹还没有文献" : "文献库还没有文献"), o = X(() => {
@@ -3279,19 +3282,19 @@ var mo = {
 						placeholder: "搜索题名、作者、编号…",
 						"aria-label": "搜索文献"
 					}, null, 512), [[Fa, R(n).query]]),
-					s[10] ||= K("kbd", null, "/", -1)
+					s[9] ||= K("kbd", null, "/", -1)
 				]),
 				K("div", Io, [
 					B(K("select", {
 						id: "year-filter",
 						"onUpdate:modelValue": s[1] ||= (e) => R(n).year = e,
 						"aria-label": "按年份筛选"
-					}, [s[11] ||= K("option", { value: "" }, "全部年份", -1), (W(!0), G(U, null, V(r.value, (e) => (W(), G("option", { key: e }, j(e), 1))), 128))], 512), [[Ra, R(n).year]]),
+					}, [s[10] ||= K("option", { value: "" }, "全部年份", -1), (W(!0), G(U, null, V(r.value, (e) => (W(), G("option", { key: e }, j(e), 1))), 128))], 512), [[Ra, R(n).year]]),
 					B(K("select", {
 						id: "read-filter",
 						"onUpdate:modelValue": s[2] ||= (e) => R(n).read = e,
 						"aria-label": "按阅读状态筛选"
-					}, [s[12] ||= K("option", { value: "" }, "全部进度", -1), (W(!0), G(U, null, V(R(fo), (e, t) => (W(), G("option", {
+					}, [s[11] ||= K("option", { value: "" }, "全部进度", -1), (W(!0), G(U, null, V(R(fo), (e, t) => (W(), G("option", {
 						key: t,
 						value: t
 					}, j(e), 9, Lo))), 128))], 512), [[Ra, R(n).read]]),
@@ -3308,7 +3311,7 @@ var mo = {
 					id: "sort",
 					"onUpdate:modelValue": s[4] ||= (e) => R(n).sort = e,
 					"aria-label": "排序"
-				}, [...s[13] ||= [
+				}, [...s[12] ||= [
 					K("option", { value: "id" }, "编号顺序", -1),
 					K("option", { value: "year-desc" }, "年份从新到旧", -1),
 					K("option", { value: "year-asc" }, "年份从旧到新", -1),
@@ -3318,7 +3321,7 @@ var mo = {
 					class: "list-action",
 					title: "从本机导入 PDF 并归档",
 					onClick: s[5] ||= (e) => R(n).importOpen = !0
-				}, [q($, { name: "upload" }), s[14] ||= K("span", null, "导入 PDF", -1)]), K("button", {
+				}, [q($, { name: "upload" }), s[13] ||= K("span", null, "导入 PDF", -1)]), K("button", {
 					id: "refresh-catalog",
 					class: k(["icon-button compact", { refreshing: R(n).refreshing }]),
 					title: "重新扫描目录并更新索引",
@@ -3360,21 +3363,15 @@ var mo = {
 				K("div", Qo, [K("span", {
 					class: "tag",
 					title: e.subcategory || e.venue || ""
-				}, j((e.subcategory || e.venue || e.category || "未分类").replace(/^\d+_/, "")), 9, $o), K("span", { class: k(R(po)(e.readStatus)) }, [s[15] ||= K("i", { class: "read-dot" }, null, -1), J(j(R(fo)[R(po)(e.readStatus)]), 1)], 2)])
+				}, j((e.subcategory || e.venue || e.category || "未分类").replace(/^\d+_/, "")), 9, $o), K("span", { class: k(R(po)(e.readStatus)) }, [s[14] ||= K("i", { class: "read-dot" }, null, -1), J(j(R(fo)[R(po)(e.readStatus)]), 1)], 2)])
 			], 42, qo))), 128)), !R(n).libraryError && !o.value.length ? (W(), G("div", es, [
 				!i.value && !R(n).category ? (W(), G("span", ts, [q($, { name: "library" })])) : Y("", !0),
 				K("p", null, j(a.value), 1),
-				K("div", ns, [!i.value && !R(n).category ? (W(), G("button", {
-					key: 0,
-					id: "import-paper-empty",
-					class: "button primary",
-					onClick: s[8] ||= (e) => R(n).importOpen = !0
-				}, [q($, { name: "upload" }), s[16] ||= J("导入 PDF ", -1)])) : Y("", !0), i.value || R(n).category ? (W(), G("button", {
-					key: 1,
+				i.value || R(n).category ? (W(), G("div", ns, [K("button", {
 					id: "reset-filters",
 					class: "button subtle",
-					onClick: s[9] ||= (...e) => R(t).resetFilters && R(t).resetFilters(...e)
-				}, j(i.value ? "清除筛选" : "查看全部文献"), 1)) : Y("", !0)])
+					onClick: s[8] ||= (...e) => R(t).resetFilters && R(t).resetFilters(...e)
+				}, j(i.value ? "清除筛选" : "查看全部文献"), 1)])) : Y("", !0)
 			])) : Y("", !0)]),
 			q(_o, { kind: "papers" })
 		]));
@@ -5032,88 +5029,116 @@ var Os = ["data-message"], ks = { class: "message-label sr-only" }, As = {
 		let n = Mn("workspace"), r = n.state, i = t, a = /* @__PURE__ */ L(null), o = /* @__PURE__ */ L(null), s = /* @__PURE__ */ L(null), c = /* @__PURE__ */ Ft({
 			category: "papers/09_情感综述调研/网站导入",
 			confirmed: !1
-		}), l = /* @__PURE__ */ Ft([]), u = /* @__PURE__ */ L(""), d = /* @__PURE__ */ L(!1), f = /* @__PURE__ */ L("idle"), p = /* @__PURE__ */ L(""), m = /* @__PURE__ */ L(0), h = /* @__PURE__ */ L([]), g = /* @__PURE__ */ L(null), _ = /* @__PURE__ */ L(null), v = 0, y = X(() => so(r.categories)), b = X(() => f.value === "uploading" || f.value === "processing"), x = X(() => {
-			let e = _.value?.log;
+		}), l = /* @__PURE__ */ Ft([]), u = /* @__PURE__ */ L(""), d = /* @__PURE__ */ L(!1), f = /* @__PURE__ */ L(null), p = /* @__PURE__ */ L(!1), m = /* @__PURE__ */ L("idle"), h = /* @__PURE__ */ L(""), g = /* @__PURE__ */ L(0), _ = /* @__PURE__ */ L([]), v = /* @__PURE__ */ L(null), y = /* @__PURE__ */ L(null), b = 0, x = X(() => {
+			let e = so(r.categories), t = f.value;
+			return t && !e.some(([e]) => e === t[0]) && e.push(t), e;
+		}), S = X(() => m.value === "uploading" || m.value === "processing"), C = X(() => {
+			let e = y.value?.log;
 			return (Array.isArray(e) ? e.join("") : e || "").slice(-4e3);
-		}), S = X(() => l.length - h.value.length), C = X(() => {
-			let e = _.value?.steps || [], t = e.filter((e) => e.action === "attach" && e.status === "completed").length, n = e.some((e) => e.action === "archive");
-			return Math.min(t + +!!n, S.value);
-		}), w = X(() => f.value === "uploading" ? "正在上传…" : f.value === "processing" ? "正在归档…" : f.value === "failed" ? "重试" : l.length > 1 ? `导入并归档 ${l.length} 篇` : "导入并归档");
+		}), w = X(() => l.length - _.value.length), T = X(() => {
+			let e = y.value?.steps || [], t = e.filter((e) => e.action === "attach" && e.status === "completed").length, n = e.some((e) => e.action === "archive");
+			return Math.min(t + +!!n, w.value);
+		}), ee = X(() => m.value === "uploading" ? "正在上传…" : m.value === "processing" ? "正在归档…" : m.value === "failed" ? "重试" : l.length > 1 ? `导入并归档 ${l.length} 篇` : "导入并归档");
 		$n(() => {
 			let e = a.value;
 			typeof e?.showModal == "function" ? e.showModal() : e?.setAttribute("open", "");
 		});
-		function T() {
-			if (b.value) return;
+		function te() {
+			if (S.value) return;
 			let e = a.value;
 			typeof e?.close == "function" && e.close(), i("close");
 		}
-		function ee(e) {
-			e.target === a.value && !b.value && T();
+		function E(e) {
+			e.target === a.value && !S.value && te();
 		}
-		function te(e) {
+		function ne(e) {
 			let t = e / 1024 / 1024;
 			return t >= 1 ? `${t.toFixed(1)} MB` : `${Math.max(1, Math.round(e / 1024))} KB`;
 		}
-		function E() {
+		function D() {
 			for (let e of [o.value, s.value]) e && (e.value = "");
 		}
-		function ne(e) {
-			ie(e.target.files), E();
+		function re(e) {
+			ce(e.target.files), D();
 		}
-		function D() {
+		function ie() {
 			o.value?.click();
 		}
-		function re() {
+		function O() {
 			s.value?.click();
 		}
-		function ie(e) {
-			if (b.value) return;
-			p.value = "";
-			let t = [], n = 0;
-			for (let r of Array.from(e || [])) {
-				if (!r) continue;
-				if (!/\.pdf$/i.test(r.name)) {
-					t.push(`${r.name} 不是 PDF`);
+		function ae(e) {
+			let t = /* @__PURE__ */ new Set();
+			for (let n of e) {
+				let e = n.webkitRelativePath || "";
+				e.includes("/") && t.add(e.split("/")[0]);
+			}
+			return t.size === 1 ? [...t][0] : "";
+		}
+		function oe(e) {
+			let t = (e) => String(e).replace(/^\d+_/, "").trim().toLocaleLowerCase(), n = x.value, r = n.find(([t]) => t.split("/")[1] === e);
+			if (r) return r[0];
+			let i = n.find(([n]) => t(n.split("/")[1]) === t(e));
+			return i ? i[0] : "";
+		}
+		function se(e) {
+			let t = String(e || "").trim();
+			return !t || t === "." || t === ".." || t.includes("..") || /[\\/:*?"<>|\x00-\x1f\x7f]/.test(t) || /[. ]$/.test(t) || /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(t) ? null : {
+				value: `papers/${t}/网站导入`,
+				label: `${t.replace(/^\d+_/, "")} / 网站导入（新建）`
+			};
+		}
+		function ce(e, t = "") {
+			if (S.value) return;
+			h.value = "";
+			let n = !l.length, r = ae(e) || t, i = [], a = 0, o = 0;
+			for (let t of Array.from(e || [])) {
+				if (!t || !/\.pdf$/i.test(t.name)) continue;
+				if (t.size > 26214400) {
+					i.push(`${t.name} 超过 25 MB`);
 					continue;
 				}
-				if (r.size > 26214400) {
-					t.push(`${r.name} 超过 25 MB`);
-					continue;
-				}
-				if (r.size === 0) {
-					t.push(`${r.name} 为空`);
+				if (t.size === 0) {
+					i.push(`${t.name} 为空`);
 					continue;
 				}
 				if (l.length >= Fl) {
-					t.push(`每次最多导入 ${Fl} 个 PDF`);
-					break;
+					o += 1;
+					continue;
 				}
-				let e = r.webkitRelativePath || r.name;
-				if (l.some((t) => t.relative === e && t.size === r.size && t.lastModified === r.lastModified)) continue;
-				let i = `f${++v}`, a = r.name.replace(/\.pdf$/i, "").replace(/[_\s]+/g, " ").trim();
+				let e = t.webkitRelativePath || t.name;
+				if (l.some((n) => n.relative === e && n.size === t.size && n.lastModified === t.lastModified)) continue;
+				let n = `f${++b}`, r = t.name.replace(/\.pdf$/i, "").replace(/[_\s]+/g, " ").trim();
 				l.push({
-					key: i,
-					file: Ut(r),
-					name: r.name,
+					key: n,
+					file: Ut(t),
+					name: t.name,
 					relative: e,
-					size: r.size,
-					lastModified: r.lastModified,
-					title: a,
+					size: t.size,
+					lastModified: t.lastModified,
+					title: r,
 					authors: "",
 					year: "",
 					doi: "",
 					uploadId: "",
 					status: "new",
 					note: ""
-				}), n += 1;
+				}), a += 1;
 			}
-			if (!u.value && l.length === 1 && (u.value = l[0].key), n && (c.confirmed = !1), t.length) {
-				let e = t.length > 3 ? `；另有 ${t.length - 3} 个未加入` : "";
-				p.value = `${t.slice(0, 3).join("；")}${e}。`;
+			if (n && a && !d.value && r) {
+				let e = oe(r);
+				if (e) f.value = null, c.category = e;
+				else {
+					let e = se(r);
+					e && (f.value = [e.value, e.label], c.category = e.value);
+				}
 			}
+			if (!u.value && l.length === 1 && (u.value = l[0].key), a && (c.confirmed = !1), o && i.unshift(`每次最多导入 ${Fl} 个 PDF，其余 ${o} 个未加入`), i.length) {
+				let e = i.length > 3 ? `；另有 ${i.length - 3} 个未加入` : "";
+				h.value = `${i.slice(0, 3).join("；")}${e}。`;
+			} else a || (h.value = "所选内容中没有可导入的 PDF。");
 		}
-		async function O(e, t) {
+		async function le(e, t) {
 			if (e.isFile) {
 				let n = await new Promise((t, n) => e.file(t, n));
 				/\.pdf$/i.test(n.name) && t.push(n);
@@ -5124,44 +5149,44 @@ var Os = ["data-message"], ks = { class: "message-label sr-only" }, As = {
 			for (;;) {
 				let e = await new Promise((e, t) => n.readEntries(e, t));
 				if (!e.length) break;
-				for (let n of e) await O(n, t);
+				for (let n of e) await le(n, t);
 				if (t.length > Fl) break;
 			}
 		}
-		async function ae(e) {
-			if (d.value = !1, b.value) return;
+		async function ue(e) {
+			if (p.value = !1, S.value) return;
 			let t = e.dataTransfer;
 			if (!t) return;
 			let n = [...t.items || []].map((e) => e.kind === "file" ? e.webkitGetAsEntry?.() : null).filter(Boolean);
 			if (!n.length) {
-				ie(t.files);
+				ce(t.files);
 				return;
 			}
 			let r = [];
 			try {
-				for (let e of n) await O(e, r);
+				for (let e of n) await le(e, r);
 			} catch {
-				p.value = "无法读取拖入的部分文件，请改用“选择文件”或“选择文件夹”。";
+				h.value = "无法读取拖入的部分文件，请改用“选择文件”或“选择文件夹”。";
 				return;
 			}
-			if (!r.length) return p.value = "拖入的内容中没有可导入的 PDF。";
-			ie(r);
+			if (!r.length) return h.value = "拖入的内容中没有可导入的 PDF。";
+			ce(r, n.length === 1 && n[0].isDirectory ? n[0].name : "");
 		}
-		function oe(e) {
+		function de(e) {
 			u.value = u.value === e.key ? "" : e.key;
 		}
-		function se(e) {
-			if (b.value) return;
+		function fe(e) {
+			if (S.value) return;
 			let t = l.indexOf(e);
-			t < 0 || (l.splice(t, 1), u.value === e.key && (u.value = ""), l.length || le());
+			t < 0 || (l.splice(t, 1), u.value === e.key && (u.value = ""), l.length || me());
 		}
-		function ce() {
-			!b.value && l.length && window.confirm("清空已选文件和已填信息？") && (l.splice(0), u.value = "", le(), E());
+		function pe() {
+			!S.value && l.length && window.confirm("清空已选文件和已填信息？") && (l.splice(0), u.value = "", d.value = !1, f.value = null, me(), D());
 		}
-		function le() {
-			c.confirmed = !1, f.value = "idle", p.value = "", h.value = [], g.value = null, _.value = null;
+		function me() {
+			c.confirmed = !1, m.value = "idle", h.value = "", _.value = [], v.value = null, y.value = null;
 		}
-		function ue() {
+		function he() {
 			if (!l.length) return "请选择要导入的 PDF。";
 			for (let [e, t] of l.entries()) {
 				if (!t.title.trim()) return u.value = t.key, `第 ${e + 1} 个文件缺少题名。`;
@@ -5171,25 +5196,25 @@ var Os = ["data-message"], ks = { class: "message-label sr-only" }, As = {
 			}
 			return c.confirmed ? "" : "请先核对题名与作者信息。";
 		}
-		async function de(e) {
+		async function ge(e) {
 			for (;;) {
 				let t = await n.api(`/api/jobs/${ro(e)}`);
-				if (r.jobs.set(t.id, t), _.value = t, t.status === "completed") return t;
+				if (r.jobs.set(t.id, t), y.value = t, t.status === "completed") return t;
 				if (t.status === "failed") throw Error(t.error || "导入任务失败。");
 				await new Promise((e) => setTimeout(e, 800));
 			}
 		}
-		async function fe() {
-			if (b.value) return;
-			p.value = "";
-			let e = ue();
-			if (e) return p.value = e;
+		async function _e() {
+			if (S.value) return;
+			h.value = "";
+			let e = he();
+			if (e) return h.value = e;
 			let t = new Set(r.papers.map((e) => e.literature_id));
-			h.value = [], g.value = null, f.value = "uploading", m.value = 0;
+			_.value = [], v.value = null, m.value = "uploading", g.value = 0;
 			let a = null;
 			try {
-				for (let [e, t] of l.entries()) t.status = t.uploadId ? "ready" : "new", t.note = "", t.uploadId || (a = t, m.value = e + 1, t.status = "uploading", t.uploadId = (await n.uploadFile(t.file)).id, t.status = "ready");
-				a = null, f.value = "processing";
+				for (let [e, t] of l.entries()) t.status = t.uploadId ? "ready" : "new", t.note = "", t.uploadId || (a = t, g.value = e + 1, t.status = "uploading", t.uploadId = (await n.uploadFile(t.file)).id, t.status = "ready");
+				a = null, m.value = "processing";
 				let { job: e, skipped: o } = await n.importPdfs({
 					uploads: l.map((e) => ({
 						uploadId: e.uploadId,
@@ -5200,38 +5225,38 @@ var Os = ["data-message"], ks = { class: "message-label sr-only" }, As = {
 					})),
 					category: c.category
 				});
-				h.value = o || [];
-				for (let e of h.value) {
+				_.value = o || [];
+				for (let e of _.value) {
 					let t = l[e.index];
 					t && (t.status = "skipped", t.note = e.literature_id ? `已归档为 ${e.literature_id}${e.literature_title ? `：${e.literature_title}` : ""}` : e.reason);
 				}
-				_.value = e;
-				let s = await de(e.id);
+				y.value = e;
+				let s = await ge(e.id);
 				await n.loadLibrary();
-				let u = Number(s.result?.counts?.archived) || 0, d = Math.max(0, S.value - u), v = r.papers.filter((e) => !t.has(e.literature_id));
-				if (g.value = {
+				let u = Number(s.result?.counts?.archived) || 0, d = Math.max(0, w.value - u), f = r.papers.filter((e) => !t.has(e.literature_id));
+				if (v.value = {
 					archived: u,
-					skipped: h.value.length,
+					skipped: _.value.length,
 					failed: d
 				}, u) {
-					let e = v.slice(0, 6).map((e) => e.literature_id).join("、"), t = v.length > 6 ? ` 等 ${v.length} 篇` : "", r = h.value.length ? `，跳过 ${h.value.length} 个重复文件` : "";
-					n.toast(`已归档 ${u} 篇${e ? `：${e}${t}` : ""}${r}`), v[0] && (n.selectPaper(v[0].literature_id), i("imported", v[0].literature_id));
+					let e = f.slice(0, 6).map((e) => e.literature_id).join("、"), t = f.length > 6 ? ` 等 ${f.length} 篇` : "", r = _.value.length ? `，跳过 ${_.value.length} 个重复文件` : "";
+					n.toast(`已归档 ${u} 篇${e ? `：${e}${t}` : ""}${r}`), f[0] && (n.selectPaper(f[0].literature_id), i("imported", f[0].literature_id));
 				}
 				if (d) {
-					f.value = "failed", p.value = `${u} 篇已归档，${d} 篇未完成；可查看任务日志后重试。`;
+					m.value = "failed", h.value = `${u} 篇已归档，${d} 篇未完成；可查看任务日志后重试。`;
 					return;
 				}
 				if (!u) {
-					f.value = "failed", p.value = "导入流程结束，但没有新归档的文献；请查看任务日志。";
+					m.value = "failed", h.value = "导入流程结束，但没有新归档的文献；请查看任务日志。";
 					return;
 				}
-				if (h.value.length) {
-					f.value = "done";
+				if (_.value.length) {
+					m.value = "done";
 					return;
 				}
 				i("close");
 			} catch (e) {
-				a && a.status === "uploading" ? (a.status = "error", a.note = e.message, p.value = `${a.name} 上传失败：${e.message}`) : p.value = e.message || "导入失败。", f.value = "failed";
+				a && a.status === "uploading" ? (a.status = "error", a.note = e.message, h.value = `${a.name} 上传失败：${e.message}`) : h.value = e.message || "导入失败。", m.value = "failed";
 			}
 		}
 		return (e, t) => (W(), G("dialog", {
@@ -5239,19 +5264,19 @@ var Os = ["data-message"], ks = { class: "message-label sr-only" }, As = {
 			ref: a,
 			class: "import-dialog",
 			"aria-labelledby": "import-title",
-			onCancel: Z(T, ["prevent"]),
-			onClick: ee
+			onCancel: Z(te, ["prevent"]),
+			onClick: E
 		}, [K("form", {
 			class: "import-sheet",
-			onSubmit: Z(fe, ["prevent"])
+			onSubmit: Z(_e, ["prevent"])
 		}, [
-			K("header", qc, [t[4] ||= K("div", null, [K("h2", { id: "import-title" }, "导入 PDF"), K("p", null, "可多选或添加文件夹，核对题名后批量归档。")], -1), K("button", {
+			K("header", qc, [t[5] ||= K("div", null, [K("h2", { id: "import-title" }, "导入 PDF"), K("p", null, "可多选或添加文件夹，核对题名后批量归档。")], -1), K("button", {
 				type: "button",
 				class: "icon-button",
 				title: "关闭",
 				"aria-label": "关闭",
-				disabled: b.value,
-				onClick: T
+				disabled: S.value,
+				onClick: te
 			}, [q($, { name: "close" })], 8, Jc)]),
 			K("div", Yc, [
 				K("input", {
@@ -5261,7 +5286,7 @@ var Os = ["data-message"], ks = { class: "message-label sr-only" }, As = {
 					accept: ".pdf,application/pdf",
 					multiple: "",
 					hidden: "",
-					onChange: ne
+					onChange: re
 				}, null, 544),
 				K("input", {
 					ref_key: "folderInput",
@@ -5272,30 +5297,30 @@ var Os = ["data-message"], ks = { class: "message-label sr-only" }, As = {
 					directory: "",
 					multiple: "",
 					hidden: "",
-					onChange: ne
+					onChange: re
 				}, null, 544),
 				K("div", Xc, [K("button", {
 					type: "button",
 					class: k(["import-file", {
-						dragging: d.value,
+						dragging: p.value,
 						compact: l.length
 					}]),
-					disabled: b.value,
-					onClick: D,
-					onDragover: t[0] ||= Z((e) => d.value = !0, ["prevent"]),
-					onDragleave: t[1] ||= (e) => d.value = !1,
-					onDrop: Z(ae, ["prevent"])
+					disabled: S.value,
+					onClick: ie,
+					onDragover: t[0] ||= Z((e) => p.value = !0, ["prevent"]),
+					onDragleave: t[1] ||= (e) => p.value = !1,
+					onDrop: Z(ue, ["prevent"])
 				}, [K("span", Qc, [q($, { name: "upload" })]), K("span", $c, [K("strong", null, j(l.length ? "继续添加 PDF" : "选择 PDF 文件"), 1), K("small", null, j(l.length ? "可多选，或把文件、文件夹拖到这里" : "可多选，或把文件、文件夹拖到这里，单个最大 25 MB"), 1)])], 42, Zc), K("button", {
 					type: "button",
 					class: "import-folder",
-					disabled: b.value,
-					onClick: re
-				}, [q($, { name: "folder" }), t[5] ||= K("span", null, "选择文件夹", -1)], 8, el)]),
-				l.length ? (W(), G("div", tl, [K("div", nl, [K("span", null, [J(j(l.length) + " 个 PDF ", 1), h.value.length ? (W(), G(U, { key: 0 }, [J(" · 跳过 " + j(h.value.length) + " 个", 1)], 64)) : Y("", !0)]), K("button", {
+					disabled: S.value,
+					onClick: O
+				}, [q($, { name: "folder" }), t[6] ||= K("span", null, "选择文件夹", -1)], 8, el)]),
+				l.length ? (W(), G("div", tl, [K("div", nl, [K("span", null, [J(j(l.length) + " 个 PDF ", 1), _.value.length ? (W(), G(U, { key: 0 }, [J(" · 跳过 " + j(_.value.length) + " 个", 1)], 64)) : Y("", !0)]), K("button", {
 					type: "button",
 					class: "text-button",
-					disabled: b.value,
-					onClick: ce
+					disabled: S.value,
+					onClick: pe
 				}, " 清空 ", 8, rl)]), K("div", il, [(W(!0), G(U, null, V(l, (e, n) => (W(), G("article", {
 					key: e.key,
 					class: k(["import-item", e.status])
@@ -5307,8 +5332,8 @@ var Os = ["data-message"], ks = { class: "message-label sr-only" }, As = {
 						maxlength: "300",
 						placeholder: "题名（必填，与 PDF 首页一致）",
 						"aria-label": `第 ${n + 1} 个文件的题名`,
-						disabled: b.value
-					}, null, 8, cl), [[Fa, e.title]]), K("small", ll, [J(j(e.relative) + " · " + j(te(e.size)), 1), e.note ? (W(), G(U, { key: 0 }, [J(" · " + j(e.note), 1)], 64)) : Y("", !0)])]),
+						disabled: S.value
+					}, null, 8, cl), [[Fa, e.title]]), K("small", ll, [J(j(e.relative) + " · " + j(ne(e.size)), 1), e.note ? (W(), G(U, { key: 0 }, [J(" · " + j(e.note), 1)], 64)) : Y("", !0)])]),
 					e.status === "skipped" ? (W(), G("span", ul, "已跳过")) : e.status === "error" ? (W(), G("span", dl, "未完成")) : Y("", !0),
 					K("button", {
 						type: "button",
@@ -5316,78 +5341,79 @@ var Os = ["data-message"], ks = { class: "message-label sr-only" }, As = {
 						title: u.value === e.key ? "收起作者、年份和 DOI" : "填写作者、年份和 DOI",
 						"aria-label": u.value === e.key ? "收起书目信息" : "展开书目信息",
 						"aria-expanded": u.value === e.key,
-						disabled: b.value,
-						onClick: (t) => oe(e)
+						disabled: S.value,
+						onClick: (t) => de(e)
 					}, [q($, { name: "chevron" })], 10, fl),
 					K("button", {
 						type: "button",
 						class: "icon-button",
 						title: "移除",
 						"aria-label": "移除",
-						disabled: b.value,
-						onClick: (t) => se(e)
+						disabled: S.value,
+						onClick: (t) => fe(e)
 					}, [q($, { name: "close" })], 8, pl)
 				]), u.value === e.key ? (W(), G("div", ml, [
-					K("label", hl, [t[6] ||= K("span", null, [J("作者 "), K("small", null, "多位作者用分号隔开")], -1), B(K("input", {
+					K("label", hl, [t[7] ||= K("span", null, [J("作者 "), K("small", null, "多位作者用分号隔开")], -1), B(K("input", {
 						"onUpdate:modelValue": (t) => e.authors = t,
 						maxlength: "3000",
 						placeholder: "例如：张三; 李四",
 						"aria-label": `第 ${n + 1} 个文件的作者`,
-						disabled: b.value
+						disabled: S.value
 					}, null, 8, gl), [[Fa, e.authors]])]),
-					K("label", _l, [t[7] ||= K("span", null, "年份", -1), B(K("input", {
+					K("label", _l, [t[8] ||= K("span", null, "年份", -1), B(K("input", {
 						"onUpdate:modelValue": (t) => e.year = t,
 						inputmode: "numeric",
 						maxlength: "4",
 						placeholder: "2024",
 						"aria-label": `第 ${n + 1} 个文件的年份`,
-						disabled: b.value
+						disabled: S.value
 					}, null, 8, vl), [[Fa, e.year]])]),
-					K("label", yl, [t[8] ||= K("span", null, [J("DOI "), K("small", null, "可选")], -1), B(K("input", {
+					K("label", yl, [t[9] ||= K("span", null, [J("DOI "), K("small", null, "可选")], -1), B(K("input", {
 						"onUpdate:modelValue": (t) => e.doi = t,
 						maxlength: "300",
 						placeholder: "10.xxxx/xxxxx",
 						"aria-label": `第 ${n + 1} 个文件的 DOI`,
-						disabled: b.value
+						disabled: S.value
 					}, null, 8, bl), [[Fa, e.doi]])])
 				])) : Y("", !0)], 2))), 128))])])) : Y("", !0),
-				K("div", xl, [K("label", Sl, [t[9] ||= K("span", null, "归档分类", -1), B(K("select", {
+				K("div", xl, [K("label", Sl, [t[10] ||= K("span", null, "归档分类", -1), B(K("select", {
 					"onUpdate:modelValue": t[2] ||= (e) => c.category = e,
-					disabled: b.value || f.value === "done"
-				}, [(W(!0), G(U, null, V(y.value, ([e, t]) => (W(), G("option", {
+					disabled: S.value || m.value === "done",
+					onChange: t[3] ||= (e) => d.value = !0
+				}, [(W(!0), G(U, null, V(x.value, ([e, t]) => (W(), G("option", {
 					key: e,
 					value: e
-				}, j(t), 9, wl))), 128))], 8, Cl), [[Ra, c.category]])])]),
-				f.value === "done" ? Y("", !0) : (W(), G("label", Tl, [B(K("input", {
-					"onUpdate:modelValue": t[3] ||= (e) => c.confirmed = e,
+				}, j(t), 9, wl))), 128))], 40, Cl), [[Ra, c.category]])])]),
+				m.value === "done" ? Y("", !0) : (W(), G("label", Tl, [B(K("input", {
+					"onUpdate:modelValue": t[4] ||= (e) => c.confirmed = e,
 					type: "checkbox",
-					disabled: b.value
+					disabled: S.value
 				}, null, 8, El), [[Ia, c.confirmed]]), K("span", null, j(l.length > 1 ? "我已核对以上文件的题名与作者信息，并有权保存这些文件。" : "我已核对题名与作者与 PDF 首页一致，并有权保存该文件。"), 1)])),
-				p.value ? (W(), G("p", Dl, j(p.value), 1)) : Y("", !0),
-				f.value === "done" ? (W(), G("p", Ol, [
-					J(" 已归档 " + j(g.value?.archived || 0) + " 篇", 1),
-					g.value?.skipped ? (W(), G(U, { key: 0 }, [J("，跳过 " + j(g.value.skipped) + " 个重复文件", 1)], 64)) : Y("", !0),
-					t[10] ||= J("。 ", -1)
+				h.value ? (W(), G("p", Dl, j(h.value), 1)) : Y("", !0),
+				m.value === "done" ? (W(), G("p", Ol, [
+					J(" 已归档 " + j(v.value?.archived || 0) + " 篇", 1),
+					v.value?.skipped ? (W(), G(U, { key: 0 }, [J("，跳过 " + j(v.value.skipped) + " 个重复文件", 1)], 64)) : Y("", !0),
+					t[11] ||= J("。 ", -1)
 				])) : Y("", !0),
-				b.value ? (W(), G("div", kl, [t[11] ||= K("span", { class: "busy-spinner" }, null, -1), f.value === "uploading" ? (W(), G(U, { key: 0 }, [J(" 正在上传第 " + j(m.value) + " / " + j(l.length) + " 个文件… ", 1)], 64)) : (W(), G(U, { key: 1 }, [J(" 正在核验并归档 " + j(C.value) + " / " + j(S.value) + " 篇… ", 1)], 64))])) : Y("", !0),
-				(f.value === "failed" || f.value === "done") && x.value ? (W(), G("details", Al, [t[12] ||= K("summary", null, "查看任务日志", -1), K("pre", jl, j(x.value), 1)])) : Y("", !0)
+				S.value ? (W(), G("div", kl, [t[12] ||= K("span", { class: "busy-spinner" }, null, -1), m.value === "uploading" ? (W(), G(U, { key: 0 }, [J(" 正在上传第 " + j(g.value) + " / " + j(l.length) + " 个文件… ", 1)], 64)) : (W(), G(U, { key: 1 }, [J(" 正在核验并归档 " + j(T.value) + " / " + j(w.value) + " 篇… ", 1)], 64))])) : Y("", !0),
+				(m.value === "failed" || m.value === "done") && C.value ? (W(), G("details", Al, [t[13] ||= K("summary", null, "查看任务日志", -1), K("pre", jl, j(C.value), 1)])) : Y("", !0)
 			]),
-			K("footer", Ml, [f.value === "done" ? (W(), G("button", {
+			K("footer", Ml, [m.value === "done" ? (W(), G("button", {
 				key: 0,
 				type: "button",
 				class: "button primary",
-				onClick: T
+				onClick: te
 			}, "完成")) : (W(), G(U, { key: 1 }, [K("button", {
 				type: "button",
 				class: "button subtle",
-				disabled: b.value,
-				onClick: T
+				disabled: S.value,
+				onClick: te
 			}, " 取消 ", 8, Nl), K("button", {
 				id: "import-paper-submit",
 				type: "submit",
 				class: "button primary",
-				disabled: b.value || !l.length
-			}, [q($, { name: "upload" }), J(j(w.value), 1)], 8, Pl)], 64))])
+				disabled: S.value || !l.length
+			}, [q($, { name: "upload" }), J(j(ee.value), 1)], 8, Pl)], 64))])
 		], 32)], 544));
 	}
 }, Ll = {

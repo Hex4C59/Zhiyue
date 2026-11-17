@@ -7,7 +7,7 @@
 - `tools/`：本机第三方工具安装和机构登录环境。安装路径保持原样，避免损坏已有虚拟环境。
 - `releases/`：packages 保存干净分享包，projects 保存对应分享副本。
 
-根目录只保留 README、AGENTS、.gitignore、package.json 和网站启动入口。文献总索引是 `library/README.md`。
+根目录只保留 README、AGENTS、.gitignore、package.json 和网站、桌面启动入口。文献总索引是 `library/README.md`。
 
 ## 程序分层
 
@@ -53,7 +53,9 @@ npm run desktop:build
 
 推荐使用根目录的 `./start-web.cmd` 启动网站，避免旧版 Windows PowerShell 对本地脚本的来源或签名判断造成拦截；该入口仅对启动子进程设置执行策略。`./start-web.ps1` 转发到 `app/scripts`。网站默认读取 `library`；下载工具默认将 `library` 作为 `--root`。显式 `--root` 仍支持隔离工作区与测试。
 
-CMD 启动入口显式调用系统 Windows PowerShell，避免 PATH 中同名程序造成差异。根目录和 app/scripts 下的 start-web.ps1 使用 UTF-8 BOM 编码，修改时应保留 BOM，以兼容 Windows PowerShell 5.1 对中文注释和字符串的解析。
+CMD 启动入口显式调用系统 Windows PowerShell，避免 PATH 中同名程序造成差异。根目录和 app/scripts 下的 start-web.ps1、start-desktop.ps1 使用 UTF-8 BOM 编码，修改时应保留 BOM，以兼容 Windows PowerShell 5.1 对中文注释和字符串的解析。
+
+构建桌面版后可用根目录的 `./start-desktop.cmd` 启动窗口。该入口默认将 `LITERATURE_LIBRARY` 指向本项目的 `library`，并优先将 `LITERATURE_PYTHON` 指向 `app/downloader/.venv`；可用 `-Library`、`-Python` 改为其他位置。直接运行可执行文件不会带上这些路径。
 
 网站私有状态在 `library/.zhiyue/data/`。原上传文件路径已随目录迁移更新，聊天文本及会话标识保留。PDF 渲染使用 `library/.zhiyue/cache/pdf-preview/` 下的派生缓存，不修改原文。
 
@@ -61,7 +63,7 @@ CMD 启动入口显式调用系统 Windows PowerShell，避免 PATH 中同名程
 
 ## 桌面应用
 
-桌面版由 Tauri 2 启动原生窗口和托盘，并拉起内置 Node 运行 `app/web/src/server.mjs`；服务在标准输出给出地址后窗口跳转过去，关闭窗口只隐藏到托盘，托盘菜单可显示、检查更新或退出。Rust 代码在 `app/desktop/src-tauri/src/`。调试构建从仓库根定位网站源码；发布构建读取 `resources/runtime/`，该目录由 `npm run desktop:prepare` 生成并被 Git 忽略，包含网站、下载器、文献库模板和当前机器的 Node 可执行文件。安装版默认使用 `文档/Zhiyue/library`，`LITERATURE_LIBRARY` 可覆盖；Pi Agent 登录配置、Python 和 Poppler 取用户本机安装。
+桌面版由 Tauri 2 启动原生窗口和托盘，并拉起内置 Node 运行 `app/web/src/server.mjs`；服务在标准输出给出地址后窗口跳转过去，关闭窗口只隐藏到托盘，托盘菜单可显示、检查更新或退出。Rust 代码在 `app/desktop/src-tauri/src/`。调试构建从仓库根定位网站源码；发布构建读取 `resources/runtime/`，该目录由 `npm run desktop:prepare` 生成并被 Git 忽略，包含网站、下载器、文献库模板和当前机器的 Node 可执行文件。安装版默认使用 `文档/Zhiyue/library`，`LITERATURE_LIBRARY` 可覆盖；Pi Agent 登录配置、Python 和 Poppler 取用户本机安装。本机构建可用 `./start-desktop.cmd` 让桌面版直接使用项目文献库和虚拟环境。
 
 `npm run desktop:build` 默认生成未签名安装包。以下变量只在本机构建环境设置，不写入仓库配置：
 
@@ -70,7 +72,7 @@ CMD 启动入口显式调用系统 Windows PowerShell，避免 PATH 中同名程
 
 应用启动后静默检查一次更新，失败不打扰用户；托盘“检查更新”会显示检查和安装结果。更新源通过运行环境变量 `ZHIYUE_UPDATE_ENDPOINT` 指定为 `latest.json` 地址，未设置时提示尚未配置。`latest.json` 中 `windows-x86_64` 平台的 `signature` 填 `.sig` 文件内容，`url` 指向安装包；正式发布的更新源必须使用 HTTPS，发布构建会拒绝 HTTP 地址。
 
-文献库由随包本地服务在首次启动时创建：默认在 `文档/Zhiyue/library`（`LITERATURE_LIBRARY` 可覆盖）建立 `papers/`、`notes/`、`synthesis/`、`outputs/` 和隐藏的 `.zhiyue/`（索引、批次、数据、缓存、临时文件），从随包模板复制 `README.md` 与 `.zhiyue/AGENTS.md`，并写入记录数为 0 的 `文献索引.json`。已有文件不覆盖；导入和归档只在 `papers/` 下按分类创建目录并更新索引。侧栏“分类”旁的加号可新建文件夹，文件夹行悬停或聚焦时出现的铅笔按钮可重命名；两者直接操作 `papers/` 下的编号目录，重命名还会同步更新 README、笔记、成果和索引中的路径。文献页的“导入 PDF”支持多选、选择文件夹或拖放批量导入本机 PDF（单次最多 100 个），逐条预填并编辑题名、作者、年份和 DOI，复用下载工具的导入、逐条核验与整批归档流程；PDF 内容按 SHA-256 查重，重复文件跳过并给出已有编号。
+文献库由随包本地服务在首次启动时创建：默认在 `文档/Zhiyue/library`（`LITERATURE_LIBRARY` 可覆盖）建立 `papers/`、`notes/`、`synthesis/`、`outputs/` 和隐藏的 `.zhiyue/`（索引、批次、数据、缓存、临时文件），从随包模板复制 `README.md` 与 `.zhiyue/AGENTS.md`，并写入记录数为 0 的 `文献索引.json`。已有文件不覆盖；导入和归档只在 `papers/` 下按分类创建目录并更新索引。侧栏“分类”旁的加号可新建文件夹，文件夹行悬停或聚焦时出现的铅笔按钮可重命名；两者直接操作 `papers/` 下的编号目录，重命名还会同步更新 README、笔记、成果和索引中的路径。文献页的“导入 PDF”支持多选、选择文件夹或拖放批量导入本机 PDF（单次最多 100 个），逐条预填并编辑题名、作者、年份和 DOI，复用下载工具的导入、逐条核验与整批归档流程；PDF 内容按 SHA-256 查重，重复文件跳过并给出已有编号；文件夹导入按文件夹名预选同名分类，没有同名分类时以该文件夹名新建。
 
 `npm run test:desktop` 验证安装后的首次启动与导入流程，运行前需先有 `npm run desktop:build` 的产物。测试在系统临时目录复制一份安装布局（可执行文件和 `resources/`），用随包 Node 从新位置启动服务，检查文献库骨架、模板和空索引，再通过下载器的 `import`、`attach` 和服务器归档任务离线导入一篇合成 PDF，核对编号、来源记录、README 索引和网站接口。它不运行 NSIS 安装器，也不启动 Tauri 窗口，因此不覆盖注册表、快捷方式和 WebView 界面；缺少打包产物时跳过，缺少 pypdf 或 Poppler 时只验证首次启动并注明跳过导入阶段。测试使用 `LITERATURE_PYTHON` 或 `app/downloader/.venv`，Poppler 可用 `PDFTOPPM` 指定。
 

@@ -13,7 +13,7 @@
 | `tools/` | 本机第三方安装和机构登录环境 | [本机工具导航](tools/README.md) |
 | `releases/` | 已经过隐私检查的分享包与独立分享副本 | [分享检查记录](library/.zhiyue/docs/分享版隐私检查_20261116.md) |
 
-根目录仅保留本导航、协作规则、Git 忽略规则、统一命令和网站启动入口。
+根目录仅保留本导航、协作规则、Git 忽略规则、统一命令和网站、桌面启动入口。
 
 ```powershell
 npm start
@@ -30,6 +30,8 @@ npm run doctor
 查找论文、编号与阅读成果请进入 [library/README.md](library/README.md)。前端采用 Vue 3，修改组件后需运行 `npm run build:web`；日常启动使用随项目保存的构建产物。修改程序请进入 [app/README.md](app/README.md)。文献目录中的 `papers/`、`notes/` 等相对路径，均以 `library/` 为基准。
 
 Windows 桌面版使用 Tauri 2 封装同一网站，程序在 `app/desktop/`，带原生窗口和托盘。`npm run desktop:dev` 用于开发调试；`npm run desktop:build` 生成 NSIS 安装包，输出在 `app/desktop/src-tauri/target/release/bundle/`，可选做 Authenticode 签名并生成更新签名，构建变量见[程序说明](app/README.md)。安装版首次启动会自动创建默认文献库 `文档/Zhiyue/library`（可用 `LITERATURE_LIBRARY` 指定其他位置），包括目录骨架、模板说明和空索引；启动后可在侧栏新建或重命名分类文件夹，也可在文献页多选、选择文件夹或拖入本机 PDF，批量核对题名与作者后归档入库。Pi Agent 登录配置、Python 与 Poppler 仍使用本机安装。
+
+本机构建后运行 `.\start-desktop.cmd` 启动桌面窗口；它默认把文献库指向本项目的 `library/`，并优先使用 `app/downloader/.venv` 中的 Python，可用 `-Library`、`-Python` 改为其他位置。直接双击 `zhiyue-desktop.exe` 不会带上这些路径，安装版仍按 `文档/Zhiyue/library` 初始化。
 
 `library/`、`tools/` 的本机安装和 `releases/` 均按本地资料处理，不进入 Git。只发送检查过的软件分享包，不要整体发送本项目。新的分享版可用 `npm run share -- --name new-name` 生成。
 

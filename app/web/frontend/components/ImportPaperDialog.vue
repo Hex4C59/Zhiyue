@@ -15,6 +15,8 @@ const form = reactive({
 });
 const items = reactive([]),
   openKey = ref(''),
+  categoryTouched = ref(false),
+  folderChoice = ref(null),
   dragging = ref(false),
   stage = ref('idle'),
   error = ref(''),
@@ -23,7 +25,12 @@ const items = reactive([]),
   result = ref(null),
   currentJob = ref(null);
 let sequence = 0;
-const categories = computed(() => categoryChoices(state.categories));
+const categories = computed(() => {
+  const choices = categoryChoices(state.categories);
+  const extra = folderChoice.value;
+  if (extra && !choices.some(([value]) => value === extra[0])) choices.push(extra);
+  return choices;
+});
 const busy = computed(() => stage.value === 'uploading' || stage.value === 'processing');
 const logText = computed(() => {
   const log = currentJob.value?.log;
@@ -78,17 +85,53 @@ function openPicker() {
 function openFolder() {
   folderInput.value?.click();
 }
-function acceptFiles(list) {
+function folderNameOf(files) {
+  const names = new Set();
+  for (const file of files) {
+    const relative = file.webkitRelativePath || '';
+    if (relative.includes('/')) names.add(relative.split('/')[0]);
+  }
+  return names.size === 1 ? [...names][0] : '';
+}
+// 把外部文件夹名对应到已有分类，忽略编号前缀和大小写差异。
+function matchCategoryFolder(folder) {
+  const normalize = (value) => String(value).replace(/^\d+_/, '').trim().toLocaleLowerCase();
+  const choices = categories.value;
+  const exact = choices.find(([value]) => value.split('/')[1] === folder);
+  if (exact) return exact[0];
+  const loose = choices.find(([value]) => normalize(value.split('/')[1]) === normalize(folder));
+  return loose ? loose[0] : '';
+}
+// 与 jobs.mjs 的分类校验一致，只把可用作 Windows 文件夹名的名称带进归档路径。
+function folderCategory(folder) {
+  const name = String(folder || '').trim();
+  if (
+    !name ||
+    name === '.' ||
+    name === '..' ||
+    name.includes('..') ||
+    /[\\/:*?"<>|\x00-\x1f\x7f]/.test(name) ||
+    /[. ]$/.test(name) ||
+    /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(name)
+  )
+    return null;
+  return {
+    value: `papers/${name}/网站导入`,
+    label: `${name.replace(/^\d+_/, '')} / 网站导入（新建）`,
+  };
+}
+function acceptFiles(list, folderHint = '') {
   if (busy.value) return;
   error.value = '';
+  const wasEmpty = !items.length;
+  const folder = folderNameOf(list) || folderHint;
   const rejected = [];
   let added = 0;
+  let capped = 0;
   for (const candidate of Array.from(list || [])) {
     if (!candidate) continue;
-    if (!/\.pdf$/i.test(candidate.name)) {
-      rejected.push(`${candidate.name} 不是 PDF`);
-      continue;
-    }
+    // 选定文件夹时会带入来源记录等非 PDF 文件，直接忽略，不当作导入错误。
+    if (!/\.pdf$/i.test(candidate.name)) continue;
     if (candidate.size > 25 * 1024 * 1024) {
       rejected.push(`${candidate.name} 超过 25 MB`);
       continue;
@@ -98,8 +141,8 @@ function acceptFiles(list) {
       continue;
     }
     if (items.length >= MAX_FILES) {
-      rejected.push(`每次最多导入 ${MAX_FILES} 个 PDF`);
-      break;
+      capped += 1;
+      continue;
     }
     const relative = candidate.webkitRelativePath || candidate.name;
     if (
@@ -133,11 +176,27 @@ function acceptFiles(list) {
     });
     added += 1;
   }
+  if (wasEmpty && added && !categoryTouched.value && folder) {
+    const matched = matchCategoryFolder(folder);
+    if (matched) {
+      folderChoice.value = null;
+      form.category = matched;
+    } else {
+      const created = folderCategory(folder);
+      if (created) {
+        folderChoice.value = [created.value, created.label];
+        form.category = created.value;
+      }
+    }
+  }
   if (!openKey.value && items.length === 1) openKey.value = items[0].key;
   if (added) form.confirmed = false;
+  if (capped) rejected.unshift(`每次最多导入 ${MAX_FILES} 个 PDF，其余 ${capped} 个未加入`);
   if (rejected.length) {
     const extra = rejected.length > 3 ? `；另有 ${rejected.length - 3} 个未加入` : '';
     error.value = `${rejected.slice(0, 3).join('；')}${extra}。`;
+  } else if (!added) {
+    error.value = '所选内容中没有可导入的 PDF。';
   }
 }
 async function collectEntry(entry, files) {
@@ -175,7 +234,9 @@ async function drop(event) {
     return;
   }
   if (!files.length) return (error.value = '拖入的内容中没有可导入的 PDF。');
-  acceptFiles(files);
+  // 只拖入一个文件夹时，用它作为归档分类的默认值。
+  const folderHint = entries.length === 1 && entries[0].isDirectory ? entries[0].name : '';
+  acceptFiles(files, folderHint);
 }
 function toggle(item) {
   openKey.value = openKey.value === item.key ? '' : item.key;
@@ -193,6 +254,8 @@ function clearItems() {
   if (!window.confirm('清空已选文件和已填信息？')) return;
   items.splice(0);
   openKey.value = '';
+  categoryTouched.value = false;
+  folderChoice.value = null;
   resetResult();
   resetPickers();
 }
@@ -502,7 +565,11 @@ async function submit() {
         <div class="import-fields">
           <label class="import-field wide">
             <span>归档分类</span>
-            <select v-model="form.category" :disabled="busy || stage === 'done'">
+            <select
+              v-model="form.category"
+              :disabled="busy || stage === 'done'"
+              @change="categoryTouched = true"
+            >
               <option v-for="[value, label] in categories" :key="value" :value="value">
                 {{ label }}
               </option>

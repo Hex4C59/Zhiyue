@@ -173,17 +173,8 @@ const papers = computed(() => {
       <div v-if="!state.libraryError && !papers.length" class="empty">
         <span v-if="!filtering && !state.category" class="empty-art"><Icon name="library" /></span>
         <p>{{ emptyText }}</p>
-        <div class="empty-actions">
+        <div v-if="filtering || state.category" class="empty-actions">
           <button
-            v-if="!filtering && !state.category"
-            id="import-paper-empty"
-            class="button primary"
-            @click="state.importOpen = true"
-          >
-            <Icon name="upload" />导入 PDF
-          </button>
-          <button
-            v-if="filtering || state.category"
             id="reset-filters"
             class="button subtle"
             @click="workspace.resetFilters"

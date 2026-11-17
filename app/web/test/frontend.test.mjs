@@ -245,6 +245,113 @@ test('Vue 3 挂载全部面板，文献筛选与收藏保留节点和未读状�
   assert.equal(page.$('[data-paper]').dataset.paper, 'L002');
 });
 
+test('文件夹导入忽略来源记录等非 PDF，并明确提示数量上限', async (t) => {
+  const page = await fixture(t);
+  const file = (name) => new File([new Uint8Array(16)], name, { type: 'application/octet-stream' });
+  const drop = (files) => {
+    const event = new Event('drop', { bubbles: true, cancelable: true });
+    Object.defineProperty(event, 'dataTransfer', { value: { items: [], files } });
+    page.$('.import-file').dispatchEvent(event);
+  };
+  const openDialog = async () => {
+    click(page.$('#import-paper'));
+    await until(() => page.$('.import-file'));
+  };
+  const closeDialog = async () => {
+    click(page.$('.import-head .icon-button'));
+    await until(() => !page.$('.import-file'));
+  };
+  await openDialog();
+  drop([file('a.pdf'), file('b.pdf'), file('a.来源.json'), file('notes.txt')]);
+  await flush();
+  assert.equal(page.target.querySelectorAll('.import-item').length, 2);
+  assert.equal(page.$('.import-error'), null);
+  await closeDialog();
+  await openDialog();
+  const many = [];
+  for (let index = 0; index < 102; index += 1) many.push(file(`p${index}.pdf`));
+  many.push(file('a.来源.json'));
+  drop(many);
+  await flush();
+  assert.equal(page.target.querySelectorAll('.import-item').length, 100);
+  assert.match(page.$('.import-error').textContent, /最多导入 100 个 PDF，其余 2 个未加入/);
+  await closeDialog();
+  await openDialog();
+  drop([file('a.来源.json'), file('b.txt')]);
+  await flush();
+  assert.equal(page.target.querySelectorAll('.import-item').length, 0);
+  assert.match(page.$('.import-error').textContent, /没有可导入的 PDF/);
+});
+
+test('文件夹导入按同名分类预选归档位置，手动选择不被覆盖', async (t) => {
+  const page = await fixture(t);
+  const file = (name, relative) => {
+    const result = new File([new Uint8Array(16)], name, { type: 'application/pdf' });
+    Object.defineProperty(result, 'webkitRelativePath', { value: relative });
+    return result;
+  };
+  const drop = (files, items = []) => {
+    const event = new Event('drop', { bubbles: true, cancelable: true });
+    Object.defineProperty(event, 'dataTransfer', { value: { items, files } });
+    page.$('.import-file').dispatchEvent(event);
+  };
+  const openDialog = async () => {
+    click(page.$('#import-paper'));
+    await until(() => page.$('.import-file'));
+  };
+  const closeDialog = async () => {
+    click(page.$('.import-head .icon-button'));
+    await until(() => !page.$('.import-file'));
+  };
+  const category = () => page.$('.import-fields select').value;
+  await openDialog();
+  assert.equal(category(), 'papers/09_情感综述调研/网站导入');
+  drop([file('a.pdf', '02_模型/a.pdf'), file('b.pdf', '02_模型/b.pdf')]);
+  await flush();
+  assert.equal(category(), 'papers/02_模型/网站导入');
+  await closeDialog();
+  await openDialog();
+  drop([file('c.pdf', '超声/c.pdf')]);
+  await flush();
+  assert.equal(category(), 'papers/01_超声/网站导入');
+  await closeDialog();
+  await openDialog();
+  const entry = { isFile: true, name: 'd.pdf', file: (resolve) => resolve(file('d.pdf', '')) };
+  let reads = 0;
+  const folder = {
+    isDirectory: true,
+    isFile: false,
+    name: '模型',
+    createReader: () => ({ readEntries: (resolve) => resolve(reads++ ? [] : [entry]) }),
+  };
+  drop([], [{ kind: 'file', webkitGetAsEntry: () => folder }]);
+  await flush();
+  assert.equal(category(), 'papers/02_模型/网站导入');
+  await closeDialog();
+  await openDialog();
+  const select = page.$('.import-fields select');
+  select.value = 'papers/01_超声/网站导入';
+  select.dispatchEvent(new Event('change', { bubbles: true }));
+  await flush();
+  drop([file('e.pdf', '02_模型/e.pdf')]);
+  await flush();
+  assert.equal(category(), 'papers/01_超声/网站导入');
+  await closeDialog();
+  await openDialog();
+  drop([file('f.pdf', '03_新主题/f.pdf')]);
+  await flush();
+  assert.equal(category(), 'papers/03_新主题/网站导入');
+  const labels = [...page.$('.import-fields select').options].map((option) =>
+    option.textContent.trim(),
+  );
+  assert.ok(labels.includes('新主题 / 网站导入（新建）'));
+  await closeDialog();
+  await openDialog();
+  drop([file('g.pdf', 'a:b/g.pdf')]);
+  await flush();
+  assert.equal(category(), 'papers/09_情感综述调研/网站导入');
+});
+
 test('模型搜索和键盘选择驱动实际发送参数，输入与停止操作保持可用', async (t) => {
   const page = await fixture(t);
   assert.equal(page.$('#send').disabled, true);
