@@ -87,6 +87,12 @@ export async function createApp({root:configuredRoot,stateDir:configuredStateDir
     if(!Array.isArray(ids)||ids.length>8)throw error('每次最多附加8个文件。');
     return ids.map(id=>{const file=uploads.data.files.find(f=>f.id===id);if(!file||!fs.existsSync(file.path))throw error('附件不存在，请重新上传。');return file;});
   };
+  const findUpload=id=>{
+    if(typeof id!=='string'||!id)throw error('请选择要导入的 PDF。');
+    const file=uploads.data.files.find(f=>f.id===id);
+    if(!file||!fs.existsSync(file.path))throw error('附件不存在，请重新上传。');
+    return file;
+  };
   const boot=()=>chats.connect().catch(()=>emit({type:'status',...chats.snapshot()}));
   if(connectPi)boot();
   const server=http.createServer(async(req,res)=>{
@@ -161,11 +167,20 @@ export async function createApp({root:configuredRoot,stateDir:configuredStateDir
       const upload=/^\/api\/uploads\/([\w-]+)$/.exec(route);
       if((method==='GET'||method==='HEAD')&&upload){const file=validUploads([upload[1]])[0];return await serveFile(req,res,file.path,{filename:file.name,download:!file.mime.startsWith('image/')});}
       if(method==='POST'&&route==='/api/library/import'){
-        const {uploadId,...data}=await readJson(req);
-        if(typeof uploadId!=='string'||!uploadId)throw error('请先选择 PDF 文件。');
-        const file=validUploads([uploadId])[0];
-        if(path.extname(file.name).toLowerCase()!=='.pdf')throw error('只能导入 PDF 文件。',415);
-        return json(res,await jobs.startLocalImport({...data,uploadPath:file.path}),202);
+        const {uploads:items,category}=await readJson(req);
+        if(!Array.isArray(items)||!items.length)throw error('请选择要导入的 PDF。');
+        if(items.length>100)throw error('一次最多导入 100 个 PDF。');
+        const resolved=items.map(item=>{
+          if(!item||typeof item!=='object')throw error('导入条目无效。');
+          const file=findUpload(item.uploadId);
+          if(path.extname(file.name).toLowerCase()!=='.pdf')throw error('只能导入 PDF 文件。',415);
+          return {...item,uploadPath:file.path};
+        });
+        const result=await jobs.startLocalImports({uploads:resolved,category});
+        return json(res,{
+          job:result.job,
+          skipped:result.skipped.map(s=>({uploadId:resolved[s.index]?.uploadId,...s})),
+        },202);
       }
       if(method==='GET'&&route==='/api/downloads')return json(res,{batches:await jobs.listBatches(),jobs:jobs.listJobs()});
       if(method==='POST'&&route==='/api/downloads')return json(res,await jobs.startDownload(await readJson(req)),202);

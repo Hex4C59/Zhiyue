@@ -70,7 +70,7 @@ CMD 启动入口显式调用系统 Windows PowerShell，避免 PATH 中同名程
 
 应用启动后静默检查一次更新，失败不打扰用户；托盘“检查更新”会显示检查和安装结果。更新源通过运行环境变量 `ZHIYUE_UPDATE_ENDPOINT` 指定为 `latest.json` 地址，未设置时提示尚未配置。`latest.json` 中 `windows-x86_64` 平台的 `signature` 填 `.sig` 文件内容，`url` 指向安装包；正式发布的更新源必须使用 HTTPS，发布构建会拒绝 HTTP 地址。
 
-文献库由随包本地服务在首次启动时创建：默认在 `文档/Zhiyue/library`（`LITERATURE_LIBRARY` 可覆盖）建立 `papers/`、`notes/`、`synthesis/`、`outputs/` 和隐藏的 `.zhiyue/`（索引、批次、数据、缓存、临时文件），从随包模板复制 `README.md` 与 `.zhiyue/AGENTS.md`，并写入记录数为 0 的 `文献索引.json`。已有文件不覆盖；导入和归档只在 `papers/` 下按分类创建目录并更新索引。侧栏“分类”旁的加号可新建文件夹，文件夹行悬停或聚焦时出现的铅笔按钮可重命名；两者直接操作 `papers/` 下的编号目录，重命名还会同步更新 README、笔记、成果和索引中的路径。文献页的“导入 PDF”接受本机 PDF 和题名、作者等书目信息，复用下载工具的导入、核验与归档流程；PDF 内容按 SHA-256 查重。
+文献库由随包本地服务在首次启动时创建：默认在 `文档/Zhiyue/library`（`LITERATURE_LIBRARY` 可覆盖）建立 `papers/`、`notes/`、`synthesis/`、`outputs/` 和隐藏的 `.zhiyue/`（索引、批次、数据、缓存、临时文件），从随包模板复制 `README.md` 与 `.zhiyue/AGENTS.md`，并写入记录数为 0 的 `文献索引.json`。已有文件不覆盖；导入和归档只在 `papers/` 下按分类创建目录并更新索引。侧栏“分类”旁的加号可新建文件夹，文件夹行悬停或聚焦时出现的铅笔按钮可重命名；两者直接操作 `papers/` 下的编号目录，重命名还会同步更新 README、笔记、成果和索引中的路径。文献页的“导入 PDF”支持多选、选择文件夹或拖放批量导入本机 PDF（单次最多 100 个），逐条预填并编辑题名、作者、年份和 DOI，复用下载工具的导入、逐条核验与整批归档流程；PDF 内容按 SHA-256 查重，重复文件跳过并给出已有编号。
 
 `npm run test:desktop` 验证安装后的首次启动与导入流程，运行前需先有 `npm run desktop:build` 的产物。测试在系统临时目录复制一份安装布局（可执行文件和 `resources/`），用随包 Node 从新位置启动服务，检查文献库骨架、模板和空索引，再通过下载器的 `import`、`attach` 和服务器归档任务离线导入一篇合成 PDF，核对编号、来源记录、README 索引和网站接口。它不运行 NSIS 安装器，也不启动 Tauri 窗口，因此不覆盖注册表、快捷方式和 WebView 界面；缺少打包产物时跳过，缺少 pypdf 或 Poppler 时只验证首次启动并注明跳过导入阶段。测试使用 `LITERATURE_PYTHON` 或 `app/downloader/.venv`，Poppler 可用 `PDFTOPPM` 指定。
 

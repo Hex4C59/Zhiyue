@@ -16,6 +16,7 @@ const stamp = () => new Date().toISOString();
 const validBatch = name => typeof name === 'string' && /^[\p{L}\p{N}_-]{1,100}$/u.test(name);
 const LOG_LIMIT = 100_000;
 const MAX_IMPORT_BYTES = 25 * 1024 * 1024;
+const MAX_IMPORT_FILES = 100;
 const INTERRUPTED = '服务关闭，任务已中断；请检查批次后手动续跑';
 
 // Honor an explicit interpreter override before the installed runtimes/PATH.
@@ -381,15 +382,19 @@ export class JobManager {
     });
   }
 
-  async startLocalImport({ uploadPath, title, authors, year, doi, category = 'papers/09_情感综述调研/网站导入' }) {
-    const cleanTitle = cleanField(title, 300, '题名');
-    if (!cleanTitle) throw fail('请填写论文题名');
-    const cleanAuthors = splitAuthors(authors);
-    const cleanYear = cleanField(year, 16, '年份');
-    if (cleanYear && !/^\d{4}$/.test(cleanYear)) throw fail('年份需为四位数字');
-    let cleanDoi = cleanField(doi, 300, 'DOI').replace(/^https?:\/\/(?:dx\.)?doi\.org\//i, '');
-    if (cleanDoi && !/^10\.\d{4,9}\/\S+$/.test(cleanDoi)) throw fail('DOI格式不正确');
-    await this._category(category);
+  async _importEntry(item) {
+    if (!item || typeof item !== 'object') throw fail('导入条目无效');
+    const title = cleanField(item.title, 300, '题名');
+    if (!title) throw fail('请填写论文题名');
+    const authors = splitAuthors(item.authors);
+    const year = cleanField(item.year, 16, '年份');
+    if (year && !/^\d{4}$/.test(year)) throw fail('年份需为四位数字');
+    let doi = cleanField(item.doi, 300, 'DOI').replace(/^https?:\/\/(?:dx\.)?doi\.org\//i, '');
+    if (doi && !/^10\.\d{4,9}\/\S+$/.test(doi)) throw fail('DOI格式不正确');
+    return { title, authors, year: year || '待核实', doi };
+  }
+
+  async _uploadedPdf(uploadPath) {
     if (typeof uploadPath !== 'string' || !uploadPath) throw fail('请选择要导入的 PDF');
     let file;
     try { file = await realpath(uploadPath); }
@@ -407,32 +412,78 @@ export class JobManager {
       await handle.read(header, 0, header.length, 0);
     } finally { await handle.close(); }
     if (!header.includes(Buffer.from('%PDF-'))) throw fail('文件内容不是有效PDF');
-    const duplicate = await this._catalogDuplicate(await fileDigest(file));
-    if (duplicate) {
-      const message = `该 PDF 已归档为 ${duplicate.literature_id}：${duplicate.title}`;
-      throw Object.assign(new Error(message), { statusCode: 409 });
+    return file;
+  }
+
+  async startLocalImports({ uploads, category = 'papers/09_情感综述调研/网站导入' }) {
+    if (!Array.isArray(uploads) || !uploads.length) throw fail('请选择要导入的 PDF');
+    if (uploads.length > MAX_IMPORT_FILES) throw fail(`一次最多导入 ${MAX_IMPORT_FILES} 个 PDF`);
+    await this._category(category);
+    const entries = [], files = [], skipped = [], seen = new Map();
+    for (const [index, upload] of uploads.entries()) {
+      const entry = await this._importEntry(upload);
+      const file = await this._uploadedPdf(upload?.uploadPath);
+      const digest = await fileDigest(file);
+      const archived = await this._catalogDuplicate(digest);
+      if (archived) {
+        skipped.push({
+          index, title: entry.title, literature_id: archived.literature_id,
+          literature_title: archived.title, reason: '文献库已有相同 PDF',
+        });
+        continue;
+      }
+      if (seen.has(digest)) {
+        skipped.push({
+          index, title: entry.title, literature_id: '',
+          reason: `与本批第 ${seen.get(digest) + 1} 个文件相同`,
+        });
+        continue;
+      }
+      seen.set(digest, index);
+      entries.push(entry); files.push(file);
     }
-    const entry = { title: cleanTitle, authors: cleanAuthors, year: cleanYear || '待核实', doi: cleanDoi };
+    if (!entries.length) {
+      const detail = skipped.map(item =>
+        item.literature_id ? `${item.literature_id}《${item.title}》` : `《${item.title}》`).join('、');
+      throw Object.assign(new Error(`所选 PDF 均已归档：${detail}`), { statusCode: 409 });
+    }
     const day = new Intl.DateTimeFormat('en-CA', {
       timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit',
     }).format(new Date()).replaceAll('-', '');
     const batch = `${day}_local_${randomUUID().slice(0, 8)}`;
-    return this._enqueue({ batch, title: `导入 PDF：${cleanTitle}` }, async job => {
+    const title = entries.length === 1
+      ? `导入 PDF：${entries[0].title}` : `批量导入 ${entries.length} 篇 PDF`;
+    const job = await this._enqueue({ batch, title }, async current => {
       await this._category(category);
       const batchesDir = libraryPaths(this.root).batches;
       mkdirSync(batchesDir, { recursive: true });
       if (!inside(this.root, await realpath(batchesDir))) throw fail('批次目录不能位于项目外');
-      const inputPath = path.join(this.stateDir, `${job.id}_input.json`);
+      const inputPath = path.join(this.stateDir, `${current.id}_input.json`);
       if (!inside(this.root, await realpath(this.stateDir))) throw fail('任务输入目录逃逸');
-      await writeFile(inputPath, JSON.stringify([entry], null, 2), { flag: 'wx', mode: 0o600 });
-      await this._run(job, 'import', [inputPath, '--batch', batch, '--category', category]);
-      await this._run(job, 'attach', ['--batch', batch, '--item', 'I0001', '--file', file]);
-      await this._run(job, 'review', [
-        '--batch', batch, '--item', 'I0001', '--accept-identity',
-        '--note', '用户在网站导入时确认题名与作者与 PDF 首页一致',
-      ]);
-      await this._run(job, 'archive', ['--batch', batch, '--item', 'I0001']);
+      await writeFile(inputPath, JSON.stringify(entries, null, 2), { flag: 'wx', mode: 0o600 });
+      await this._run(current, 'import', [inputPath, '--batch', batch, '--category', category]);
+      if (skipped.length) this._log(current, `\n已跳过 ${skipped.length} 个重复文件。\n`);
+      const failed = [];
+      for (const [index, file] of files.entries()) {
+        const item = `I${String(index + 1).padStart(4, '0')}`;
+        const note = entries.length === 1
+          ? '用户在网站导入时确认题名与作者与 PDF 首页一致'
+          : '用户在网站批量导入时确认题名与作者与 PDF 首页一致';
+        try {
+          await this._run(current, 'attach', ['--batch', batch, '--item', item, '--file', file]);
+          await this._run(current, 'review', [
+            '--batch', batch, '--item', item, '--accept-identity', '--note', note,
+          ]);
+        } catch (error) {
+          if (this.closed) throw error;
+          failed.push({ item, title: entries[index].title });
+          this._log(current, `\n${item}《${entries[index].title}》未能完成核验：${redact(error.message)}\n`);
+        }
+      }
+      await this._run(current, 'archive', ['--batch', batch]);
+      if (failed.length) this._log(current, `\n${failed.length} 篇未完成核验，已保留在批次中待处理。\n`);
     });
+    return { job, skipped };
   }
 
   async startAction({ batch, action, submit = false, ...extra }) {

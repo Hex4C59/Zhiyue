@@ -1,37 +1,49 @@
 <script setup>
-import { computed, inject, onMounted, reactive, ref } from 'vue';
+import { computed, inject, markRaw, onMounted, reactive, ref } from 'vue';
 import { categoryChoices, endpoint } from '../lib/content.js';
 import Icon from './Icon.vue';
 const workspace = inject('workspace'),
   state = workspace.state;
 const emit = defineEmits(['close', 'imported']);
+const MAX_FILES = 100;
 const dialog = ref(null),
-  fileInput = ref(null);
+  fileInput = ref(null),
+  folderInput = ref(null);
 const form = reactive({
-  title: '',
-  authors: '',
-  year: '',
-  doi: '',
   category: 'papers/09_情感综述调研/网站导入',
   confirmed: false,
 });
-const file = ref(null),
-  titleTouched = ref(false),
+const items = reactive([]),
+  openKey = ref(''),
   dragging = ref(false),
   stage = ref('idle'),
   error = ref(''),
+  uploading = ref(0),
+  skipped = ref([]),
+  result = ref(null),
   currentJob = ref(null);
+let sequence = 0;
 const categories = computed(() => categoryChoices(state.categories));
-const busy = computed(() => stage.value === 'submitting' || stage.value === 'processing');
-const fileSize = computed(() => {
-  if (!file.value) return '';
-  const mb = file.value.size / 1024 / 1024;
-  return mb >= 1 ? `${mb.toFixed(1)} MB` : `${Math.max(1, Math.round(file.value.size / 1024))} KB`;
-});
+const busy = computed(() => stage.value === 'uploading' || stage.value === 'processing');
 const logText = computed(() => {
   const log = currentJob.value?.log;
   const text = Array.isArray(log) ? log.join('') : log || '';
   return text.slice(-4000);
+});
+const submittedCount = computed(() => items.length - skipped.value.length);
+const processed = computed(() => {
+  const steps = currentJob.value?.steps || [];
+  const attached = steps.filter(
+    (step) => step.action === 'attach' && step.status === 'completed',
+  ).length;
+  const archiving = steps.some((step) => step.action === 'archive');
+  return Math.min(attached + (archiving ? 1 : 0), submittedCount.value);
+});
+const submitLabel = computed(() => {
+  if (stage.value === 'uploading') return '正在上传…';
+  if (stage.value === 'processing') return '正在归档…';
+  if (stage.value === 'failed') return '重试';
+  return items.length > 1 ? `导入并归档 ${items.length} 篇` : '导入并归档';
 });
 onMounted(() => {
   const el = dialog.value;
@@ -47,37 +59,170 @@ function close() {
 function backdrop(event) {
   if (event.target === dialog.value && !busy.value) close();
 }
-function chooseFile(event) {
-  acceptFile(event.target.files?.[0]);
+function sizeText(bytes) {
+  const mb = bytes / 1024 / 1024;
+  return mb >= 1 ? `${mb.toFixed(1)} MB` : `${Math.max(1, Math.round(bytes / 1024))} KB`;
 }
-function acceptFile(candidate) {
-  error.value = '';
-  if (!candidate) return;
-  if (!/\.pdf$/i.test(candidate.name)) {
-    error.value = '请选择 PDF 文件。';
-    return;
+function resetPickers() {
+  for (const input of [fileInput.value, folderInput.value]) {
+    if (input) input.value = '';
   }
-  if (candidate.size > 25 * 1024 * 1024) {
-    error.value = 'PDF 超过 25 MB 上传限制。';
-    return;
-  }
-  if (candidate.size === 0) {
-    error.value = 'PDF 文件为空。';
-    return;
-  }
-  file.value = candidate;
-  if (!titleTouched.value)
-    form.title = candidate.name.replace(/\.pdf$/i, '').replace(/[_\s]+/g, ' ').trim();
 }
-function drop(event) {
-  dragging.value = false;
-  acceptFile(event.dataTransfer?.files?.[0]);
+function chooseFiles(event) {
+  acceptFiles(event.target.files);
+  resetPickers();
 }
 function openPicker() {
   fileInput.value?.click();
 }
-function titleInput() {
-  titleTouched.value = true;
+function openFolder() {
+  folderInput.value?.click();
+}
+function acceptFiles(list) {
+  if (busy.value) return;
+  error.value = '';
+  const rejected = [];
+  let added = 0;
+  for (const candidate of Array.from(list || [])) {
+    if (!candidate) continue;
+    if (!/\.pdf$/i.test(candidate.name)) {
+      rejected.push(`${candidate.name} 不是 PDF`);
+      continue;
+    }
+    if (candidate.size > 25 * 1024 * 1024) {
+      rejected.push(`${candidate.name} 超过 25 MB`);
+      continue;
+    }
+    if (candidate.size === 0) {
+      rejected.push(`${candidate.name} 为空`);
+      continue;
+    }
+    if (items.length >= MAX_FILES) {
+      rejected.push(`每次最多导入 ${MAX_FILES} 个 PDF`);
+      break;
+    }
+    const relative = candidate.webkitRelativePath || candidate.name;
+    if (
+      items.some(
+        (item) =>
+          item.relative === relative &&
+          item.size === candidate.size &&
+          item.lastModified === candidate.lastModified,
+      )
+    )
+      continue;
+    const key = `f${++sequence}`;
+    const title = candidate.name
+      .replace(/\.pdf$/i, '')
+      .replace(/[_\s]+/g, ' ')
+      .trim();
+    items.push({
+      key,
+      file: markRaw(candidate),
+      name: candidate.name,
+      relative,
+      size: candidate.size,
+      lastModified: candidate.lastModified,
+      title,
+      authors: '',
+      year: '',
+      doi: '',
+      uploadId: '',
+      status: 'new',
+      note: '',
+    });
+    added += 1;
+  }
+  if (!openKey.value && items.length === 1) openKey.value = items[0].key;
+  if (added) form.confirmed = false;
+  if (rejected.length) {
+    const extra = rejected.length > 3 ? `；另有 ${rejected.length - 3} 个未加入` : '';
+    error.value = `${rejected.slice(0, 3).join('；')}${extra}。`;
+  }
+}
+async function collectEntry(entry, files) {
+  if (entry.isFile) {
+    const file = await new Promise((resolve, reject) => entry.file(resolve, reject));
+    if (/\.pdf$/i.test(file.name)) files.push(file);
+    return;
+  }
+  if (!entry.isDirectory) return;
+  const reader = entry.createReader();
+  for (;;) {
+    const batch = await new Promise((resolve, reject) => reader.readEntries(resolve, reject));
+    if (!batch.length) break;
+    for (const child of batch) await collectEntry(child, files);
+    if (files.length > MAX_FILES) break;
+  }
+}
+async function drop(event) {
+  dragging.value = false;
+  if (busy.value) return;
+  const transfer = event.dataTransfer;
+  if (!transfer) return;
+  const entries = [...(transfer.items || [])]
+    .map((item) => (item.kind === 'file' ? item.webkitGetAsEntry?.() : null))
+    .filter(Boolean);
+  if (!entries.length) {
+    acceptFiles(transfer.files);
+    return;
+  }
+  const files = [];
+  try {
+    for (const entry of entries) await collectEntry(entry, files);
+  } catch {
+    error.value = '无法读取拖入的部分文件，请改用“选择文件”或“选择文件夹”。';
+    return;
+  }
+  if (!files.length) return (error.value = '拖入的内容中没有可导入的 PDF。');
+  acceptFiles(files);
+}
+function toggle(item) {
+  openKey.value = openKey.value === item.key ? '' : item.key;
+}
+function removeItem(item) {
+  if (busy.value) return;
+  const index = items.indexOf(item);
+  if (index < 0) return;
+  items.splice(index, 1);
+  if (openKey.value === item.key) openKey.value = '';
+  if (!items.length) resetResult();
+}
+function clearItems() {
+  if (busy.value || !items.length) return;
+  if (!window.confirm('清空已选文件和已填信息？')) return;
+  items.splice(0);
+  openKey.value = '';
+  resetResult();
+  resetPickers();
+}
+function resetResult() {
+  form.confirmed = false;
+  stage.value = 'idle';
+  error.value = '';
+  skipped.value = [];
+  result.value = null;
+  currentJob.value = null;
+}
+function validate() {
+  if (!items.length) return '请选择要导入的 PDF。';
+  for (const [index, item] of items.entries()) {
+    if (!item.title.trim()) {
+      openKey.value = item.key;
+      return `第 ${index + 1} 个文件缺少题名。`;
+    }
+    if (item.year && !/^\d{4}$/.test(item.year.trim())) {
+      openKey.value = item.key;
+      return `第 ${index + 1} 个文件的年份需为四位数字。`;
+    }
+    const doi = item.doi.trim().replace(/^https?:\/\/(?:dx\.)?doi\.org\//i, '');
+    if (doi && !/^10\.\d{4,9}\/\S+$/.test(doi)) {
+      openKey.value = item.key;
+      return `第 ${index + 1} 个文件的 DOI 格式不正确。`;
+    }
+  }
+  if (!form.confirmed) return '请先核对题名与作者信息。';
+  return '';
 }
 async function waitForJob(id) {
   for (;;) {
@@ -92,41 +237,88 @@ async function waitForJob(id) {
 async function submit() {
   if (busy.value) return;
   error.value = '';
-  if (!file.value) return (error.value = '请选择要导入的 PDF。');
-  if (!form.title.trim()) return (error.value = '请填写论文题名。');
-  if (!form.confirmed) return (error.value = '请先核对题名与作者信息。');
-  if (form.year && !/^\d{4}$/.test(form.year.trim()))
-    return (error.value = '年份需为四位数字。');
+  const invalid = validate();
+  if (invalid) return (error.value = invalid);
   const before = new Set(state.papers.map((paper) => paper.literature_id));
-  stage.value = 'submitting';
+  skipped.value = [];
+  result.value = null;
+  stage.value = 'uploading';
+  uploading.value = 0;
+  let current = null;
   try {
-    const job = await workspace.importPdf({
-      file: file.value,
-      title: form.title.trim(),
-      authors: form.authors.trim(),
-      year: form.year.trim(),
-      doi: form.doi.trim(),
+    for (const [index, item] of items.entries()) {
+      item.status = item.uploadId ? 'ready' : 'new';
+      item.note = '';
+      if (item.uploadId) continue;
+      current = item;
+      uploading.value = index + 1;
+      item.status = 'uploading';
+      const upload = await workspace.uploadFile(item.file);
+      item.uploadId = upload.id;
+      item.status = 'ready';
+    }
+    current = null;
+    stage.value = 'processing';
+    const { job, skipped: duplicates } = await workspace.importPdfs({
+      uploads: items.map((item) => ({
+        uploadId: item.uploadId,
+        title: item.title.trim(),
+        authors: item.authors.trim(),
+        year: item.year.trim(),
+        doi: item.doi.trim(),
+      })),
       category: form.category,
     });
+    skipped.value = duplicates || [];
+    for (const skip of skipped.value) {
+      const item = items[skip.index];
+      if (!item) continue;
+      item.status = 'skipped';
+      item.note = skip.literature_id
+        ? `已归档为 ${skip.literature_id}${skip.literature_title ? `：${skip.literature_title}` : ''}`
+        : skip.reason;
+    }
     currentJob.value = job;
-    stage.value = 'processing';
-    await waitForJob(job.id);
+    const finished = await waitForJob(job.id);
     await workspace.loadLibrary();
-    const added =
-      state.papers.find((paper) => !before.has(paper.literature_id)) ||
-      state.papers.find(
-        (paper) => paper.title && paper.title.trim() === form.title.trim(),
-      );
-    if (added) {
-      workspace.toast(`已导入 ${added.literature_id}：${added.title}`);
-      workspace.selectPaper(added.literature_id);
-      emit('imported', added.literature_id);
-    } else {
-      workspace.toast('导入已完成；索引中暂未找到新增文献，可在下载任务中核对批次。', true);
+    const archived = Number(finished.result?.counts?.archived) || 0;
+    const failed = Math.max(0, submittedCount.value - archived);
+    const added = state.papers.filter((paper) => !before.has(paper.literature_id));
+    result.value = { archived, skipped: skipped.value.length, failed };
+    if (archived) {
+      const ids = added
+        .slice(0, 6)
+        .map((paper) => paper.literature_id)
+        .join('、');
+      const more = added.length > 6 ? ` 等 ${added.length} 篇` : '';
+      const skipText = skipped.value.length ? `，跳过 ${skipped.value.length} 个重复文件` : '';
+      workspace.toast(`已归档 ${archived} 篇${ids ? `：${ids}${more}` : ''}${skipText}`);
+      if (added[0]) {
+        workspace.selectPaper(added[0].literature_id);
+        emit('imported', added[0].literature_id);
+      }
+    }
+    if (failed) {
+      stage.value = 'failed';
+      error.value = `${archived} 篇已归档，${failed} 篇未完成；可查看任务日志后重试。`;
+      return;
+    }
+    if (!archived) {
+      stage.value = 'failed';
+      error.value = '导入流程结束，但没有新归档的文献；请查看任务日志。';
+      return;
+    }
+    if (skipped.value.length) {
+      stage.value = 'done';
+      return;
     }
     emit('close');
   } catch (err) {
-    error.value = err.message || '导入失败。';
+    if (current && current.status === 'uploading') {
+      current.status = 'error';
+      current.note = err.message;
+      error.value = `${current.name} 上传失败：${err.message}`;
+    } else error.value = err.message || '导入失败。';
     stage.value = 'failed';
   }
 }
@@ -144,7 +336,7 @@ async function submit() {
       <header class="import-head">
         <div>
           <h2 id="import-title">导入 PDF</h2>
-          <p>从本机选择论文原文，核对题名与作者后归档。</p>
+          <p>可多选或添加文件夹，核对题名后批量归档。</p>
         </div>
         <button
           type="button"
@@ -162,96 +354,204 @@ async function submit() {
           ref="fileInput"
           type="file"
           accept=".pdf,application/pdf"
+          multiple
           hidden
-          @change="chooseFile"
+          @change="chooseFiles"
         />
-        <button
-          type="button"
-          class="import-file"
-          :class="{ dragging }"
-          :disabled="busy"
-          @click="openPicker"
-          @dragover.prevent="dragging = true"
-          @dragleave="dragging = false"
-          @drop.prevent="drop"
-        >
-          <span class="import-file-icon"><Icon name="upload" /></span>
-          <span class="import-file-text">
-            <strong>{{ file ? file.name : '选择 PDF 文件' }}</strong>
-            <small>{{ file ? `${fileSize} · 点击更换` : '或将 PDF 拖到这里，最大 25 MB' }}</small>
-          </span>
-        </button>
+        <input
+          ref="folderInput"
+          type="file"
+          accept=".pdf,application/pdf"
+          webkitdirectory
+          directory
+          multiple
+          hidden
+          @change="chooseFiles"
+        />
+        <div class="import-pick">
+          <button
+            type="button"
+            class="import-file"
+            :class="{ dragging, compact: items.length }"
+            :disabled="busy"
+            @click="openPicker"
+            @dragover.prevent="dragging = true"
+            @dragleave="dragging = false"
+            @drop.prevent="drop"
+          >
+            <span class="import-file-icon"><Icon name="upload" /></span>
+            <span class="import-file-text">
+              <strong>{{ items.length ? '继续添加 PDF' : '选择 PDF 文件' }}</strong>
+              <small>{{
+                items.length
+                  ? '可多选，或把文件、文件夹拖到这里'
+                  : '可多选，或把文件、文件夹拖到这里，单个最大 25 MB'
+              }}</small>
+            </span>
+          </button>
+          <button
+            type="button"
+            class="import-folder"
+            :disabled="busy"
+            @click="openFolder"
+          >
+            <Icon name="folder" /><span>选择文件夹</span>
+          </button>
+        </div>
+        <div v-if="items.length" class="import-list">
+          <div class="import-list-head">
+            <span>
+              {{ items.length }} 个 PDF
+              <template v-if="skipped.length"> · 跳过 {{ skipped.length }} 个</template>
+            </span>
+            <button
+              type="button"
+              class="text-button"
+              :disabled="busy"
+              @click="clearItems"
+            >
+              清空
+            </button>
+          </div>
+          <div class="import-items">
+            <article
+              v-for="(item, index) in items"
+              :key="item.key"
+              class="import-item"
+              :class="item.status"
+            >
+              <div class="import-item-head">
+                <span class="import-item-index">{{ index + 1 }}</span>
+                <div class="import-item-main">
+                  <input
+                    v-model="item.title"
+                    class="import-item-title"
+                    maxlength="300"
+                    placeholder="题名（必填，与 PDF 首页一致）"
+                    :aria-label="`第 ${index + 1} 个文件的题名`"
+                    :disabled="busy"
+                  />
+                  <small class="import-item-file">
+                    {{ item.relative }} · {{ sizeText(item.size)
+                    }}<template v-if="item.note"> · {{ item.note }}</template>
+                  </small>
+                </div>
+                <span v-if="item.status === 'skipped'" class="import-item-badge">已跳过</span>
+                <span v-else-if="item.status === 'error'" class="import-item-badge failed"
+                  >未完成</span
+                >
+                <button
+                  type="button"
+                  class="icon-button import-item-more"
+                  :class="{ open: openKey === item.key }"
+                  :title="openKey === item.key ? '收起作者、年份和 DOI' : '填写作者、年份和 DOI'"
+                  :aria-label="openKey === item.key ? '收起书目信息' : '展开书目信息'"
+                  :aria-expanded="openKey === item.key"
+                  :disabled="busy"
+                  @click="toggle(item)"
+                >
+                  <Icon name="chevron" />
+                </button>
+                <button
+                  type="button"
+                  class="icon-button"
+                  title="移除"
+                  aria-label="移除"
+                  :disabled="busy"
+                  @click="removeItem(item)"
+                >
+                  <Icon name="close" />
+                </button>
+              </div>
+              <div v-if="openKey === item.key" class="import-item-extra">
+                <label class="import-field wide">
+                  <span>作者 <small>多位作者用分号隔开</small></span>
+                  <input
+                    v-model="item.authors"
+                    maxlength="3000"
+                    placeholder="例如：张三; 李四"
+                    :aria-label="`第 ${index + 1} 个文件的作者`"
+                    :disabled="busy"
+                  />
+                </label>
+                <label class="import-field">
+                  <span>年份</span>
+                  <input
+                    v-model="item.year"
+                    inputmode="numeric"
+                    maxlength="4"
+                    placeholder="2024"
+                    :aria-label="`第 ${index + 1} 个文件的年份`"
+                    :disabled="busy"
+                  />
+                </label>
+                <label class="import-field">
+                  <span>DOI <small>可选</small></span>
+                  <input
+                    v-model="item.doi"
+                    maxlength="300"
+                    placeholder="10.xxxx/xxxxx"
+                    :aria-label="`第 ${index + 1} 个文件的 DOI`"
+                    :disabled="busy"
+                  />
+                </label>
+              </div>
+            </article>
+          </div>
+        </div>
         <div class="import-fields">
           <label class="import-field wide">
-            <span>题名 <em>必填</em></span>
-            <input
-              id="import-paper-title"
-              v-model="form.title"
-              maxlength="300"
-              placeholder="与 PDF 首页一致"
-              :disabled="busy"
-              @input="titleInput"
-            />
-          </label>
-          <label class="import-field wide">
-            <span>作者 <small>多位作者用分号隔开</small></span>
-            <input
-              id="import-paper-authors"
-              v-model="form.authors"
-              maxlength="3000"
-              placeholder="例如：张三; 李四"
-              :disabled="busy"
-            />
-          </label>
-          <label class="import-field">
-            <span>年份</span>
-            <input
-              id="import-paper-year"
-              v-model="form.year"
-              inputmode="numeric"
-              maxlength="4"
-              placeholder="2024"
-              :disabled="busy"
-            />
-          </label>
-          <label class="import-field">
-            <span>DOI <small>可选</small></span>
-            <input
-              id="import-paper-doi"
-              v-model="form.doi"
-              maxlength="300"
-              placeholder="10.xxxx/xxxxx"
-              :disabled="busy"
-            />
-          </label>
-          <label class="import-field wide">
             <span>归档分类</span>
-            <select id="import-paper-category" v-model="form.category" :disabled="busy">
+            <select v-model="form.category" :disabled="busy || stage === 'done'">
               <option v-for="[value, label] in categories" :key="value" :value="value">
                 {{ label }}
               </option>
             </select>
           </label>
         </div>
-        <label class="import-check">
+        <label v-if="stage !== 'done'" class="import-check">
           <input v-model="form.confirmed" type="checkbox" :disabled="busy" />
-          <span>我已核对题名与作者与 PDF 首页一致，并有权保存该文件。</span>
+          <span>{{
+            items.length > 1
+              ? '我已核对以上文件的题名与作者信息，并有权保存这些文件。'
+              : '我已核对题名与作者与 PDF 首页一致，并有权保存该文件。'
+          }}</span>
         </label>
         <p v-if="error" class="import-error" role="alert">{{ error }}</p>
+        <p v-if="stage === 'done'" class="import-summary" role="status">
+          已归档 {{ result?.archived || 0 }} 篇<template v-if="result?.skipped"
+            >，跳过 {{ result.skipped }} 个重复文件</template
+          >。
+        </p>
         <div v-if="busy" class="import-progress" role="status">
           <span class="busy-spinner" />
-          {{ stage === 'submitting' ? '正在上传 PDF…' : '正在核验并归档…' }}
+          <template v-if="stage === 'uploading'">
+            正在上传第 {{ uploading }} / {{ items.length }} 个文件…
+          </template>
+          <template v-else> 正在核验并归档 {{ processed }} / {{ submittedCount }} 篇… </template>
         </div>
-        <details v-if="stage === 'failed' && logText" class="import-log-wrap">
+        <details v-if="(stage === 'failed' || stage === 'done') && logText" class="import-log-wrap">
           <summary>查看任务日志</summary>
           <pre class="import-log">{{ logText }}</pre>
         </details>
       </div>
       <footer class="import-actions">
-        <button type="button" class="button subtle" :disabled="busy" @click="close">取消</button>
-        <button id="import-paper-submit" type="submit" class="button primary" :disabled="busy">
-          <Icon name="upload" />{{ busy ? '正在导入…' : '导入并归档' }}
-        </button>
+        <template v-if="stage === 'done'">
+          <button type="button" class="button primary" @click="close">完成</button>
+        </template>
+        <template v-else>
+          <button type="button" class="button subtle" :disabled="busy" @click="close">
+            取消
+          </button>
+          <button
+            id="import-paper-submit"
+            type="submit"
+            class="button primary"
+            :disabled="busy || !items.length"
+          >
+            <Icon name="upload" />{{ submitLabel }}
+          </button>
+        </template>
       </footer>
     </form>
   </dialog>

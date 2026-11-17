@@ -29,7 +29,7 @@ npm run doctor
 
 查找论文、编号与阅读成果请进入 [library/README.md](library/README.md)。前端采用 Vue 3，修改组件后需运行 `npm run build:web`；日常启动使用随项目保存的构建产物。修改程序请进入 [app/README.md](app/README.md)。文献目录中的 `papers/`、`notes/` 等相对路径，均以 `library/` 为基准。
 
-Windows 桌面版使用 Tauri 2 封装同一网站，程序在 `app/desktop/`，带原生窗口和托盘。`npm run desktop:dev` 用于开发调试；`npm run desktop:build` 生成 NSIS 安装包，输出在 `app/desktop/src-tauri/target/release/bundle/`，可选做 Authenticode 签名并生成更新签名，构建变量见[程序说明](app/README.md)。安装版首次启动会自动创建默认文献库 `文档/Zhiyue/library`（可用 `LITERATURE_LIBRARY` 指定其他位置），包括目录骨架、模板说明和空索引；启动后可在侧栏新建或重命名分类文件夹，也可在文献页选择本机 PDF，核对题名与作者后归档入库。Pi Agent 登录配置、Python 与 Poppler 仍使用本机安装。
+Windows 桌面版使用 Tauri 2 封装同一网站，程序在 `app/desktop/`，带原生窗口和托盘。`npm run desktop:dev` 用于开发调试；`npm run desktop:build` 生成 NSIS 安装包，输出在 `app/desktop/src-tauri/target/release/bundle/`，可选做 Authenticode 签名并生成更新签名，构建变量见[程序说明](app/README.md)。安装版首次启动会自动创建默认文献库 `文档/Zhiyue/library`（可用 `LITERATURE_LIBRARY` 指定其他位置），包括目录骨架、模板说明和空索引；启动后可在侧栏新建或重命名分类文件夹，也可在文献页多选、选择文件夹或拖入本机 PDF，批量核对题名与作者后归档入库。Pi Agent 登录配置、Python 与 Poppler 仍使用本机安装。
 
 `library/`、`tools/` 的本机安装和 `releases/` 均按本地资料处理，不进入 Git。只发送检查过的软件分享包，不要整体发送本项目。新的分享版可用 `npm run share -- --name new-name` 生成。
 

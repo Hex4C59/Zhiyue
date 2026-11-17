@@ -382,14 +382,13 @@ export function createWorkspace({
       await uploadOne(item);
     }
   }
-  async function importPdf({ file, title, authors, year, doi, category }) {
-    const upload = await uploadFile(file);
-    const job = await api(
+  async function importPdfs({ uploads, category }) {
+    const { job, skipped } = await api(
       '/api/library/import',
-      json('POST', { uploadId: upload.id, title, authors, year, doi, category }),
+      json('POST', { uploads, category }),
     );
     state.jobs.set(job.id, job);
-    return job;
+    return { job, skipped };
   }
   async function resolveNoteDraft(id, action) {
     const chat = state.chat,
@@ -622,9 +621,10 @@ export function createWorkspace({
     newChat,
     sendMessage,
     interrupt,
+    uploadFile,
     uploadFiles,
     uploadOne,
-    importPdf,
+    importPdfs,
     decideApproval,
     saveNoteDraft,
     discardNoteDraft,
