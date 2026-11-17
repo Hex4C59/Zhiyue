@@ -1,4 +1,4 @@
-import { cp, mkdir, rm, stat, writeFile } from 'node:fs/promises';
+import { cp, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -21,6 +21,18 @@ const filter = (base) => (source) => {
     .some((part) => EXCLUDED.has(part) || path.extname(part) === '.pyc');
 };
 
+// 按 Node 的查找顺序定位包：先看传入目录下的 node_modules，再逐级向上。
+function locatePackage(name, from) {
+  let directory = from;
+  while (true) {
+    const candidate = path.join(directory, 'node_modules', ...name.split('/'));
+    if (existsSync(path.join(candidate, 'package.json'))) return candidate;
+    const parent = path.dirname(directory);
+    if (parent === directory) return null;
+    directory = parent;
+  }
+}
+
 await rm(OUT, { recursive: true, force: true });
 const nodeDirectory = path.join(OUT, 'node');
 await mkdir(nodeDirectory, { recursive: true });
@@ -40,6 +52,32 @@ await cp(path.join(APP, 'downloader'), path.join(OUT, 'app/downloader'), {
 });
 await cp(path.join(APP, 'templates'), path.join(OUT, 'app/templates'), { recursive: true });
 
+// 运行时的 npm 依赖（含项目自带的官方 Pi SDK）随桌面资源分发，安装后无需联网安装。
+const rootManifest = JSON.parse(await readFile(path.join(ROOT, 'package.json'), 'utf8'));
+const pending = Object.keys(rootManifest.dependencies || {}).map((name) => ({ name, from: ROOT, required: true }));
+const copied = new Set();
+while (pending.length) {
+  const { name, from, required } = pending.pop();
+  const source = locatePackage(name, from);
+  if (!source) {
+    if (required) throw new Error('缺少运行依赖：' + name);
+    continue;
+  }
+  const relative = path.relative(ROOT, source);
+  if (copied.has(relative)) continue;
+  copied.add(relative);
+  await cp(source, path.join(OUT, relative), { recursive: true });
+  const dependency = JSON.parse(await readFile(path.join(source, 'package.json'), 'utf8'));
+  const dependencies = Object.keys(dependency.dependencies || {});
+  for (const item of dependencies) pending.push({ name: item, from: source, required: true });
+  for (const item of Object.keys(dependency.optionalDependencies || {})) {
+    pending.push({ name: item, from: source, required: false });
+  }
+  for (const item of Object.keys(dependency.peerDependencies || {})) {
+    pending.push({ name: item, from: source, required: false });
+  }
+}
+
 const required = [
   'node/' + nodeName,
   'app/web/src/server.mjs',
@@ -48,11 +86,16 @@ const required = [
   'app/downloader/run.py',
   'app/templates/library-README.md',
   'app/templates/library-AGENTS.md',
+  'node_modules/@earendil-works/pi-coding-agent/dist/index.js',
 ];
 for (const relative of required) {
   const info = await stat(path.join(OUT, relative)).catch(() => null);
   if (!info?.isFile()) throw new Error('桌面资源缺少文件：' + relative);
 }
+
+const piManifest = JSON.parse(
+  await readFile(path.join(OUT, 'node_modules/@earendil-works/pi-coding-agent/package.json'), 'utf8'),
+);
 
 await writeFile(
   path.join(OUT, 'manifest.json'),
@@ -62,6 +105,7 @@ await writeFile(
       node: process.version,
       platform: process.platform,
       arch: process.arch,
+      pi: piManifest.version,
       preparedAt: new Date().toISOString(),
     },
     null,

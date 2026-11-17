@@ -7,10 +7,12 @@ import Composer from './Composer.vue';
 import ChatMessage from './ChatMessage.vue';
 import ApprovalCard from './ApprovalCard.vue';
 import NoteDraftCard from './NoteDraftCard.vue';
+import AgentSettingsDialog from './AgentSettingsDialog.vue';
 const workspace = inject('workspace'),
   state = workspace.state;
 const { agent } = workspace,
-  messages = ref(null);
+  messages = ref(null),
+  settingsOpen = ref(false);
 const detecting = computed(
   () =>
     agent.value.loading === true ||
@@ -85,6 +87,15 @@ function history() {
       </div>
       <div class="chat-actions">
         <button
+          id="agent-settings"
+          class="icon-button"
+          title="模型与密钥"
+          aria-label="模型与密钥"
+          @click="settingsOpen = true"
+        >
+          <Icon name="settings" />
+        </button>
+        <button
           id="chat-history-toggle"
           class="icon-button"
           title="会话列表"
@@ -124,8 +135,11 @@ function history() {
       <div v-if="!state.chats.length" class="empty">暂无会话</div>
     </div>
     <div v-if="banner" id="auth-banner" class="auth-banner">
-      {{ state.statusError || agent.error || '请在终端运行 pi 配置模型或登录。' }}
-      <button id="retry-status" @click="workspace.reconnectAgent">重新检测</button>
+      <span>{{ state.statusError || agent.error || 'Pi 尚未配置模型或密钥。' }}</span>
+      <span class="auth-banner-actions">
+        <button id="open-agent-settings" @click="settingsOpen = true">配置模型与密钥</button>
+        <button id="retry-status" @click="workspace.reconnectAgent">重新检测</button>
+      </span>
     </div>
     <div v-if="state.context.size" class="chat-context">
       <div id="context-papers">
@@ -175,5 +189,6 @@ function history() {
       <ApprovalCard v-for="approval in approvals" :key="approval.id" :approval="approval" />
     </div>
     <Composer />
+    <AgentSettingsDialog v-if="settingsOpen" @close="settingsOpen = false" />
   </aside>
 </template>

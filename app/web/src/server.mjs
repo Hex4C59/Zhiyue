@@ -116,6 +116,27 @@ export async function createApp({root:configuredRoot,stateDir:configuredStateDir
       }
       if(method==='GET'&&route==='/api/status')return json(res,{...chats.snapshot(),python,node:process.version,root});
       if(method==='POST'&&route==='/api/agents/pi/connect')return json(res,await chats.connect());
+      if(method==='GET'&&route==='/api/agents/pi/settings')return json(res,await chats.settings());
+      if(method==='POST'&&route==='/api/agents/pi/settings/key'){
+        const {provider,key}=await readJson(req);
+        if(typeof provider!=='string'||!/^[A-Za-z0-9._-]{1,100}$/.test(provider))throw error('服务商名称不合法。');
+        if(typeof key!=='string'||!key.trim()||key.length>4096||/[\u0000-\u001f\u007f]/.test(key)){
+          throw error('请输入有效的 API 密钥。');
+        }
+        return json(res,await chats.saveKey(provider,key.trim()));
+      }
+      if(method==='POST'&&route==='/api/agents/pi/settings/key/remove'){
+        const {provider}=await readJson(req);
+        if(typeof provider!=='string'||!/^[A-Za-z0-9._-]{1,100}$/.test(provider))throw error('服务商名称不合法。');
+        return json(res,await chats.removeKey(provider));
+      }
+      if(method==='POST'&&route==='/api/agents/pi/settings/model'){
+        const {model}=await readJson(req);
+        if(typeof model!=='string'||!model||model.length>200||/[\u0000-\u001f\u007f]/.test(model)){
+          throw error('请选择模型。');
+        }
+        return json(res,await chats.setDefaultModel(model));
+      }
       if(method==='GET'&&route==='/api/chats')return json(res,chats.list());
       if(method==='POST'&&route==='/api/chats')return json(res,chats.create(await readJson(req)),201);
       const chatMatch=/^\/api\/chats\/([\w-]+)(?:\/(messages|interrupt))?$/.exec(route);

@@ -19,6 +19,7 @@
     "share": "python app/scripts/export_share.py"
   },
   "dependencies": {
+    "@earendil-works/pi-coding-agent": "1.5.2",
     "vue": "3.5.45"
   },
   "devDependencies": {

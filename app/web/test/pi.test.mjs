@@ -10,11 +10,36 @@ import { createApp } from '../src/server.mjs';
 
 const wait=async predicate=>{for(let n=0;n<200;n++){if(predicate())return;await new Promise(r=>setTimeout(r,5));}throw new Error('condition timeout');};
 function mockSDK() {
-  const models=[{id:'test-model',provider:'test',name:'Test',input:['text','image']}];
+  const models=[
+    {id:'test-model',provider:'test',name:'Test',input:['text','image']},
+    {id:'backup-model',provider:'test',name:'Backup',input:['text']}
+  ];
   const created=[];let hold;
-  const sdk={created,models,
-    ModelRuntime:{create:async()=>({getAvailable:async()=>models,settleCredentialWrites:async()=>{}})},
-    SettingsManager:{create:()=>({getGlobalSettings:()=>({defaultProvider:'test',defaultModel:'test-model'})}),inMemory:x=>x},
+  const credentials=new Map([['test',{providerId:'test',type:'api_key'}],['oauth',{providerId:'oauth',type:'oauth'}]]);
+  const settings={defaultProvider:'test',defaultModel:'test-model'};
+  const providers=[
+    {id:'test',name:'Test Provider',auth:{apiKey:{}}},
+    {id:'oauth',name:'OAuth Provider',auth:{oauth:{}}},
+    {id:'other',name:'Other Provider',auth:{apiKey:{}}}
+  ];
+  const runtime={
+    getAvailable:async()=>models.filter(model=>credentials.has(model.provider)),settleCredentialWrites:async()=>{},
+    getProviders:()=>providers,getProvider:id=>providers.find(provider=>provider.id===id),
+    getProviderAuthStatus:id=>credentials.has(id)?{configured:true,source:'stored'}:{configured:false},
+    listCredentials:async()=>[...credentials.values()],
+    login:async(id,type,interaction)=>{
+      const key=await interaction.prompt({type:'secret',message:'Enter API key'});
+      credentials.set(id,{providerId:id,type,key});
+    },
+    logout:async id=>{credentials.delete(id);}
+  };
+  const settingsManager={
+    getGlobalSettings:()=>({...settings}),
+    setDefaultModelAndProvider:(provider,model)=>{settings.defaultProvider=provider;settings.defaultModel=model;}
+  };
+  const sdk={created,models,credentials,
+    ModelRuntime:{create:async()=>runtime},
+    SettingsManager:{create:()=>settingsManager,inMemory:x=>x},
     createExtensionRuntime:()=>({}),
     SessionManager:{
       create:(_cwd,dir)=>{const file=path.join(dir,`${randomUUID()}.jsonl`);fs.writeFileSync(file,'{}');return {getSessionFile:()=>file};},
@@ -87,13 +112,33 @@ test('Pi 可停止正在生成的回答并继续新一轮，未知模型明确�
   await assert.rejects(pi.request('turn/start',{threadId:chats.get(c.id).threadId,model:'test/missing'}),/不可用/);
 });
 
-test('Pi 恢复会话拒绝目录外文件，托管安装路径拒绝非法版本',async t=>{
+test('Pi 恢复会话拒绝目录外文件，自带 SDK 可从项目依赖定位',async t=>{
   const {pi,dir}=fixture(t);await pi.start();
   pi.toolDefinitions=[];pi.instructions='test';
   const outside=path.join(dir,'outside.jsonl');fs.writeFileSync(outside,'{}');fs.mkdirSync(pi.sessionsDir,{recursive:true});
   await assert.rejects(pi.createSession({},outside),/越界/);
-  const install=path.join(dir,'install');fs.mkdirSync(install);fs.writeFileSync(path.join(install,'current-version'),'../../outside');
-  assert.throws(()=>resolvePi({PI_CODING_AGENT_DIR:dir,PATH:''}),/未找到/);
+  assert.match(resolvePi(),/pi-coding-agent[\\/]dist[\\/]index\.js$/);
+});
+
+test('Pi 设置可保存和清除密钥并更换默认模型',async t=>{
+  const {chats,sdk}=fixture(t);
+  const initial=await chats.settings();
+  assert.equal(initial.defaultModel,'test/test-model');
+  assert.equal(initial.providers.find(p=>p.id==='test').credentialType,'api_key');
+  assert.equal(initial.providers.find(p=>p.id==='other').configured,false);
+  assert.equal(initial.providers.find(p=>p.id==='oauth').supportsApiKey,false);
+  const saved=await chats.saveKey('other','sk-test-key-12345678');
+  assert.equal(saved.providers.find(p=>p.id==='other').configured,true);
+  assert.equal(saved.providers.find(p=>p.id==='other').credentialType,'api_key');
+  assert.equal(sdk.credentials.get('other').key,'sk-test-key-12345678');
+  await assert.rejects(()=>chats.saveKey('oauth','sk-test-00000000'),/不支持 API 密钥/);
+  await assert.rejects(()=>chats.removeKey('oauth'),/账号登录/);
+  const cleared=await chats.removeKey('other');
+  assert.equal(cleared.providers.find(p=>p.id==='other').configured,false);
+  const updated=await chats.setDefaultModel('test/backup-model');
+  assert.equal(updated.defaultModel,'test/backup-model');
+  assert.ok(chats.models.find(model=>model.id==='test/backup-model'));
+  await assert.rejects(()=>chats.setDefaultModel('test/missing'),/不可用/);
 });
 
 test('HTTP 提供 Pi 状态和连接接口',async t=>{
@@ -109,6 +154,24 @@ test('HTTP 提供 Pi 状态和连接接口',async t=>{
   const connected=await post('/api/agents/pi/connect');assert.equal(connected.status,200);
   const status=await connected.json();assert.equal(status.agents.pi.authenticated,true);assert.equal(status.agents.pi.models[0].model,'test/test-model');
   assert.deepEqual(Object.keys(status.agents),['pi']);
+  const settings=await (await fetch(base+'/api/agents/pi/settings')).json();
+  assert.equal(settings.defaultModel,'test/test-model');
+  assert.equal(settings.providers.find(p=>p.id==='test').credentialType,'api_key');
+  let response=await post('/api/agents/pi/settings/key',{provider:'../evil',key:'sk-abcdefgh'});
+  assert.equal(response.status,400);
+  response=await post('/api/agents/pi/settings/key',{provider:'other',key:'  '});
+  assert.equal(response.status,400);
+  response=await post('/api/agents/pi/settings/key',{provider:'other',key:'sk-http-00000000'});
+  assert.equal(response.status,200);
+  assert.equal((await response.json()).providers.find(p=>p.id==='other').configured,true);
+  response=await post('/api/agents/pi/settings/key/remove',{provider:'other'});
+  assert.equal(response.status,200);
+  assert.equal((await response.json()).providers.find(p=>p.id==='other').configured,false);
+  response=await post('/api/agents/pi/settings/model',{model:'test/backup-model'});
+  assert.equal(response.status,200);
+  assert.equal((await response.json()).defaultModel,'test/backup-model');
+  response=await post('/api/agents/pi/settings/model',{model:''});
+  assert.equal(response.status,400);
   const piChat=await (await post('/api/chats',{})).json();
   const sent=await post(`/api/chats/${piChat.id}/messages`,{text:'HTTP 问题'});assert.equal(sent.status,202);
   await wait(()=>app.chats.get(piChat.id).messages.at(-1).status!=='streaming');

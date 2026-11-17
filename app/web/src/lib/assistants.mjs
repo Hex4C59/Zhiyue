@@ -14,4 +14,8 @@ export class AssistantService extends ChatService {
   }
   snapshot(){return {defaultProvider:'pi',agents:{pi:{...this.status(),models:this.models}},models:this.models};}
   async connect(){const result=await super.connect();return {...result,...this.snapshot()};}
+  async settings(){await this.connect();return this.client.settingsInfo();}
+  async saveKey(provider,key){await this.connect();await this.client.saveProviderKey(provider,key);await this.connect();return this.client.settingsInfo();}
+  async removeKey(provider){await this.connect();await this.client.removeProviderKey(provider);await this.connect();return this.client.settingsInfo();}
+  async setDefaultModel(model){await this.connect();await this.client.setDefaultModel(model);await this.connect();return this.client.settingsInfo();}
 }

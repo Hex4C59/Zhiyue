@@ -146,6 +146,7 @@ test('安装布局首次启动自动创建文献库，并能离线导入一篇�
     [path.join(runtimeDir, 'app/web/src/server.mjs'), '网站服务'],
     [path.join(runtimeDir, 'app/downloader/run.py'), '下载器'],
     [path.join(runtimeDir, 'app/templates/library-README.md'), '文献库模板'],
+    [path.join(runtimeDir, 'node_modules/@earendil-works/pi-coding-agent/dist/index.js'), '随包 Pi SDK'],
   ].filter(([file]) => !fs.existsSync(file));
   if (missing.length) {
     t.skip(`缺少打包产物（${missing.map(([, label]) => label).join('、')}），请先运行 npm run desktop:build`);

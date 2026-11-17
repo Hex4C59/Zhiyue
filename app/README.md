@@ -63,7 +63,7 @@ CMD 启动入口显式调用系统 Windows PowerShell，避免 PATH 中同名程
 
 ## 桌面应用
 
-桌面版由 Tauri 2 启动原生窗口和托盘，并拉起内置 Node 运行 `app/web/src/server.mjs`；服务在标准输出给出地址后窗口跳转过去，关闭窗口只隐藏到托盘，托盘菜单可显示、检查更新或退出。Rust 代码在 `app/desktop/src-tauri/src/`。调试构建从仓库根定位网站源码；发布构建读取 `resources/runtime/`，该目录由 `npm run desktop:prepare` 生成并被 Git 忽略，包含网站、下载器、文献库模板和当前机器的 Node 可执行文件。安装版默认使用 `文档/Zhiyue/library`，`LITERATURE_LIBRARY` 可覆盖；Pi Agent 登录配置、Python 和 Poppler 取用户本机安装。本机构建可用 `./start-desktop.cmd` 让桌面版直接使用项目文献库和虚拟环境。
+桌面版由 Tauri 2 启动原生窗口和托盘，并拉起内置 Node 运行 `app/web/src/server.mjs`；服务在标准输出给出地址后窗口跳转过去，关闭窗口只隐藏到托盘，托盘菜单可显示、检查更新或退出。Rust 代码在 `app/desktop/src-tauri/src/`。调试构建从仓库根定位网站源码；发布构建读取 `resources/runtime/`，该目录由 `npm run desktop:prepare` 生成并被 Git 忽略，包含网站、下载器、文献库模板、当前机器的 Node 可执行文件和网站的 npm 运行依赖（含项目自带的官方 Pi SDK）。安装版默认使用 `文档/Zhiyue/library`，`LITERATURE_LIBRARY` 可覆盖；Pi Agent 登录配置、Python 和 Poppler 取用户本机安装。本机构建可用 `./start-desktop.cmd` 让桌面版直接使用项目文献库和虚拟环境。
 
 `npm run desktop:build` 默认生成未签名安装包。以下变量只在本机构建环境设置，不写入仓库配置：
 
@@ -78,11 +78,11 @@ CMD 启动入口显式调用系统 Windows PowerShell，避免 PATH 中同名程
 
 打包若在解压 NSIS 时提示 `os error 17`（不同磁盘驱动器），可把 `%LOCALAPPDATA%\tauri\nsis-3.13` 手动改名为同目录下的 `NSIS`，再把 `nsis_tauri_utils.dll` 放入 `NSIS\Plugins\x86-unicode\additional\` 后重试。目录被加密导致无法改名时，可把工具集放在其他磁盘的普通目录，用目录联接让 `%LOCALAPPDATA%\tauri\NSIS` 指向它。
 
-WebView2 要求可执行文件所在目录的完整性级别为 Medium。旧沙箱工具可能在项目目录留下低完整性标签（Low mandatory level）和拒绝 ACE，表现为窗口空白、`msedgewebview2.exe` 在 `msedge_elf.dll` 崩溃。遇到时先用 `icacls 目录 /grant "用户名:(OI)(CI)(WO)"` 取得写所有者权限，再运行 `icacls 目录 /setintegritylevel (OI)(CI)M`，不要用代码绕开。
+WebView2 要求可执行文件所在目录的完整性级别为 Medium。旧沙箱工具可能在项目目录留下低完整性标签（Low mandatory level）和拒绝 ACE，表现为窗口空白、`msedgewebview2.exe` 在 `msedge_elf.dll` 崩溃，或启动时报 WebView2 环境创建失败（`HRESULT(0x800700AA)`，提示“请求的资源在使用中”）。遇到时先用 `icacls 目录 /grant "用户名:(OI)(CI)(WO)"` 取得写所有者权限，再运行 `icacls 目录 /setintegritylevel (OI)(CI)M`，不要用代码绕开。
 
 ## 修改和检查
 
-前端组件改 web/frontend，样式改 web/public/css，业务改 web/src/lib，HTTP 改 web/src/server.mjs，下载改 app/downloader，启动维护改 app/scripts，桌面外壳与打包改 app/desktop。前端使用 Vue 3 Composition API 与 Vite，依赖由根 package-lock.json 固定；不引入路由或全局状态库。dist/app.js 随源码保存，直接启动无需安装 npm 依赖；组件修改后在根目录运行 npm run build:web。npm test 自动先构建再运行后端与 DOM 测试。路径变更须同步检查分享文件清单、默认工作区与测试。
+前端组件改 web/frontend，样式改 web/public/css，业务改 web/src/lib，HTTP 改 web/src/server.mjs，下载改 app/downloader，启动维护改 app/scripts，桌面外壳与打包改 app/desktop。前端使用 Vue 3 Composition API 与 Vite，依赖由根 package-lock.json 固定；不引入路由或全局状态库。dist/app.js 随源码保存，浏览资料直接启动无需安装 npm 依赖；Pi Agent 需要先在根目录安装自带 SDK。组件修改后在根目录运行 npm run build:web。npm test 自动先构建再运行后端与 DOM 测试。路径变更须同步检查分享文件清单、默认工作区与测试。
 
 网站静态地址为 `/js/app.js` 和 `/css/styles.css`。
 

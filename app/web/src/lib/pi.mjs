@@ -1,31 +1,18 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { pathToFileURL } from 'node:url';
+import { pathToFileURL, fileURLToPath } from 'node:url';
 import { EventEmitter } from 'node:events';
 import { randomUUID } from 'node:crypto';
 import { redact } from './store.mjs';
 
-// Resolve the SDK from Pi's managed installation, or a normal npm installation.
-export function resolvePi(env=process.env) {
-  if(env.LITERATURE_PI_SDK) {
-    const entry=path.resolve(env.LITERATURE_PI_SDK);
-    if(!fs.existsSync(entry))throw new Error('LITERATURE_PI_SDK 指向的 Pi SDK 不存在。');
-    return entry;
+// 使用项目依赖里的官方 Pi SDK；桌面版随包分发同一份依赖。
+export function resolvePi() {
+  try {
+    return fileURLToPath(import.meta.resolve('@earendil-works/pi-coding-agent'));
+  } catch {
+    throw new Error('未找到项目自带的 Pi Agent SDK，请在项目根目录执行 npm install。');
   }
-  const agentDir=env.PI_CODING_AGENT_DIR||path.join(os.homedir(),'.pi','agent');
-  const candidates=[];
-  const versionFile=path.join(agentDir,'install','current-version');
-  if(fs.existsSync(versionFile)) {
-    const version=fs.readFileSync(versionFile,'utf8').trim();
-    if(/^[\w.+-]+$/.test(version)&&!['.','..'].includes(version))candidates.push(path.join(agentDir,'install','releases',version,'node_modules','@earendil-works','pi-coding-agent','dist','index.js'));
-  }
-  for(const directory of [path.dirname(process.execPath),path.join(os.homedir(),'AppData','Roaming','npm'),...(env.PATH||'').split(path.delimiter)]) {
-    for(const scope of ['@earendil-works','@mariozechner'])candidates.push(path.join(directory,'node_modules',scope,'pi-coding-agent','dist','index.js'));
-  }
-  const entry=candidates.find(file=>fs.existsSync(file));
-  if(!entry)throw new Error('未找到 Pi Agent SDK。请安装 Pi，或用 LITERATURE_PI_SDK 指定 dist/index.js。');
-  return entry;
 }
 
 // 把 Pi 的会话事件转换为网站的聊天协议，使附件、工具和持久化共用 ChatService。
@@ -44,9 +31,10 @@ export class PiClient extends EventEmitter {
         this.sdk ||= await import(pathToFileURL(resolvePi()).href);
         if(!this.sdk.ModelRuntime)throw new Error('当前 Pi SDK 版本不兼容，请升级 Pi Agent。');
         this.runtime=await this.sdk.ModelRuntime.create({authPath:path.join(this.agentDir,'auth.json'),modelsPath:path.join(this.agentDir,'models.json')});
-        this.settings=this.sdk.SettingsManager.create(this.root,this.agentDir).getGlobalSettings();
+        this.settingsManager=this.sdk.SettingsManager.create(this.root,this.agentDir);
+        this.settings=this.settingsManager.getGlobalSettings();
         this.models=await this.runtime.getAvailable();
-        this.available=true;this.lastError=this.models.length?null:'Pi 尚无可用模型，请先在终端运行 pi 并配置模型或登录，然后重新检测。';
+        this.available=true;this.lastError=this.models.length?null:'Pi 尚无可用模型。请检查模型与密钥配置，然后重新检测。';
       }catch(error){this.lastError=redact(error.message);throw error;}
     })().finally(()=>{this.starting=null;});
     return this.starting;
@@ -61,13 +49,13 @@ export class PiClient extends EventEmitter {
   }
   async request(method,params={}) {
     if(method==='account/read') {
-      // Recheck availability after the user has configured Pi in another terminal.
+      // Recheck availability after the user has configured Pi in another terminal or in the settings panel.
       this.models=await this.runtime.getAvailable();
-      this.lastError=this.models.length?null:'Pi 尚无可用模型。请在终端运行 pi 并配置模型或登录，再点击重新检测。';
+      this.lastError=this.models.length?null:'Pi 尚无可用模型。请检查模型与密钥配置，然后重新检测。';
       return {account:this.models.length?{type:'pi',planType:'本机 Pi 配置'}:null,requiresOpenaiAuth:!this.models.length};
     }
     if(method==='model/list')return {data:this.models.map(m=>({id:`${m.provider}/${m.id}`,model:`${m.provider}/${m.id}`,displayName:`${m.name||m.id} · ${m.provider}`,isDefault:m===this.pickModel()}))};
-    if(method==='account/login/start')throw new Error('请在终端运行 pi 完成登录或模型配置，然后回到网页点击重新检测。');
+    if(method==='account/login/start')throw new Error('请在终端运行 pi 完成登录，然后回到网页点击重新检测。');
     if(method==='thread/start')return this.createSession(params);
     if(method==='thread/resume')return this.createSession(params,params.threadId);
     if(method==='turn/start') {
@@ -84,6 +72,57 @@ export class PiClient extends EventEmitter {
       await this.sessions.get(params.threadId)?.abort();return {};
     }
     throw new Error(`Pi 不支持此请求：${method}`);
+  }
+  async refreshModels() {
+    this.models=await this.runtime.getAvailable();
+    this.lastError=this.models.length?null:'Pi 尚无可用模型。请检查模型与密钥配置，然后重新检测。';
+  }
+  // 只返回服务商、凭据类型和配置来源，密钥本身不进入网页。
+  async settingsInfo() {
+    const stored=new Map((await this.runtime.listCredentials()).map(item=>[item.providerId,item]));
+    const providers=this.runtime.getProviders().map(provider=>{
+      const auth=this.runtime.getProviderAuthStatus(provider.id);
+      const credential=stored.get(provider.id);
+      return {
+        id:provider.id,name:provider.name||provider.id,
+        configured:!!auth.configured,source:auth.source||null,sourceLabel:auth.label||null,
+        credentialType:credential?.type||null,
+        supportsApiKey:!!provider.auth?.apiKey,supportsOAuth:!!provider.auth?.oauth,
+        availableModels:this.models.filter(model=>model.provider===provider.id).length,
+      };
+    });
+    providers.sort((a,b)=>Number(b.configured)-Number(a.configured)||a.name.localeCompare(b.name,'en'));
+    const settings=this.settingsManager.getGlobalSettings();
+    const defaultModel=settings.defaultProvider&&settings.defaultModel
+      ?`${settings.defaultProvider}/${settings.defaultModel}`:'';
+    return {defaultModel,providers};
+  }
+  async saveProviderKey(providerId,key) {
+    const provider=this.runtime.getProvider(providerId);
+    if(!provider)throw new Error('未知的 Pi 服务商。');
+    if(!provider.auth?.apiKey)throw new Error('该服务商不支持 API 密钥，请在终端 Pi 中登录。');
+    // Some providers ask for extra text or selections during login; those flows stay in the Pi CLI.
+    await this.runtime.login(providerId,'api_key',{
+      prompt:async prompt=>{
+        if(prompt.type==='secret')return key;
+        throw new Error(`该服务商还需要填写${prompt.message||'额外信息'}，请在终端 Pi 中完成配置。`);
+      },
+      notify:()=>{},
+    });
+    await this.refreshModels();
+  }
+  async removeProviderKey(providerId) {
+    const credential=(await this.runtime.listCredentials()).find(item=>item.providerId===providerId);
+    if(!credential)throw new Error('该服务商没有已保存的凭据。');
+    if(credential.type!=='api_key')throw new Error('该服务商使用账号登录，请在终端 Pi 中管理。');
+    await this.runtime.logout(providerId);
+    await this.refreshModels();
+  }
+  async setDefaultModel(modelId) {
+    const model=this.models.find(item=>`${item.provider}/${item.id}`===modelId);
+    if(!model)throw new Error('所选模型当前不可用，请重新检测模型列表。');
+    this.settingsManager.setDefaultModelAndProvider(model.provider,model.id);
+    this.settings=this.settingsManager.getGlobalSettings();
   }
   async createSession(params,file) {
     if(this.sessions.has(file))return {thread:{id:file}};
