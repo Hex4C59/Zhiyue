@@ -564,3 +564,60 @@ test('Vue 阅读区保留 PDF 文字层与复制内容，其他面板更新不�
   assert.equal(document.getSelection().toString(), 'Selectable ');
   assert.equal(workspace.state.papers[0].readStatus, 'unread');
 });
+
+test('连续阅读中 Ctrl+滚轮缩放 PDF 页面，普通滚轮不受影响', async (t) => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () =>
+    new Response(new Uint8Array([137, 80, 78, 71]), {
+      headers: { 'Content-Type': 'image/png', 'X-PDF-Pages': '2' },
+    });
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+  const page = await fixture(t);
+  click(page.$('[data-paper="L001"]'));
+  await until(() => page.$('.pdf-text-layer span'));
+  const reader = page.$('#reader-content');
+  const width = () => page.$('.pdf-page-sheet').style.width;
+  const wheel = (deltaY, ctrlKey) => {
+    const event = new window.WheelEvent('wheel', {
+      deltaY,
+      ctrlKey,
+      bubbles: true,
+      cancelable: true,
+    });
+    reader.dispatchEvent(event);
+    return event;
+  };
+  assert.equal(width(), '100%');
+  const plain = wheel(-100, false);
+  await flush();
+  assert.equal(width(), '100%');
+  assert.equal(plain.defaultPrevented, false);
+  const zoom = wheel(-100, true);
+  await flush();
+  assert.equal(width(), '110%');
+  assert.equal(zoom.defaultPrevented, true);
+  assert.match(page.$('#pdf-fit').textContent, /110%/);
+  wheel(-100, true);
+  await flush();
+  assert.equal(width(), '120%');
+  for (let index = 0; index < 20; index += 1) wheel(-100, true);
+  await flush();
+  assert.equal(width(), '200%');
+  wheel(100, true);
+  await flush();
+  assert.equal(width(), '190%');
+  for (let index = 0; index < 20; index += 1) wheel(100, true);
+  await flush();
+  assert.equal(width(), '100%');
+  for (let index = 0; index < 24; index += 1) wheel(-4, true);
+  await flush();
+  assert.equal(width(), '100%');
+  wheel(-4, true);
+  await flush();
+  assert.equal(width(), '110%');
+  wheel(100, true);
+  await flush();
+  assert.equal(width(), '100%');
+});

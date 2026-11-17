@@ -26,6 +26,7 @@ export function createReader({ state, api, toast, patchPaper, setPanel, setDraft
       document.removeEventListener('copy', session.onCopy);
       for (const name of ['wheel', 'touchstart', 'pointerdown', 'keydown'])
         session.root.removeEventListener(name, session.onUserScroll);
+      session.root.removeEventListener('wheel', session.onZoomWheel);
       if (session.frame) cancelAnimationFrame(session.frame);
       for (const controller of session.controllers.values()) controller.abort();
       for (const url of session.urls.values()) URL.revokeObjectURL(url);
@@ -393,6 +394,19 @@ export function createReader({ state, api, toast, patchPaper, setPanel, setDraft
       };
       for (const name of ['wheel', 'touchstart', 'pointerdown', 'keydown'])
         root.addEventListener(name, session.onUserScroll, { passive: true });
+      // Ctrl+滚轮（触控板捏合同样以 ctrlKey 上报）缩放页面，阻止 WebView 整体缩放。
+      // 按累计滚动量每满 100 步进 10%，避免捏合的高频小增量瞬间放大到上限。
+      session.zoomDelta = 0;
+      session.onZoomWheel = (event) => {
+        if (!event.ctrlKey && !event.metaKey) return;
+        event.preventDefault();
+        session.zoomDelta += event.deltaY;
+        const steps = Math.trunc(session.zoomDelta / 100);
+        if (!steps) return;
+        session.zoomDelta -= steps * 100;
+        zoomPDF(steps < 0 ? 10 * -steps : -10 * steps);
+      };
+      root.addEventListener('wheel', session.onZoomWheel, { passive: false });
       session.observer = new IntersectionObserver(
         (entries) => {
           for (const entry of entries)

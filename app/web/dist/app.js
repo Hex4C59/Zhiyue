@@ -3390,7 +3390,7 @@ function is({ state: e, api: t, toast: n, patchPaper: r, setPanel: i, setDraft: 
 				"pointerdown",
 				"keydown"
 			]) t.root.removeEventListener(e, t.onUserScroll);
-			t.frame && cancelAnimationFrame(t.frame);
+			t.root.removeEventListener("wheel", t.onZoomWheel), t.frame && cancelAnimationFrame(t.frame);
 			for (let e of t.controllers.values()) e.abort();
 			for (let e of t.urls.values()) URL.revokeObjectURL(e);
 			t.queue = [];
@@ -3630,7 +3630,12 @@ function is({ state: e, api: t, toast: n, patchPaper: r, setPanel: i, setDraft: 
 				"pointerdown",
 				"keydown"
 			]) r.addEventListener(e, i.onUserScroll, { passive: !0 });
-			i.observer = new IntersectionObserver((e) => {
+			i.zoomDelta = 0, i.onZoomWheel = (e) => {
+				if (!e.ctrlKey && !e.metaKey) return;
+				e.preventDefault(), i.zoomDelta += e.deltaY;
+				let t = Math.trunc(i.zoomDelta / 100);
+				t && (i.zoomDelta -= t * 100, h(t < 0 ? 10 * -t : -10 * t));
+			}, r.addEventListener("wheel", i.onZoomWheel, { passive: !1 }), i.observer = new IntersectionObserver((e) => {
 				for (let t of e) t.isIntersecting && S(i, Number(t.target.dataset.pdfPage));
 			}, {
 				root: r,
