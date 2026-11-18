@@ -3,8 +3,8 @@
     [string] $Python
 )
 $ErrorActionPreference = 'Stop'
-$applicationRoot = Split-Path $PSScriptRoot -Parent
-$projectRoot = Split-Path $applicationRoot -Parent
+$projectRoot = Split-Path $PSScriptRoot -Parent
+$applicationRoot = Join-Path $projectRoot 'app'
 $desktopExecutable = Join-Path $applicationRoot 'desktop\src-tauri\target\release\zhiyue-desktop.exe'
 if (-not (Test-Path -LiteralPath $desktopExecutable)) {
     throw '桌面程序尚未构建，请先在项目根目录运行 npm run desktop:build。'

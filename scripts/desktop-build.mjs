@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 
 // 构建前的网站构建与运行资源准备仍由 npm run desktop:build 完成，本脚本只负责按环境变量
 // 叠加 Tauri 配置，避免把证书指纹或更新签名状态固定在仓库配置里。
-const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const desktopDir = path.join(root, "app", "desktop");
 const cliEntry = path.join(root, "node_modules", "@tauri-apps", "cli", "tauri.js");
 const overlayPath = path.join(desktopDir, "src-tauri", "target", "desktop-build-config.json");

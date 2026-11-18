@@ -10,12 +10,12 @@
     "build:web": "vite build --config app/web/vite.config.mjs",
     "test": "npm run build:web && node --test app/web/test/*.test.mjs",
     "test:desktop": "node --test app/desktop/test/*.test.mjs",
-    "test:downloads": "powershell -NoProfile -ExecutionPolicy Bypass -File app/scripts/download.ps1 -RunTests",
-    "doctor": "powershell -NoProfile -ExecutionPolicy Bypass -File app/scripts/download.ps1 doctor",
+    "test:downloads": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/download.ps1 -RunTests",
+    "doctor": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/download.ps1 doctor",
     "desktop:dev": "npm run build:web && cd app/desktop && tauri dev",
-    "desktop:prepare": "node app/scripts/prepare-desktop.mjs",
-    "desktop:build": "npm run build:web && npm run desktop:prepare && node app/scripts/desktop-build.mjs",
-    "share": "python app/scripts/export_share.py"
+    "desktop:prepare": "node scripts/prepare-desktop.mjs",
+    "desktop:build": "npm run build:web && npm run desktop:prepare && node scripts/desktop-build.mjs",
+    "share": "python scripts/export_share.py"
   },
   "dependencies": {
     "@earendil-works/pi-coding-agent": "1.5.2",

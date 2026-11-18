@@ -18,7 +18,7 @@
 
 应用使用项目依赖自带的官方 Pi SDK（`@earendil-works/pi-coding-agent`，当前 1.5.2）；模型与登录配置仍读取本机 `~/.pi/agent`（可用 `PI_CODING_AGENT_DIR` 指定）。可在助手面板的“模型与密钥”中保存或清除 API 密钥、更换默认模型，账号登录仍在终端运行 `pi` 完成；未配置时仍可浏览和整理文献。
 
-论文解析和下载复用已有 Python、pypdf、curl、Poppler 与 InstSci。启动前可运行 `.\app\scripts\download.ps1 doctor` 检查。本地服务优先使用 `LITERATURE_PYTHON` 指定的 Python，其次为 `app/downloader/.venv` 和 PATH。
+论文解析和下载复用已有 Python、pypdf、curl、Poppler 与 InstSci。启动前可运行 `.\scripts\download.ps1 doctor` 检查。本地服务优先使用 `LITERATURE_PYTHON` 指定的 Python，其次为 `app/downloader/.venv` 和 PATH。
 
 ## 阅读和提问
 
@@ -100,7 +100,7 @@ Pi Agent 可用的具名工具：`library_search`、`read_paper_pages`、`downlo
 
 ## 验证与维护
 
-Pi 接入有自动测试，覆盖会话恢复、流式输出、停止后重发、工具调用、模型与路径校验。`node app/scripts/check-pi.mjs` 可从项目根目录执行可选的真实模型验收：仅发送临时生成的虚构目录、单页 PDF、红色图片与普通文本，不读取真实文献或正式聊天；会使用本机 Pi 配置并产生模型调用，结束后清理临时会话。已在 2026-11-16 验证真实问答、文献工具桥接、PDF 页读取、文本附件及图片识别。
+Pi 接入有自动测试，覆盖会话恢复、流式输出、停止后重发、工具调用、模型与路径校验。`node scripts/check-pi.mjs` 可从项目根目录执行可选的真实模型验收：仅发送临时生成的虚构目录、单页 PDF、红色图片与普通文本，不读取真实文献或正式聊天；会使用本机 Pi 配置并产生模型调用，结束后清理临时会话。已在 2026-11-16 验证真实问答、文献工具桥接、PDF 页读取、文本附件及图片识别。
 
 ```powershell
 npm ci
@@ -135,7 +135,7 @@ npm test
 
 2026-11-05（当时的 Codex 版本，现已移除）：在本机验证 864 条文献目录与 31 篇笔记入口，真实文字问答、图片识别、文本附件、L853 指定页读取、重启后继续会话，以及按 DOI 触发统一下载工具复用已归档论文。L853 的逐页图像预览已核对总页数为 35。下载验收没有重新获取一篇新论文；公开源可达性、付费访问权限和机构认证仍取决于运行环境。
 
-Pi 接入依据项目依赖中的 Pi 包导出接口与随包文档。升级 Pi 依赖后先执行 npm ci 和测试，并运行一次 `node app/scripts/check-pi.mjs` 验证实际连接。
+Pi 接入依据项目依赖中的 Pi 包导出接口与随包文档。升级 Pi 依赖后先执行 npm ci 和测试，并运行一次 `node scripts/check-pi.mjs` 验证实际连接。
 
 开发临时资料曾位于 `../../library/.zhiyue/tmp/web_dev/`（协议 schema、合成测试附件及界面验收资料），已于2026-11-16清理，不影响论文归档；需要时可按测试代码重新生成。
 

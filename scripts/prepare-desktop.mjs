@@ -3,7 +3,7 @@ import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const APP = path.join(ROOT, 'app');
 const OUT = path.join(APP, 'desktop/src-tauri/resources/runtime');
 const EXCLUDED = new Set(['.venv', 'tests', '__pycache__', '.pytest_cache']);

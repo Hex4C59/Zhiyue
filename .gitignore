@@ -2,7 +2,7 @@
 /library/
 /releases/
 /tools/
-/app/scripts/export_share.py
+/scripts/export_share.py
 /app/desktop/src-tauri/resources/runtime/
 /app/desktop/src-tauri/target/
 /app/desktop/src-tauri/gen/

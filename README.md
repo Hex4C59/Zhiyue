@@ -65,10 +65,10 @@ npm run desktop:build   # 生成 NSIS 安装包
 桌面应用与 AI 助手复用同一套 Python 工具，也可独立使用：
 
 ```powershell
-.\app\scripts\download.ps1 doctor            # 检查依赖与凭据配置
-.\app\scripts\download.ps1 import list.json --batch my-batch
-.\app\scripts\download.ps1 download --batch my-batch
-.\app\scripts\download.ps1 archive --batch my-batch
+.\scripts\download.ps1 doctor            # 检查依赖与凭据配置
+.\scripts\download.ps1 import list.json --batch my-batch
+.\scripts\download.ps1 download --batch my-batch
+.\scripts\download.ps1 archive --batch my-batch
 ```
 
 完整命令（导入、下载、核验、人工核对、归档、机构渠道、打包）见 [app/downloader/README.md](app/downloader/README.md)。Elsevier、Unpaywall 等凭据只从进程环境变量读取（`ELSEVIER_API_KEY`、`UNPAYWALL_EMAIL` 等），不落盘、不进仓库。
@@ -77,12 +77,12 @@ npm run desktop:build   # 生成 NSIS 安装包
 
 ```text
 Zhiyue/
-├─ app/                   全部自维护程序
+├─ app/                   应用源码与运行时模板
 │  ├─ web/                桌面界面、Node 本地服务与构建产物
 │  ├─ downloader/         Python 文献工具：下载、核验、归档、索引
 │  ├─ desktop/            Tauri 2 桌面外壳（Rust）与安装测试
-│  ├─ scripts/            启动、下载、打包与维护入口
 │  └─ templates/          新文献库的初始 README 与协作规则
+├─ scripts/               启动、下载、打包与维护入口
 ├─ library/               本地文献工作区（Git 忽略，首次启动自动创建）
 ├─ start-desktop.cmd      桌面版启动入口（本机构建后）
 └─ package.json           统一 npm 命令

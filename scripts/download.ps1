@@ -5,7 +5,7 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path $PSScriptRoot -Parent
-$downloadRoot = Join-Path $projectRoot 'downloader'
+$downloadRoot = Join-Path $projectRoot 'app\downloader'
 $literatureEntry = Join-Path $downloadRoot 'run.py'
 $literatureCandidates = @(
     $env:LITERATURE_PYTHON,

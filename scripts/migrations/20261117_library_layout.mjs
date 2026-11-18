@@ -4,7 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const REPO = path.resolve(HERE, '../../..');
+const REPO = path.resolve(HERE, '../..');
 const LIBRARY = path.resolve(argument('--library') ?? path.join(REPO, 'library'));
 const BACKUP = path.resolve(argument('--backup') ?? path.join(REPO, 'releases/backups/20261117_library_layout/library'));
 const DRY_RUN = process.argv.includes('--dry-run');
@@ -379,7 +379,7 @@ async function writeRecord(plan, markdown, json, sessions) {
     '',
     `- 文献库：\`${relativeFromRepo(LIBRARY)}\``,
     `- 完整备份：\`${relativeFromRepo(BACKUP)}\``,
-    `- 一次性迁移脚本：\`app/scripts/migrations/20261117_library_layout.mjs\``,
+    `- 一次性迁移脚本：\`scripts/migrations/20261117_library_layout.mjs\``,
     `- 状态：${DRY_RUN ? '试运行，未改动文件' : '已执行'}`,
     '',
     '## 移动结果',

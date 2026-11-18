@@ -3,8 +3,8 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { deflateSync, crc32 } from 'node:zlib';
-import { createApp } from '../web/src/server.mjs';
-import { PiClient } from '../web/src/lib/pi.mjs';
+import { createApp } from '../app/web/src/server.mjs';
+import { PiClient } from '../app/web/src/lib/pi.mjs';
 
 const dir=await fs.mkdtemp(path.join(os.tmpdir(),'literature-pi-synthetic-'));
 const root=path.join(dir,'library'),stateDir=path.join(root,'.zhiyue','data');

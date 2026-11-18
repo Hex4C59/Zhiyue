@@ -1,15 +1,15 @@
 # Zhiyue 文献工具
 
-入口：[../scripts/download.ps1](../scripts/download.ps1)。完整操作：[论文下载流程](../../library/.zhiyue/docs/论文下载流程.md)。渠道、权限和故障：[下载渠道与问题处理](../../library/.zhiyue/docs/下载渠道与问题处理.md)。
+入口：[download.ps1](../../scripts/download.ps1)。完整操作：[论文下载流程](../../library/.zhiyue/docs/论文下载流程.md)。渠道、权限和故障：[下载渠道与问题处理](../../library/.zhiyue/docs/下载渠道与问题处理.md)。
 
 ## 快速入口
 
 在项目根目录的 PowerShell 中运行：
 
 ```powershell
-.\app\scripts\download.ps1 --help
-.\app\scripts\download.ps1 doctor
-.\app\scripts\download.ps1 status
+.\scripts\download.ps1 --help
+.\scripts\download.ps1 doctor
+.\scripts\download.ps1 status
 ```
 
 Python入口为`run.py`，默认以本工具所在项目为根目录，和当前终端工作目录无关。可通过全局参数`--root`指定另一份文献库；该目录须有README文献索引表。配置文件为[config.json](config.json)，只放选项和环境变量名称。
@@ -44,7 +44,7 @@ Python入口为`run.py`，默认以本工具所在项目为根目录，和当前
 改名顺序为“移动目录 → 重写 README → 重写 `papers/`、`notes/`、`synthesis/`、`outputs/` 的路径 → 更新批次台账和归档事务 → 重建索引”。开始时写 `.zhiyue/data/repairs/rename/*.json`，成功后删除。中断后运行：
 
 ```powershell
-.\app\scripts\download.ps1 repair
+.\scripts\download.ps1 repair
 ```
 
 改名不会等待尚未开始的批次队列；排队任务开始后若分类已改名会失败，需要重新提交。`repair` 只续做已经移动的目录；只有旧目录时判定未移动，新旧都在时报告冲突。归档的 `prepared` 事务会重新执行归档，目标 PDF 已存在且哈希一致时继续提交，不会重复复制；`repair` 结束前会在库写锁内重建一次派生索引。
@@ -71,7 +71,7 @@ Python入口为`run.py`，默认以本工具所在项目为根目录，和当前
 ```powershell
 $downloadKey = Read-Host '输入Elsevier API Key' -AsSecureString
 $env:ELSEVIER_API_KEY = [System.Net.NetworkCredential]::new('', $downloadKey).Password
-.\app\scripts\download.ps1 doctor
+.\scripts\download.ps1 doctor
 ```
 
 此设置只对当前终端及其子进程生效。`doctor`只报告是否配置，不显示值。不要把真实值填进`config.json`或清单。需要订阅访问的IEEE会话仍由现有InstSci维护，参见[本机说明](../../../tools/docs/InstSci_本机使用说明.md)。

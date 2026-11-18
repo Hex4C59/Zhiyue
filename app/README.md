@@ -2,12 +2,13 @@
 
 ## 根目录
 
-- `app/`：全部自维护程序。
+- `app/`：应用源码和运行时模板。
+- `scripts/`：启动、下载、打包和维护入口，位于项目根目录。
 - `library/`：私人文献工作区。`papers/`、`notes/`、`synthesis/`、`outputs/` 对用户可见；索引、批次、内部文档、聊天、缓存和临时文件在隐藏的 `library/.zhiyue/`。
 - `tools/`：本机第三方工具安装和机构登录环境。安装路径保持原样，避免损坏已有虚拟环境。
 - `releases/`：packages 保存干净分享包，projects 保存对应分享副本。
 
-根目录只保留 README、AGENTS、.gitignore、package.json 和桌面启动入口。文献总索引是 `library/README.md`。
+根目录的 `start-desktop.cmd` 是桌面启动入口。文献总索引是 `library/README.md`。
 
 ## 程序分层
 
@@ -22,7 +23,6 @@ app/
 │  ├─ public/css/         样式
 │  └─ test/               本地服务与界面测试
 ├─ downloader/            下载、核验、归档、来源记录与测试
-├─ scripts/               启动、下载与本机维护入口
 ├─ templates/             文献库初始 AGENTS.md 与 README.md
 └─ desktop/               Tauri 2 桌面外壳（Rust 窗口、托盘与本地服务进程）
    ├─ src-tauri/          Rust 程序、图标、NSIS 配置和生成的运行资源
@@ -50,7 +50,7 @@ npm run desktop:build
 
 分享时可提供构建生成的 NSIS 安装包。也可用 `npm run share -- --name new-name` 导出可构建的桌面源码和空文献库。源码分享包省略本机导出脚本和 share 命令。
 
-下载工具默认将 `library` 作为 `--root`，可显式指定其他工作区。`start-desktop.cmd` 调用系统 Windows PowerShell，并仅对启动子进程设置执行策略。根目录和 `app/scripts` 下的 `start-desktop.ps1` 使用 UTF-8 BOM，供 Windows PowerShell 5.1 解析中文注释和字符串。
+下载工具默认将 `library` 作为 `--root`，可显式指定其他工作区。`start-desktop.cmd` 调用系统 Windows PowerShell，并仅对启动子进程设置执行策略。根目录和 `scripts/` 下的 `start-desktop.ps1` 使用 UTF-8 BOM，供 Windows PowerShell 5.1 解析中文注释和字符串。
 
 构建桌面版后可用根目录的 `./start-desktop.cmd` 启动窗口。该入口默认将 `LITERATURE_LIBRARY` 指向本项目的 `library`，并优先将 `LITERATURE_PYTHON` 指向 `app/downloader/.venv`；可用 `-Library`、`-Python` 改为其他位置。直接运行可执行文件不会带上这些路径。
 
@@ -81,7 +81,7 @@ WebView2 要求可执行文件所在目录的完整性级别为 Medium。旧沙�
 
 ## 修改和检查
 
-前端组件改 web/frontend，样式改 web/public/css，业务改 web/src/lib，HTTP 改 web/src/server.mjs，下载改 app/downloader，启动维护改 app/scripts，桌面外壳与打包改 app/desktop。前端使用 Vue 3 Composition API 与 Vite，依赖由根 package-lock.json 固定；不引入路由或全局状态库。dist/app.js 随源码保存。安装版自带 Node 和 Pi SDK，源码开发使用 npm ci 安装开发及运行依赖。组件修改后在根目录运行 npm run build:web。npm test 自动先构建再运行后端与 DOM 测试。路径变更须同步检查分享文件清单、默认工作区与测试。
+前端组件改 web/frontend，样式改 web/public/css，业务改 web/src/lib，HTTP 改 web/src/server.mjs，下载改 app/downloader，启动维护改 scripts/，桌面外壳与打包改 app/desktop。前端使用 Vue 3 Composition API 与 Vite，依赖由根 package-lock.json 固定；不引入路由或全局状态库。dist/app.js 随源码保存。安装版自带 Node 和 Pi SDK，源码开发使用 npm ci 安装开发及运行依赖。组件修改后在根目录运行 npm run build:web。npm test 自动先构建再运行后端与 DOM 测试。路径变更须同步检查分享文件清单、默认工作区与测试。
 
 本地服务的静态资源路径为 `/js/app.js` 和 `/css/styles.css`。
 
