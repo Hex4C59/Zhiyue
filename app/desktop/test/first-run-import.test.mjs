@@ -68,7 +68,6 @@ function startServer(installDir, library, python, pdftoppm) {
     env: {
       ...process.env,
       LITERATURE_LIBRARY: library,
-      LITERATURE_PORT: '0',
       ...(python ? { LITERATURE_PYTHON: python } : {}),
       ...(pdftoppm ? { PDFTOPPM: pdftoppm } : {}),
       PYTHONUTF8: '1',
@@ -86,7 +85,7 @@ async function waitForServer(child, timeoutMs = 30000) {
   child.stderr.on('data', collect);
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    const match = output.match(/(http:\/\/127\.0\.0\.1:\d+)/);
+    const match = output.match(/^ZHIYUE_URL=(http:\/\/127\.0\.0\.1:\d+)\r?\n/m);
     if (match) return match[1];
     if (child.exitCode !== null) throw new Error(`应用服务提前退出（${child.exitCode}）：${output}`);
     await sleep(100);
@@ -143,7 +142,7 @@ test('安装布局首次启动自动创建文献库，并能离线导入一篇�
   const missing = [
     [packagedExe, '可执行文件'],
     [path.join(runtimeDir, 'node/node.exe'), '随包 Node'],
-    [path.join(runtimeDir, 'app/web/src/server.mjs'), '网站服务'],
+    [path.join(runtimeDir, 'app/web/src/server.mjs'), '本地服务'],
     [path.join(runtimeDir, 'app/downloader/run.py'), '下载器'],
     [path.join(runtimeDir, 'app/templates/library-README.md'), '文献库模板'],
     [path.join(runtimeDir, 'node_modules/@earendil-works/pi-coding-agent/dist/index.js'), '随包 Pi SDK'],
@@ -225,6 +224,8 @@ test('安装布局首次启动自动创建文献库，并能离线导入一篇�
     encoding: 'utf8',
     env: { ...process.env, PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8' },
   });
+  // 导入只接受已存在的分类；网站端会在提交前创建，直接调 CLI 时由调用方创建。
+  await fsp.mkdir(path.join(library, category), { recursive: true });
   let result = cli('import', input, '--batch', batch, '--category', category);
   assert.equal(result.status, 0, `导入清单失败：${result.stderr}`);
   result = cli(

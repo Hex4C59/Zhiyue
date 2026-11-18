@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile, readFile, rm, symlink, realpath } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, rm, symlink, realpath, stat } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { Library } from '../src/lib/library.mjs';
@@ -72,49 +72,38 @@ test('empty folders appear as categories and new folders continue numbering', as
   await assert.rejects(library.createCategory(123), /文件夹名称无效/);
 });
 
-test('renaming a category moves the folder and rewrites index references', async t => {
-  const { root, put, library } = await fixture(t);
-  await put('README.md', '# 索引\n\n- [L001](papers/08_SER/01_资源/paper.pdf)\n- 分类目录 `papers/08_SER`\n');
-  await put('notes/子目录/L001_笔记.md', '# Note\n\n原文：papers/08_SER/01_资源/paper.pdf\n');
-  await put('outputs/正常/汇报.md', '见 papers/08_SER/01_资源/paper.pdf\n');
-  await put('.zhiyue/catalog/文献总目录.csv', 'file\npapers/08_SER/01_资源/paper.pdf\n');
-  await put('.zhiyue/catalog/待核实项.json', JSON.stringify([{ path: 'papers/08_SER/01_资源/paper.pdf' }]));
+test('import categories are created with numbering before the batch starts', async t => {
+  const { root, library, put } = await fixture(t);
+  assert.equal(await library.ensureCategory('papers/实验数据复核/网站导入'), 'papers/09_实验数据复核/网站导入');
+  assert.ok((await stat(path.join(root, 'papers/09_实验数据复核/网站导入'))).isDirectory());
+  assert.equal(await library.ensureCategory('papers/08_SER/网站导入'), 'papers/08_SER/网站导入');
+  assert.equal(await library.ensureCategory('papers/08_SER/01_资源'), 'papers/08_SER/01_资源');
+  await assert.rejects(library.ensureCategory('papers/../逃逸'), /文件夹路径无效/);
+  await put('papers/08_SER/占位文件', 'x');
+  await assert.rejects(library.ensureCategory('papers/08_SER/占位文件'), /不是普通目录/);
+});
 
-  const top = await library.renameCategory('08_SER', '', '语音识别');
-  assert.deepEqual(top, { category: '08_语音识别', subcategory: '' });
-  assert.equal(await readFile(path.join(root, 'papers/08_语音识别/01_资源/paper.pdf'), 'utf8'), '%PDF-test');
-  await assert.rejects(readFile(path.join(root, 'papers/08_SER/01_资源/paper.pdf')), /ENOENT/);
-  const readme = await readFile(path.join(root, 'README.md'), 'utf8');
-  assert.match(readme, /papers\/08_语音识别\/01_资源\/paper\.pdf/);
-  assert.doesNotMatch(readme, /08_SER/);
-  assert.match(await readFile(path.join(root, 'notes/子目录/L001_笔记.md'), 'utf8'), /08_语音识别/);
-  assert.match(await readFile(path.join(root, 'outputs/正常/汇报.md'), 'utf8'), /08_语音识别/);
-  assert.match(await readFile(path.join(root, '.zhiyue/catalog/文献总目录.csv'), 'utf8'), /08_语音识别/);
-  assert.match(await readFile(path.join(root, '.zhiyue/catalog/待核实项.json'), 'utf8'), /08_语音识别/);
-  let catalog = JSON.parse(await readFile(path.join(root, '.zhiyue/catalog/文献索引.json'), 'utf8'));
-  assert.equal(catalog.records[0].file, 'papers/08_语音识别/01_资源/paper.pdf');
-  assert.equal(catalog.records[0].source_record, 'papers/08_语音识别/01_资源/paper.来源.json');
-  let data = await library.getLibrary();
-  assert.equal(data.papers[0].category, '08_语音识别');
-  assert.equal(data.categories.find(c => c.id === '08_语音识别').children[0].name, '01_资源');
-
-  const child = await library.renameCategory('08_语音识别', '01_资源', '资源整理');
-  assert.deepEqual(child, { category: '08_语音识别', subcategory: '01_资源整理' });
-  catalog = JSON.parse(await readFile(path.join(root, '.zhiyue/catalog/文献索引.json'), 'utf8'));
-  assert.equal(catalog.records[0].file, 'papers/08_语音识别/01_资源整理/paper.pdf');
-  assert.match(await readFile(path.join(root, 'README.md'), 'utf8'), /01_资源整理/);
-  data = await library.getLibrary();
-  assert.equal(data.papers[0].subcategory, '01_资源整理');
-  assert.equal(data.categories.find(c => c.id === '08_语音识别').children[0].name, '01_资源整理');
-
-  assert.deepEqual(await library.renameCategory('08_语音识别', '', '语音识别'), {
+test('category rename validates input and delegates to the archive CLI', async t => {
+  const { library } = await fixture(t);
+  const calls = [];
+  library.categoryCommand = async args => {
+    calls.push(args);
+    if (args.includes('不存在')) throw Object.assign(new Error('文件夹不存在。'), { statusCode: 404 });
+    if (args.includes('--subcategory')) return { category: '08_SER', subcategory: '01_资源整理' };
+    return { category: '08_语音识别', subcategory: '' };
+  };
+  assert.deepEqual(await library.renameCategory('08_SER', '', '语音识别'), {
     category: '08_语音识别',
     subcategory: '',
   });
-  await library.createCategory('其它');
-  await assert.rejects(library.renameCategory('08_语音识别', '', '其它'), /同名文件夹已存在/);
+  assert.deepEqual(calls[0], ['rename-category', '--category', '08_SER', '--name', '语音识别']);
+  assert.deepEqual(await library.renameCategory('08_SER', '01_资源', '资源整理'), {
+    category: '08_SER',
+    subcategory: '01_资源整理',
+  });
+  assert.deepEqual(calls[1], ['rename-category', '--category', '08_SER', '--name', '资源整理', '--subcategory', '01_资源']);
   await assert.rejects(library.renameCategory('../x', '', 'a'), /文件夹路径无效/);
-  await assert.rejects(library.renameCategory('08_语音识别', '..', 'a'), /文件夹路径无效/);
+  await assert.rejects(library.renameCategory('08_SER', '..', 'a'), /文件夹路径无效/);
   await assert.rejects(library.renameCategory('不存在', '', 'a'), /文件夹不存在/);
 });
 

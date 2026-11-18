@@ -4,10 +4,8 @@ import { readFile, writeFile, rename, readdir, realpath, lstat, open, stat } fro
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { StringDecoder } from 'node:string_decoder';
-import { fileURLToPath } from 'node:url';
+import { downloaderScript, resolvePython } from './python.mjs';
 import { libraryPaths } from './paths.mjs';
-
-const bundledDownloader = fileURLToPath(new URL('../../../downloader/run.py',import.meta.url));
 
 const clone = value => structuredClone(value);
 const inside = (base, file) => { const rel = path.relative(base, file); return !path.isAbsolute(rel) && rel !== '..' && !rel.startsWith(`..${path.sep}`); };
@@ -18,18 +16,6 @@ const LOG_LIMIT = 100_000;
 const MAX_IMPORT_BYTES = 25 * 1024 * 1024;
 const MAX_IMPORT_FILES = 100;
 const INTERRUPTED = '服务关闭，任务已中断；请检查批次后手动续跑';
-
-// Honor an explicit interpreter override before the installed runtimes/PATH.
-export function resolvePython() {
-  if (process.env.LITERATURE_PYTHON) return process.env.LITERATURE_PYTHON;
-  const candidates = [path.join(path.dirname(bundledDownloader), '.venv', process.platform === 'win32' ? 'Scripts/python.exe' : 'bin/python')];
-  for (const candidate of candidates) if (existsSync(candidate)) return candidate;
-  for (const dir of (process.env.PATH ?? '').split(path.delimiter)) {
-    const candidate = path.join(dir, process.platform === 'win32' ? 'python.exe' : 'python');
-    if (existsSync(candidate)) return candidate;
-  }
-  return 'python';
-}
 
 function redact(value) {
   return String(value)
@@ -103,7 +89,7 @@ function entriesFrom(input) {
 }
 
 export class JobManager {
-  constructor({ root, stateDir, emit = () => {}, python, downloader = bundledDownloader }) {
+  constructor({ root, stateDir, emit = () => {}, python, downloader = downloaderScript, library = null }) {
     this.root = realpathSync(path.resolve(root));
     this.stateDir = path.resolve(stateDir);
     if (this.stateDir === this.root || !inside(this.root, this.stateDir)) throw fail('任务状态目录必须位于项目内部');
@@ -115,6 +101,7 @@ export class JobManager {
     if (!inside(this.root, this.stateDir)) throw fail('任务状态目录逃逸');
     this.python = python ?? resolvePython();
     this.downloader = path.resolve(downloader);
+    this.library = library;
     this.emit = emit;
     this.jobs = [];
     this.closed = false;
@@ -362,21 +349,22 @@ export class JobManager {
     if (typeof autoArchive !== 'boolean') throw fail('autoArchive必须为布尔值');
     const entries = entriesFrom(input);
     await this._category(category);
+    const archiveCategory = this.library ? await this.library.ensureCategory(category) : category;
     const day = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date()).replaceAll('-', '');
     const batch = `${day}_web_${randomUUID().slice(0, 8)}`;
     return this._enqueue({ batch, title: title ?? `导入${entries.length}篇论文` }, async job => {
-      await this._category(category);
+      await this._category(archiveCategory);
       const batchesDir = libraryPaths(this.root).batches;
       mkdirSync(batchesDir, { recursive: true });
       if (!inside(this.root, await realpath(batchesDir))) throw fail('批次目录不能位于项目外');
       const inputPath = path.join(this.stateDir, `${job.id}_input.json`);
       if (!inside(this.root, await realpath(this.stateDir))) throw fail('任务输入目录逃逸');
       await writeFile(inputPath, JSON.stringify(entries, null, 2), { flag: 'wx', mode: 0o600 });
-      await this._run(job, 'import', [inputPath, '--batch', batch, '--category', category]);
+      await this._run(job, 'import', [inputPath, '--batch', batch, '--category', archiveCategory]);
       await this._run(job, 'download', ['--batch', batch, '--channel', channel]);
       if (channel === 'ieee') await this._run(job, 'ieee', ['--batch', batch, '--submit']);
       if (autoArchive) {
-        await this._category(category);
+        await this._category(archiveCategory);
         await this._run(job, 'archive', ['--batch', batch]);
       }
     });
@@ -447,6 +435,7 @@ export class JobManager {
         item.literature_id ? `${item.literature_id}《${item.title}》` : `《${item.title}》`).join('、');
       throw Object.assign(new Error(`所选 PDF 均已归档：${detail}`), { statusCode: 409 });
     }
+    const archiveCategory = this.library ? await this.library.ensureCategory(category) : category;
     const day = new Intl.DateTimeFormat('en-CA', {
       timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit',
     }).format(new Date()).replaceAll('-', '');
@@ -454,14 +443,14 @@ export class JobManager {
     const title = entries.length === 1
       ? `导入 PDF：${entries[0].title}` : `批量导入 ${entries.length} 篇 PDF`;
     const job = await this._enqueue({ batch, title }, async current => {
-      await this._category(category);
+      await this._category(archiveCategory);
       const batchesDir = libraryPaths(this.root).batches;
       mkdirSync(batchesDir, { recursive: true });
       if (!inside(this.root, await realpath(batchesDir))) throw fail('批次目录不能位于项目外');
       const inputPath = path.join(this.stateDir, `${current.id}_input.json`);
       if (!inside(this.root, await realpath(this.stateDir))) throw fail('任务输入目录逃逸');
       await writeFile(inputPath, JSON.stringify(entries, null, 2), { flag: 'wx', mode: 0o600 });
-      await this._run(current, 'import', [inputPath, '--batch', batch, '--category', category]);
+      await this._run(current, 'import', [inputPath, '--batch', batch, '--category', archiveCategory]);
       if (skipped.length) this._log(current, `\n已跳过 ${skipped.length} 个重复文件。\n`);
       const failed = [];
       for (const [index, file] of files.entries()) {

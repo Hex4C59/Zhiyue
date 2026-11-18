@@ -7,7 +7,6 @@
     "node": ">=22"
   },
   "scripts": {
-    "start": "node app/web/src/server.mjs",
     "build:web": "vite build --config app/web/vite.config.mjs",
     "test": "npm run build:web && node --test app/web/test/*.test.mjs",
     "test:desktop": "node --test app/desktop/test/*.test.mjs",

@@ -18,7 +18,12 @@ def parser():
  d=s.add_parser('doctor',help='检查依赖、渲染工具和认证配置状态（不输出凭据）');d.add_argument('--network',action='store_true',help='额外验证一次Crossref只读请求')
  c=s.add_parser('catalog',help='从README及来源记录生成全库JSON/CSV和待核实项');c.add_argument('--no-hash',action='store_true')
  s.add_parser('migrate',help='关联现有第01至第06组，不改动旧记录或原文')
- q=batch_parser(s,'import','导入DOI列表、CSV/TSV、JSON或Markdown清单');q.add_argument('input',type=Path);q.add_argument('--category',help='归档目录，相对项目路径，必须位于papers下')
+ c=s.add_parser('rename-category',help='在库写锁下移动分类目录并同步引用、台账和索引')
+ c.add_argument('--category',required=True,help='papers下的顶层目录名')
+ c.add_argument('--subcategory',default='',help='要改名的子目录；省略时改顶层')
+ c.add_argument('--name',required=True,help='新名称，保留原编号前缀')
+ s.add_parser('repair',help='恢复未完成的分类改名和归档事务，报告冲突')
+ q=batch_parser(s,'import','导入DOI列表、CSV/TSV、JSON或Markdown清单');q.add_argument('input',type=Path);q.add_argument('--category',help='归档目录，相对项目路径，必须位于papers下且已存在')
  q=s.add_parser('status',help='查看批次状态');q.add_argument('--batch')
  q=batch_parser(s,'download','查重并下载；已完成且文件未变化的条目自动跳过');q.add_argument('--item');q.add_argument('--channel',choices=['auto','public','elsevier','ieee'],default='auto');q.add_argument('--retry',action='store_true',help='明确重新处理此前失败/待人工条目');q.add_argument('--limit',type=int);q.add_argument('--dry-run',action='store_true');q.add_argument('--require-published',action='store_true',help='本地复用仅接受明确出版版本；不将该标志当作PDF版本证据')
  q=batch_parser(s,'attach','导入用户/浏览器已取得的PDF并核验');q.add_argument('--item',required=True);q.add_argument('--file',type=Path,required=True);q.add_argument('--source-url',default='');q.add_argument('--version',default='待核实')
@@ -26,7 +31,7 @@ def parser():
  q=batch_parser(s,'verify','重新检查文件身份、全部页面解析及首页末页渲染');q.add_argument('--item');q.add_argument('--no-render',action='store_true')
  q=batch_parser(s,'review','人工查看PDF/预览后记录身份、版本或类型核对');q.add_argument('--item',required=True);q.add_argument('--note',required=True);q.add_argument('--accept-identity',action='store_true');q.add_argument('--visual-reviewed',action='store_true');q.add_argument('--version');q.add_argument('--type',choices=['full_article','conference_abstract','supplement','related_analysis'])
  q=batch_parser(s,'set','补充准确DOI、题名、候选来源或已有文献编号');q.add_argument('--item',required=True);q.add_argument('--doi');q.add_argument('--title');q.add_argument('--authors');q.add_argument('--url');q.add_argument('--version');q.add_argument('--literature-id');q.add_argument('--type',choices=['full_article','conference_abstract','supplement','related_analysis'])
- q=batch_parser(s,'archive','将已核验文件归档，统一分配编号及更新索引');q.add_argument('--item');q.add_argument('--category')
+ q=batch_parser(s,'archive','将已核验文件归档，统一分配编号及更新索引');q.add_argument('--item');q.add_argument('--category',help='现有分类目录；指定后会写回批次台账')
  q=batch_parser(s,'ieee','生成IEEE串行队列，按需提交现有InstSci');q.add_argument('--submit',action='store_true',help='实际提交机构浏览器任务，可能需要用户在可见窗口认证')
  q=s.add_parser('pack',help='从已归档批次生成普通分享包或多ZIP合辑');q.add_argument('--batch',action='append');q.add_argument('--all',action='store_true');q.add_argument('--output');q.add_argument('--mode',choices=['groups','nested'],default='groups');q.add_argument('--allow-partial',action='store_true');q.add_argument('--no-related',action='store_true')
  return p
@@ -47,10 +52,33 @@ def main(argv=None):
  if not (root/'README.md').exists():raise ValueError('指定目录缺少README.md，请确认文献库根目录')
  if args.command=='doctor':return doctor(root,args.network)
  if args.command=='catalog':
-  with lock(meta(root)/'catalog/.write.lock'):c=library.build(root,not args.no_hash)
+  import categories
+  with categories.library_lock(root):c=library.build(root,not args.no_hash)
   return {k:c[k] for k in ['record_count','archived_primary_count','source_record_count']}|{'issue_count':len(c['issues'])}
  if args.command=='migrate':
-  with lock(meta(root)/'batches/.migration.lock'):return batches.migrate_legacy(root)
+  import categories
+  with categories.library_lock(root):
+   with lock(meta(root)/'batches/.migration.lock'):return batches.migrate_legacy(root)
+ if args.command=='rename-category':
+  import categories
+  return categories.rename(root,args.category,args.subcategory,args.name)
+ if args.command=='repair':
+  import categories
+  from archiving import archive
+  result={'rename':categories.repair_renames(root),'archive':[]}
+  for journal in sorted((meta(root)/'tmp').glob('*/archive_backups/*_归档事务.json')):
+   receipt=load(journal,{})
+   if not isinstance(receipt,dict) or receipt.get('state')!='prepared':continue
+   batch=journal.parents[1].name
+   try:
+    with lock(meta(root)/'batches'/('.'+slug(batch)+'.lock'),timeout=20):archive(root,batch)
+    result['archive'].append({'batch':batch,'action':'archived'})
+   except Exception as exc:
+    result['archive'].append({'batch':batch,'action':'failed','error':str(exc)})
+  # committed 之后仍可能停在索引重建前；repair 结束前统一重建一次派生索引。
+  with categories.library_lock(root):catalog=library.build(root)
+  result['catalog']={k:catalog[k] for k in ['record_count','archived_primary_count','source_record_count']}|{'issue_count':len(catalog['issues'])}
+  return result
  if args.command=='status':
   names=[args.batch] if args.batch else sorted(p.parent.name for p in (meta(root)/'batches').glob('*/下载状态.json'));result=[]
   for name in names:
@@ -65,7 +93,11 @@ def main(argv=None):
  d=batches.batch_dir(root,args.batch)
  with lock(meta(root)/'batches'/('.'+slug(args.batch)+'.lock'),timeout=20):
   if args.command=='import':
-   x=batches.create(root,args.batch,args.input,args.category);return {'batch':args.batch,'entries':len(x['entries'])}
+   import categories
+   with categories.library_lock(root):
+    category=rel(root,categories.require_category(root,args.category or configuration(root)['archive_category']))
+    x=batches.create(root,args.batch,args.input,category)
+   return {'batch':args.batch,'entries':len(x['entries']),'category':x['category']}
   if args.command=='collect':return workflow.collect(root,args.batch,args.directory,args.item)
   if args.command=='download':
    x=workflow.download(root,args.batch,args.item,args.channel,args.retry,args.limit,args.dry_run,args.require_published);return {'batch':args.batch,'counts':x.get('counts',{}),'dry_run':args.dry_run}
@@ -129,5 +161,9 @@ def main(argv=None):
 
 if __name__=='__main__':
  try:output(main())
+ except CliError as exc:
+  print('错误：'+str(exc),file=sys.stderr);sys.exit(exc.exit_code)
+ except LockTimeout as exc:
+  print('错误：'+str(exc),file=sys.stderr);sys.exit(5)
  except (ValueError,RuntimeError,FileNotFoundError,PermissionError) as exc:
   print('错误：'+str(exc),file=sys.stderr);sys.exit(2)

@@ -13,12 +13,23 @@ use tauri::{AppHandle, Manager, RunEvent, WebviewWindow, WindowEvent};
 mod update;
 
 #[cfg(windows)]
+use std::os::windows::io::AsRawHandle;
+#[cfg(windows)]
 use std::os::windows::process::CommandExt;
 
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 struct Sidecar(Mutex<Option<Child>>);
+
+/// 正常退出流程会置位，避免把主动停止的服务误报为运行中崩溃。
+struct Exiting(AtomicBool);
+
+/// 句柄故意不在代码中关闭：桌面进程结束时由系统关闭句柄，
+/// 作业对象的 KILL_ON_JOB_CLOSE 随即终止 Node 及其子进程。
+#[cfg(windows)]
+#[allow(dead_code)]
+struct JobHandle(usize);
 
 struct Launch {
     node: PathBuf,
@@ -36,6 +47,7 @@ fn show_main(app: &AppHandle) {
 }
 
 fn stop_sidecar(app: &AppHandle) {
+    app.state::<Exiting>().0.store(true, Ordering::SeqCst);
     let child = app
         .state::<Sidecar>()
         .0
@@ -54,6 +66,117 @@ fn stop_sidecar(app: &AppHandle) {
     }
     let _ = child.kill();
     let _ = child.wait();
+}
+
+#[cfg(windows)]
+fn create_containment_job() -> Option<usize> {
+    use windows_sys::Win32::System::JobObjects::{
+        CreateJobObjectW, JobObjectExtendedLimitInformation, SetInformationJobObject,
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    };
+    unsafe {
+        let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+        if job.is_null() {
+            return None;
+        }
+        let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+        limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        let configured = SetInformationJobObject(
+            job,
+            JobObjectExtendedLimitInformation,
+            &limits as *const _ as *const core::ffi::c_void,
+            std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+        );
+        if configured == 0 {
+            close_job(job as usize);
+            return None;
+        }
+        Some(job as usize)
+    }
+}
+
+#[cfg(windows)]
+fn close_job(job: usize) {
+    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
+    unsafe {
+        let _ = CloseHandle(job as HANDLE);
+    }
+}
+
+#[cfg(windows)]
+fn assign_to_job(job: usize, child: &Child) -> bool {
+    use windows_sys::Win32::Foundation::HANDLE;
+    use windows_sys::Win32::System::JobObjects::AssignProcessToJobObject;
+    unsafe { AssignProcessToJobObject(job as HANDLE, child.as_raw_handle() as HANDLE) != 0 }
+}
+
+/// 服务在握手后退出时回到启动页显示原因；若导航失败，直接在当前页面覆盖提示。
+fn show_runtime_error(window: &WebviewWindow, startup: Option<&tauri::Url>, message: &str) {
+    if let Some(startup) = startup {
+        let _ = window.navigate(startup.clone());
+    }
+    // 启动页是本地资源，通常几十毫秒内完成导航；留出余量再写入错误。
+    std::thread::sleep(Duration::from_millis(700));
+    let text = serde_json::to_string(message).unwrap_or_else(|_| "\"本地服务已停止\"".to_string());
+    let style = concat!(
+        "margin:0;padding:48px;background:#f7f4ed;color:#8c3a2b;",
+        "box-sizing:border-box;display:grid;place-items:center;min-height:100vh;",
+        "font:15px/1.7 \"Segoe UI\",\"Microsoft YaHei UI\",sans-serif;",
+        "white-space:pre-wrap;"
+    );
+    let style = serde_json::to_string(style).unwrap_or_default();
+    let script = format!(
+        "(() => {{ const message = {text}; \
+         if (typeof window.showRuntimeError === 'function') {{ \
+             window.showRuntimeError(message); return; \
+         }} \
+         document.body.textContent = message; \
+         document.body.style.cssText = {style}; }})();"
+    );
+    let _ = window.eval(script);
+}
+
+/// 握手后每秒检查本地服务；意外退出时提示用户，不自动重启。
+fn watch_sidecar(
+    app: AppHandle,
+    window: WebviewWindow,
+    startup: Option<tauri::Url>,
+    tail: Arc<Mutex<VecDeque<String>>>,
+) {
+    std::thread::spawn(move || loop {
+        std::thread::sleep(Duration::from_millis(1000));
+        if app.state::<Exiting>().0.load(Ordering::SeqCst) {
+            return;
+        }
+        let status = {
+            let sidecar = app.state::<Sidecar>();
+            let mut slot = match sidecar.0.lock() {
+                Ok(slot) => slot,
+                Err(_) => return,
+            };
+            let Some(child) = slot.as_mut() else { return };
+            match child.try_wait() {
+                Ok(Some(status)) => status,
+                Ok(None) => continue,
+                Err(_) => return,
+            }
+        };
+        let code = status
+            .code()
+            .map(|code| code.to_string())
+            .unwrap_or_else(|| "未知".to_string());
+        let details = tail
+            .lock()
+            .map(|lines| lines.iter().cloned().collect::<Vec<_>>().join("\n"))
+            .unwrap_or_default();
+        let mut message =
+            format!("本地服务意外停止（退出码 {code}）。\n请从托盘菜单退出 Zhiyue 后重新打开。");
+        if !details.is_empty() {
+            message.push_str(&format!("\n\n最近输出：\n{details}"));
+        }
+        show_runtime_error(&window, startup.as_ref(), &message);
+        return;
+    });
 }
 
 fn fail_startup(window: &WebviewWindow, message: &str) {
@@ -121,8 +244,6 @@ fn spawn_sidecar(app: &AppHandle, window: &WebviewWindow) -> Result<(), String> 
     command
         .arg(&launch.entry)
         .current_dir(&launch.cwd)
-        .env("LITERATURE_PORT", "0")
-        .env("ZHIYUE_URL", "1")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -134,6 +255,18 @@ fn spawn_sidecar(app: &AppHandle, window: &WebviewWindow) -> Result<(), String> 
     let mut child = command
         .spawn()
         .map_err(|error| format!("无法启动本地 Node 服务：{error}"))?;
+    #[cfg(windows)]
+    match create_containment_job() {
+        Some(job) => {
+            if assign_to_job(job, &child) {
+                let _ = app.manage(JobHandle(job));
+            } else {
+                eprintln!("[zhiyue] 无法把本地服务加入作业对象，强制结束桌面进程时可能遗留 Node。");
+                close_job(job);
+            }
+        }
+        None => eprintln!("[zhiyue] 无法创建作业对象，强制结束桌面进程时可能遗留 Node。"),
+    }
     let stdout = child
         .stdout
         .take()
@@ -163,16 +296,31 @@ fn spawn_sidecar(app: &AppHandle, window: &WebviewWindow) -> Result<(), String> 
 
     let ready = Arc::new(AtomicBool::new(false));
     let ready_flag = ready.clone();
+    let ready_app = app.clone();
     let ready_window = window.clone();
     let error_tail = tail.clone();
     std::thread::spawn(move || {
         let mut started = false;
         for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-            if let Some(url) = line.strip_prefix("ZHIYUE_URL=") {
-                started = true;
-                ready_flag.store(true, Ordering::SeqCst);
-                if let Ok(url) = tauri::Url::parse(url.trim()) {
-                    let _ = ready_window.navigate(url);
+            if !started {
+                if let Some(url) = line.strip_prefix("ZHIYUE_URL=") {
+                    started = true;
+                    ready_flag.store(true, Ordering::SeqCst);
+                    // 握手时启动页已加载，此时读取到的才是可返回的启动页地址；
+                    // 窗口创建初期这里是 about:blank。
+                    let startup = ready_window
+                        .url()
+                        .ok()
+                        .filter(|url| url.as_str() != "about:blank");
+                    if let Ok(url) = tauri::Url::parse(url.trim()) {
+                        let _ = ready_window.navigate(url);
+                    }
+                    watch_sidecar(
+                        ready_app.clone(),
+                        ready_window.clone(),
+                        startup,
+                        error_tail.clone(),
+                    );
                 }
             }
         }
@@ -259,6 +407,7 @@ pub fn run() {
         }))
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(Sidecar(Mutex::new(None)))
+        .manage(Exiting(AtomicBool::new(false)))
         .setup(|app| {
             let window = app
                 .get_webview_window("main")

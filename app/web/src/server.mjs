@@ -8,7 +8,8 @@ import { spawn } from 'node:child_process';
 import { StringDecoder } from 'node:string_decoder';
 import { Store, redact } from './lib/store.mjs';
 import { Library } from './lib/library.mjs';
-import { JobManager, resolvePython } from './lib/jobs.mjs';
+import { JobManager } from './lib/jobs.mjs';
+import { resolvePython, runCli } from './lib/python.mjs';
 import { AssistantService } from './lib/assistants.mjs';
 import { previewPaper } from './lib/preview.mjs';
 import { libraryPaths, resolveLibraryRoot, ensureLibrary } from './lib/paths.mjs';
@@ -68,19 +69,19 @@ export function extractFile(python,file,pages) {
   });
 }
 
-export async function createApp({root:configuredRoot,stateDir:configuredStateDir,connectPi=true,piClient}={}) {
+export async function createApp({root:configuredRoot,stateDir:configuredStateDir,connectPi=true,piClient,categoryCli}={}) {
   const root=configuredRoot??resolveLibraryRoot(HERE);
   const paths=libraryPaths(root);
   const stateDir=configuredStateDir??paths.data;
   await ensureLibrary(paths);
   const connections=new Set();
-  const library=new Library({root,stateDir});
+  const python=resolvePython();
+  const library=new Library({root,stateDir,categoryCommand:categoryCli??(args=>runCli({python,root,args}))});
   const emit=event=>{
     if(event.type==='job'&&['completed','failed'].includes(event.job.status))library.refresh();
     const data=`data: ${JSON.stringify(event)}\n\n`;for(const res of connections)if(!res.writableEnded)res.write(data);
   };
-  const python=resolvePython();
-  const jobs=new JobManager({root,stateDir,emit,python});
+  const jobs=new JobManager({root,stateDir,emit,python,library});
   const chats=new AssistantService({root,stateDir,library,jobs,emit,extract:(file,pages)=>extractFile(python,file,pages),piClient});
   const uploads=new Store(path.join(stateDir,'uploads.json'),{files:[]});
   const validUploads=ids=>{
@@ -242,21 +243,15 @@ export async function startServer(){
   if(!fs.existsSync(path.join(paths.catalog,'文献索引.json'))){
     await fsp.writeFile(path.join(paths.catalog,'文献索引.json'),JSON.stringify({schema_version:1,record_count:0,records:[],issues:[]}));
   }
-  const port=Number(process.env.LITERATURE_PORT||8765);
-  if(!Number.isInteger(port)||port<0||port>65535)throw new Error('LITERATURE_PORT须为0–65535。');
-  const app=await createApp({root:workspace});
-  app.server.on('error',e=>{console.error(e.code==='EADDRINUSE'?`端口${port}已被占用，请修改LITERATURE_PORT。`:e.message);app.chats.client.close();process.exitCode=1;});
-  app.server.listen(port,'127.0.0.1',()=>{
-    const actualPort=app.server.address().port;
-    const url=`http://127.0.0.1:${actualPort}`;
-    console.log(`Zhiyue：${url}`);
-    if(process.env.ZHIYUE_URL)console.log(`ZHIYUE_URL=${url}`);
-    if(process.argv.includes('--open-browser')){
-      const command=process.platform==='win32'?'powershell.exe':process.platform==='darwin'?'open':'xdg-open';
-      const args=process.platform==='win32'?['-NoProfile','-NonInteractive','-Command',`Start-Process '${url}'`]:[url];
-      const opener=spawn(command,args,{shell:false,windowsHide:true,stdio:'ignore'});
-      opener.on('error',()=>console.warn(`请在浏览器中打开 ${url}`));opener.unref();
-    }
+  const app = await createApp({ root: workspace });
+  app.server.on('error', error => {
+    console.error(`本地服务监听失败：${error.message}`);
+    app.chats.client.close();
+    process.exitCode = 1;
+  });
+  // 由系统分配空闲端口，桌面窗口从标准输出获取服务地址。
+  app.server.listen(0, '127.0.0.1', () => {
+    console.log(`ZHIYUE_URL=http://127.0.0.1:${app.server.address().port}`);
   });
   for(const signal of ['SIGINT','SIGTERM'])process.on(signal,()=>app.close().then(()=>process.exit(0)));
   return app;

@@ -16,14 +16,15 @@ const inside = (base, target) => {
 const failure = (message, statusCode = 403) => Object.assign(new Error(message), { statusCode });
 const categoryName = value => String(value).replace(/^\d+_/, '');
 const reservedCategory = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?$/i;
-const textExtensions = new Set(['.md', '.json', '.csv', '.txt']);
 
 export class Library {
-  constructor({ root, stateDir }) {
+  constructor({ root, stateDir, categoryCommand }) {
     this.root = path.resolve(root);
     this.stateDir = path.resolve(stateDir);
     this.cache = null;
     this.writes = Promise.resolve();
+    // 分类改名由 Python 在库写锁下完成；Node 只做参数校验，新建分类只做 mkdir。
+    this.categoryCommand = categoryCommand ?? (() => Promise.reject(failure('分类操作需要Python文献工具。', 500)));
   }
 
   // No PDF parsing: bibliography and explicitly associated JSON sidecars only.
@@ -206,77 +207,21 @@ export class Library {
     return entries.filter(entry => entry.isDirectory() && !entry.isSymbolicLink()).map(entry => entry.name);
   }
 
-  async _categoryDirectory(parts) {
-    const root = await realpath(this.root);
-    const dir = path.resolve(root, 'papers', ...parts);
-    const info = await lstat(dir).catch(e => { if (e.code === 'ENOENT') throw failure('文件夹不存在。', 404); throw e; });
-    if (!info.isDirectory() || info.isSymbolicLink()) throw failure('只能操作普通文件夹。', 400);
-    const resolved = await realpath(dir);
-    const equal = process.platform === 'win32' ? dir.toLowerCase() === resolved.toLowerCase() : dir === resolved;
-    if (!inside(root, resolved) || !equal) throw failure('不允许操作符号链接或目录逃逸。', 400);
-    return { dir, root };
-  }
-
-  async _writeText(file, text) {
-    const temp = `${file}.${randomUUID()}.tmp`;
-    await writeFile(temp, text);
-    await rename(temp, file);
-  }
-
-  async _replacePathInTextFile(file, from, to) {
-    let text;
-    try {
-      const info = await stat(file);
-      if (!info.isFile() || info.size > 4_000_000) return;
-      text = await readFile(file, 'utf8');
-    } catch (e) { if (e.code === 'ENOENT') return; throw e; }
-    const escaped = from.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    // 匹配目录本身及其下路径，但不误改名称相近的相邻文件夹。
-    const pattern = new RegExp(`${escaped}(?![\\p{L}\\p{N}_.\\\\-])`, 'gu');
-    if (!pattern.test(text)) return;
-    pattern.lastIndex = 0;
-    const next = text.replace(pattern, () => to);
-    if (next !== text) await this._writeText(file, next);
-  }
-
-  async _collectTextFiles(dir, files) {
-    let entries;
-    try { entries = await readdir(dir, { withFileTypes: true }); }
-    catch (e) { if (e.code === 'ENOENT') return; throw e; }
-    for (const entry of entries) {
-      if (entry.isSymbolicLink()) continue;
-      const target = path.join(dir, entry.name);
-      if (entry.isDirectory()) await this._collectTextFiles(target, files);
-      else if (entry.isFile() && textExtensions.has(path.extname(entry.name).toLowerCase())) files.push(target);
+  async _createTopFolder(base, name) {
+    const folders = await this._folderNames(base);
+    if (folders.some(folder => categoryName(folder).toLocaleLowerCase() === name.toLocaleLowerCase())) {
+      throw failure('同名文件夹已存在。', 409);
     }
-  }
-
-  async _remapCatalog(from, to) {
-    const file = path.join(libraryPaths(this.root).catalog, '文献索引.json');
-    let data;
-    try { data = JSON.parse((await readFile(file, 'utf8')).replace(/^\uFEFF/, '')); }
-    catch (e) { if (e.code === 'ENOENT') return; throw e; }
-    const remap = value => typeof value === 'string' && value.startsWith(from) ? to + value.slice(from.length) : value;
-    const visit = record => {
-      record.file = remap(record.file);
-      record.source_record = remap(record.source_record);
-      for (const version of record.versions ?? []) visit(version);
-    };
-    for (const record of data.records ?? []) visit(record);
-    await this._writeText(file, JSON.stringify(data, null, 2));
-  }
-
-  async _rewriteAfterRename(fromRel, toRel) {
-    await this._replacePathInTextFile(path.join(this.root, 'README.md'), fromRel, toRel);
-    const files = [];
-    for (const dir of ['notes', 'synthesis', 'outputs']) {
-      await this._collectTextFiles(path.join(this.root, dir), files);
+    let last = 0;
+    for (const folder of folders) {
+      const match = /^(\d+)_/.exec(folder);
+      if (match) last = Math.max(last, Number(match[1]));
     }
-    for (const file of files) await this._replacePathInTextFile(file, fromRel, toRel);
-    const catalog = libraryPaths(this.root).catalog;
-    await this._remapCatalog(`${fromRel}/`, `${toRel}/`);
-    await this._replacePathInTextFile(path.join(catalog, '文献总目录.csv'), fromRel, toRel);
-    await this._replacePathInTextFile(path.join(catalog, '待核实项.json'), fromRel, toRel);
+    const folder = `${String(last + 1).padStart(2, '0')}_${name}`;
+    if (!this._validRelative(`papers/${folder}`)) throw failure('该名称不能用作文件夹。', 400);
+    try { await mkdir(path.join(base, folder)); }
+    catch (e) { if (e.code === 'EEXIST') throw failure('同名文件夹已存在。', 409); throw e; }
+    return folder;
   }
 
   async createCategory(value) {
@@ -284,24 +229,54 @@ export class Library {
     const operation = this.writes.then(async () => {
       const base = path.join(this.root, 'papers');
       await mkdir(base, { recursive: true });
-      const folders = await this._folderNames(base);
-      if (folders.some(folder => categoryName(folder).toLocaleLowerCase() === name.toLocaleLowerCase())) {
-        throw failure('同名文件夹已存在。', 409);
-      }
-      let last = 0;
-      for (const folder of folders) {
-        const match = /^(\d+)_/.exec(folder);
-        if (match) last = Math.max(last, Number(match[1]));
-      }
-      const folder = `${String(last + 1).padStart(2, '0')}_${name}`;
-      if (!this._validRelative(`papers/${folder}`)) throw failure('该名称不能用作文件夹。', 400);
-      try { await mkdir(path.join(base, folder)); }
-      catch (e) { if (e.code === 'EEXIST') throw failure('同名文件夹已存在。', 409); throw e; }
+      const folder = await this._createTopFolder(base, name);
       this.cache = null;
       return { category: folder, subcategory: '' };
     });
     this.writes = operation.catch(() => {});
     return operation;
+  }
+
+  async ensureCategory(value) {
+    const operation = this.writes.then(() => this._ensureCategory(value));
+    this.writes = operation.catch(() => {});
+    return operation;
+  }
+
+  // 导入前把用户选定的分类落到磁盘；顶层缺号时沿用新建分类的编号规则。
+  async _ensureCategory(value) {
+    if (typeof value !== 'string' || !value.startsWith('papers/')) throw failure('分类目录必须位于 papers/ 内。', 400);
+    const parts = value.split('/');
+    if (parts.length < 2 || parts.length > 3 || parts.slice(1).some(part =>
+      !part || part === '.' || part === '..' || /[\\/]/.test(part))) throw failure('文件夹路径无效。', 400);
+    const base = path.join(this.root, 'papers');
+    await mkdir(base, { recursive: true });
+    const topName = categoryName(parts[1]);
+    if (!topName) throw failure('请输入文件夹名称。', 400);
+    let folders = await this._folderNames(base);
+    let folder = folders.find(name => categoryName(name).toLocaleLowerCase() === topName.toLocaleLowerCase());
+    if (!folder) {
+      try { folder = await this._createTopFolder(base, topName); }
+      catch (e) {
+        if (e.statusCode !== 409) throw e;
+        folders = await this._folderNames(base);
+        folder = folders.find(name => categoryName(name).toLocaleLowerCase() === topName.toLocaleLowerCase());
+        if (!folder) throw e;
+      }
+    }
+    let current = path.join(base, folder);
+    for (const part of parts.slice(2)) {
+      const next = path.join(current, part);
+      try { await mkdir(next); }
+      catch (e) { if (e.code !== 'EEXIST') throw e; }
+      const info = await lstat(next).catch(() => null);
+      if (!info?.isDirectory() || info.isSymbolicLink()) throw failure('分类路径不是普通目录。', 400);
+      current = next;
+    }
+    const rel = path.relative(this.root, current).split(path.sep).join('/');
+    if (!this._validRelative(rel)) throw failure('分类目录无效。', 400);
+    this.cache = null;
+    return rel;
   }
 
   async renameCategory(category, subcategory, value) {
@@ -311,37 +286,11 @@ export class Library {
     if (parts.length > 2 || !parts.every(plain)) throw failure('文件夹路径无效。', 400);
     const rel = `papers/${parts.join('/')}`;
     if (!this._validRelative(rel)) throw failure('文件夹路径无效。', 400);
-    const operation = this.writes.then(async () => {
-      const { dir } = await this._categoryDirectory(parts);
-      const oldFolder = path.basename(dir);
-      const prefix = /^(\d+_)/.exec(oldFolder)?.[1] ?? '';
-      const folder = `${prefix}${name}`;
-      const targetRel = `papers/${[...parts.slice(0, -1), folder].join('/')}`;
-      if (!this._validRelative(targetRel)) throw failure('该名称不能用作文件夹。', 400);
-      if (folder === oldFolder) return { category, subcategory: subcategory || '' };
-      const parent = path.dirname(dir);
-      const peers = await readdir(parent, { withFileTypes: true });
-      // 显示名称不含编号前缀，编号不同但名称相同的文件夹也要视为重名。
-      const display = categoryName(folder).toLocaleLowerCase();
-      if (peers.some(entry => entry.name !== oldFolder && entry.isDirectory() &&
-          categoryName(entry.name).toLocaleLowerCase() === display)) {
-        throw failure('同名文件夹已存在。', 409);
-      }
-      try { await rename(dir, path.join(parent, folder)); }
-      catch (e) {
-        if (['EPERM', 'EACCES', 'EBUSY'].includes(e.code)) throw failure('文件夹正在使用，请关闭其中的文件后重试。', 409);
-        throw e;
-      }
-      try { await this._rewriteAfterRename(rel, targetRel); }
-      catch (e) {
-        this.cache = null;
-        throw failure(`文件夹已移动，但更新索引失败：${e.message}`, 500);
-      }
-      this.cache = null;
-      return { category: subcategory ? category : folder, subcategory: subcategory ? folder : '' };
-    });
-    this.writes = operation.catch(() => {});
-    return operation;
+    const args = ['rename-category', '--category', category, '--name', name];
+    if (subcategory) args.push('--subcategory', subcategory);
+    const result = await this.categoryCommand(args);
+    this.cache = null;
+    return result;
   }
 
   async safeFile(relativePath) {

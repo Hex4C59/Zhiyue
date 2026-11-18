@@ -21,7 +21,7 @@ Python入口为`run.py`，默认以本工具所在项目为根目录，和当前
 | doctor [--network] | 检查Python、pypdf、curl、Poppler、InstSci入口及凭据是否已配置；可选一次Crossref只读请求 |
 | catalog | 读取README和全部来源侧车，生成catalog的JSON、CSV及待核实项；不改写原来源 |
 | migrate | 将既有第01至06组关联到统一批次；已存在的新台账保留，不重新覆盖 |
-| import INPUT --batch NAME | 导入新清单，可指定--category；保留输入文件和组内原序号 |
+| import INPUT --batch NAME | 导入新清单，可指定--category；目录须已存在，保留输入文件和组内原序号 |
 | status [--batch NAME] | 查看全部或单批任务状态 |
 | download --batch NAME | 查重、补充元数据并尝试下载；支持--item、--limit、--dry-run、--channel及--retry |
 | set --batch NAME --item ID | 补充准确DOI、题名、作者、版本、资料类型、候选链接或已有文献编号 |
@@ -29,11 +29,27 @@ Python入口为`run.py`，默认以本工具所在项目为根目录，和当前
 | collect --batch NAME --directory DIR | 根据首页DOI/题名批量匹配浏览器/InstSci下载结果，保留歧义项 |
 | verify --batch NAME [--item ID] | 重新核验身份、全部页解析和首页末页渲染 |
 | review --batch NAME --item ID --note TEXT | 完成人工查看后记录核对；可指定--accept-identity、--visual-reviewed、--type、--version |
-| archive --batch NAME | 归档已核验项，分配或复用L编号，保留版本及更新README/catalog |
+| archive --batch NAME [--category DIR] | 归档已核验项，分配或复用L编号，保留版本及更新README/catalog；分类目录须已存在，指定的DIR会写回台账 |
+| rename-category --category NAME [--subcategory NAME] --name NEW | 在库写锁下移动分类目录，同步README、来源记录、文本引用、批次台账和catalog |
+| repair | 恢复未完成的分类改名和归档事务；冲突只报告，不删除文件 |
 | ieee --batch NAME [--submit] | 生成IEEE串行队列；明确--submit后使用现有可见InstSci机构会话 |
 | pack --batch NAME | 普通分组文件夹ZIP；重复--batch可合包；--mode nested先打各组ZIP再生成外层ZIP |
 
 每个子命令支持`--help`。`--item`接受I0001这样的条目ID或组内原序号。批量命令可用逗号列出多个条目；attach/review/set要求一次只选一个。
+
+## 分类改名、锁与修复
+
+分类改名由 `categories.py` 在库写锁 `.zhiyue/library.write.lock` 下执行。归档、catalog 和改名共用该锁；批次命令先取批次锁，再取库写锁。改名取锁最多等待 5 秒，归档取锁最多等待 20 秒；取不到锁返回“其他任务正在写入”。改名本身按文件量耗时，大库的顶层改名可能持续十余秒。锁文件已从旧的 `.zhiyue/catalog/.write.lock` 迁移；升级后请重启正在运行的桌面端和 CLI，避免新旧进程使用不同锁同时写入。
+
+改名顺序为“移动目录 → 重写 README → 重写 `papers/`、`notes/`、`synthesis/`、`outputs/` 的路径 → 更新批次台账和归档事务 → 重建索引”。开始时写 `.zhiyue/data/repairs/rename/*.json`，成功后删除。中断后运行：
+
+```powershell
+.\app\scripts\download.ps1 repair
+```
+
+改名不会等待尚未开始的批次队列；排队任务开始后若分类已改名会失败，需要重新提交。`repair` 只续做已经移动的目录；只有旧目录时判定未移动，新旧都在时报告冲突。归档的 `prepared` 事务会重新执行归档，目标 PDF 已存在且哈希一致时继续提交，不会重复复制；`repair` 结束前会在库写锁内重建一次派生索引。
+
+`archive` 不再为缺失的分类目录执行 `mkdir`。导入前由网站按编号规则创建分类；直接调用 CLI 时需先创建目录，否则 `import` 返回“分类目录不存在”。已有批次可用 `archive --category papers/现有目录` 把台账分类改到现有目录，后续续跑沿用新分类。
 
 ## 依赖和启动器
 
@@ -69,11 +85,12 @@ $env:ELSEVIER_API_KEY = [System.Net.NetworkCredential]::new('', $downloadKey).Pa
 - `providers/`：Crossref/公开链接/可选Unpaywall、Elsevier、现有IEEE入口。
 - `validation.py`：PDF身份、解析与渲染，区分人工目视状态。
 - `workflow.py`：查重、断点续跑、手动或目录收集。
-- `archiving.py`：编号、版本、归档与索引更新。
+- `archiving.py`：编号、版本、归档、事务恢复与索引更新。
+- `categories.py`：分类目录校验、改名事务、引用/台账同步和修复。
 - `sharing.py`：可复用的分组打包和ZIP合辑。
 
 ```powershell
 npm run test:downloads
 ```
 
-测试使用隔离目录和明确标记的合成PDF，涵盖错误页、截断文件、参考文献误匹配、摘要页、版本保留、查重、凭据重定向范围和ZIP成员完整性，不产生正式论文编号。
+测试使用隔离目录和明确标记的合成PDF，涵盖错误页、截断文件、参考文献误匹配、摘要页、版本保留、查重、凭据重定向范围和ZIP成员完整性，也覆盖分类改名的引用/台账同步、锁等待、归档恢复和目录缺失时不重建，不产生正式论文编号。

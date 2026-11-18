@@ -127,10 +127,11 @@ test('Pi 设置可保存和清除密钥并更换默认模型',async t=>{
   assert.equal(initial.providers.find(p=>p.id==='test').credentialType,'api_key');
   assert.equal(initial.providers.find(p=>p.id==='other').configured,false);
   assert.equal(initial.providers.find(p=>p.id==='oauth').supportsApiKey,false);
-  const saved=await chats.saveKey('other','sk-test-key-12345678');
+  const testKey = 'mock-api-credential';
+  const saved=await chats.saveKey('other',testKey);
   assert.equal(saved.providers.find(p=>p.id==='other').configured,true);
   assert.equal(saved.providers.find(p=>p.id==='other').credentialType,'api_key');
-  assert.equal(sdk.credentials.get('other').key,'sk-test-key-12345678');
+  assert.equal(sdk.credentials.get('other').key,testKey);
   await assert.rejects(()=>chats.saveKey('oauth','sk-test-00000000'),/不支持 API 密钥/);
   await assert.rejects(()=>chats.removeKey('oauth'),/账号登录/);
   const cleared=await chats.removeKey('other');

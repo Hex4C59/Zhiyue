@@ -11,7 +11,15 @@ test('本地HTTP服务提供目录、PDF范围读取和上传，拒绝跨站与�
   await fs.mkdir(path.join(root,'.zhiyue/catalog'),{recursive:true});await fs.mkdir(path.join(root,'papers'));
   await fs.writeFile(path.join(root,'papers','论文.pdf'),'%PDF-1.4\nexample-bytes');
   await fs.writeFile(path.join(root,'.zhiyue/catalog','文献索引.json'),JSON.stringify({records:[{literature_id:'L001',title:'测试论文',authors:['作者'],year:2001,file:'papers/论文.pdf',versions:[]}]}));
-  const app=await createApp({root,stateDir:path.join(root,'.zhiyue/data'),connectPi:false});
+  // 分类改名由归档工具完成；测试只验证 HTTP 路由和参数传递。
+  const categoryCli=async args=>{
+    if(args[0]!=='rename-category')throw new Error('unexpected category command');
+    const category=args[args.indexOf('--category')+1];const name=args[args.indexOf('--name')+1];
+    const folder=`${category.match(/^\d+_/)?.[0]??''}${name}`;
+    await fs.rename(path.join(root,'papers',category),path.join(root,'papers',folder));
+    return {category:folder,subcategory:''};
+  };
+  const app=await createApp({root,stateDir:path.join(root,'.zhiyue/data'),connectPi:false,categoryCli});
   await new Promise(r=>app.server.listen(0,'127.0.0.1',r));const base=`http://127.0.0.1:${app.server.address().port}`;
   t.after(async()=>{await app.close();await fs.rm(root,{recursive:true,force:true});});
   const index = await fetch(base + '/');

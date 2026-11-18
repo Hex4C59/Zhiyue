@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { previewPaper } from '../src/lib/preview.mjs';
-import { resolvePython } from '../src/lib/jobs.mjs';
+import { resolvePython } from '../src/lib/python.mjs';
 import { createApp } from '../src/server.mjs';
 
 const project = fileURLToPath(new URL('../../', import.meta.url));

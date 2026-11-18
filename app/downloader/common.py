@@ -7,6 +7,14 @@ SCHEMA_VERSION=1
 STATUSES={'pending','needs_metadata','needs_access','retry_later','downloaded','needs_review','verified','archived','failed'}
 SECRET_NAMES={'apikey','api_key','key','token','access_token','insttoken','signature','authorization','cookie','password','email','mailto'}
 
+class LockTimeout(RuntimeError):
+ """Advisory lock was not acquired before the timeout."""
+
+class CliError(Exception):
+ """User-facing command failure with an explicit process exit code."""
+ def __init__(self,message,exit_code=1):
+  super().__init__(message);self.exit_code=exit_code
+
 def now():return datetime.datetime.now().astimezone().isoformat(timespec='seconds')
 def meta(root):return Path(root)/'.zhiyue'
 def norm(value):return ''.join(c for c in unicodedata.normalize('NFKD',str(value)).casefold() if c.isalnum())
@@ -89,7 +97,7 @@ def lock(path,timeout=20):
      fcntl.flock(f.fileno(),fcntl.LOCK_EX|fcntl.LOCK_NB)
     break
    except (OSError,BlockingIOError):
-    if time.monotonic()-started>=timeout:raise RuntimeError(f'其他任务正在写入，请稍后重试：{p.name}')
+    if time.monotonic()-started>=timeout:raise LockTimeout(f'其他任务正在写入，请稍后重试：{p.name}')
     time.sleep(.1)
   try:yield
   finally:

@@ -38,7 +38,7 @@ def normalize_source(root,path,data,fallback_id=''):
   if possible.exists():file=possible
  return {'literature_id':lid,'title':pick(data,'题名','英文题名','title',default='待核实'),'doi':normalize_doi(pick(data,'DOI','doi',default='')),'authors':pick(data,'作者','authors','作者_原清单',default=[]),'year':pick(data,'年份','year','对应期刊出版年',default='待核实'),'venue':pick(data,'期刊或会议','期刊','venue','期刊_原清单',default='待核实'),'version':pick(data,'归档版本','版本','version',default='待核实'),'document_type':pick(data,'文献类型','document_type',default='待核实'),'file':rel(root,file) if file.exists() else None,'source_record':rel(root,path),'pages':pick(data,'PDF页数','pdf_pages'),'sha256':str(pick(data,'SHA-256','SHA256','sha256',default='')).casefold() or None,'source_url':safe_url(pick(data,'来源URL','来源','pdf_url','source_url',default='')),'downloaded_date':pick(data,'下载日期','downloaded_date',default='待核实'),'file_exists':file.exists(),'format':file.suffix.lstrip('.').upper() if file.exists() else 'unknown'}
 
-def build(root,hash_files=True):
+def build(root,hash_files=True,write=True):
  root=Path(root);index=md_rows(root);byid=defaultdict(list);issues=[];source_count=0
  for p in sorted((root/'papers').rglob('*.来源.json')):
   source_count+=1
@@ -79,12 +79,13 @@ def build(root,hash_files=True):
  for doi,ids in duplicates.items():
   if len(ids)>1:issues.append({'kind':'multiple_ids_same_doi','doi':doi,'literature_ids':ids})
  result={'schema_version':1,'generated_at':now(),'record_count':len(records),'archived_primary_count':sum(r['file_exists'] for r in records),'source_record_count':source_count,'records':records,'issues':issues}
- out=meta(root)/'catalog';save(out/'文献索引.json',result)
- fields=['literature_id','title','authors','year','doi','venue','format','version','document_type','file','source_record','pages','sha256']
- atomic_text(out/'文献总目录.csv',csv_text(records,fields),True);save(out/'待核实项.json',{'generated_at':now(),'issues':issues})
+ if write:
+  out=meta(root)/'catalog';save(out/'文献索引.json',result)
+  fields=['literature_id','title','authors','year','doi','venue','format','version','document_type','file','source_record','pages','sha256']
+  atomic_text(out/'文献总目录.csv',csv_text(records,fields),True);save(out/'待核实项.json',{'generated_at':now(),'issues':issues})
  return result
 
 def read(root):
  p=meta(root)/'catalog/文献索引.json'
- return load(p) if p.exists() and p.stat().st_mtime_ns>=(Path(root)/'README.md').stat().st_mtime_ns else build(root)
+ return load(p) if p.exists() and p.stat().st_mtime_ns>=(Path(root)/'README.md').stat().st_mtime_ns else build(root,write=False)
 def matches(catalog,doi):return [r for r in catalog['records'] if doi and r['doi']==normalize_doi(doi)]

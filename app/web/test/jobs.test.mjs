@@ -5,7 +5,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { JobManager, resolvePython } from '../src/lib/jobs.mjs';
+import { JobManager } from '../src/lib/jobs.mjs';
+import { resolvePython } from '../src/lib/python.mjs';
 
 async function fixture(t) {
   const root = await mkdtemp(path.join(os.tmpdir(), 'literature-jobs-'));
