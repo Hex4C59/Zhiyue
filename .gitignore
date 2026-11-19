@@ -41,3 +41,6 @@ Thumbs.db
 
 # TypeScript 服务端与脚本构建输出
 /build/
+
+# Vite 前端构建产物：由 npm run build:web 生成，不从仓库分发
+/app/web/dist/

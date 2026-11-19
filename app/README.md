@@ -84,7 +84,7 @@ WebView2 要求可执行文件所在目录的完整性级别为 Medium。旧沙�
 
 ## 修改和检查
 
-前端组件改 web/frontend，样式改 web/public/css，业务改 web/src/lib，HTTP 改 web/src/server.ts，下载改 app/downloader，启动维护改 scripts/，桌面外壳与打包改 app/desktop。前端使用 Vue 3 Composition API 与 Vite，依赖由根 package-lock.json 固定；不引入路由或全局状态库。dist/app.js 随源码保存。安装版自带 Node 和 Pi SDK，源码开发使用 npm ci 安装开发及运行依赖。服务端、测试、脚本和前端都用 strict TypeScript：服务端改后运行 npm run build:node（或 npm run build），组件改后运行 npm run build:web。npm run typecheck 同时检查服务端 tsc 与前端 vue-tsc，npm test 自动先构建再运行后端与 DOM 测试。路径变更须同步检查分享文件清单、默认工作区与测试。
+前端组件改 web/frontend，样式改 web/public/css，业务改 web/src/lib，HTTP 改 web/src/server.ts，下载改 app/downloader，启动维护改 scripts/，桌面外壳与打包改 app/desktop。前端使用 Vue 3 Composition API 与 Vite，依赖由根 package-lock.json 固定；不引入路由或全局状态库。app/web/dist/ 是构建产物、不入库（含 Vue 许可证副本，由 npm run build:web 生成），检出源码后先构建再启动。安装版自带 Node 和 Pi SDK，源码开发使用 npm ci 安装开发及运行依赖。服务端、测试、脚本和前端都用 strict TypeScript：服务端改后运行 npm run build:node（或 npm run build），组件改后运行 npm run build:web。npm run typecheck 同时检查服务端 tsc 与前端 vue-tsc，npm test 自动先构建再运行后端与 DOM 测试。路径变更须同步检查分享文件清单、默认工作区与测试。
 
 本地服务的静态资源路径为 `/js/app.js` 和 `/css/styles.css`。
 

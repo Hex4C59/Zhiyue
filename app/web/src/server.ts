@@ -518,6 +518,14 @@ export async function startServer(): Promise<App> {
     }));
   }
   const app = await createApp({ root: workspace });
+  // dist 不入库，源码检出后必须先构建；缺产物时提前报错，而不是让页面白屏或 404。
+  const bundle = path.join(appPaths().distDir, 'app.js');
+  if (!fs.existsSync(bundle)) {
+    console.error(`缺少前端构建产物：${bundle}\n请先在项目根目录运行 npm run build（或 npm run build:web）。`);
+    await app.chats.client.close();
+    process.exitCode = 1;
+    return app;
+  }
   app.server.on('error', (failure: Error) => {
     console.error(`本地服务监听失败：${failure.message}`);
     void app.chats.client.close();

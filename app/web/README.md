@@ -81,7 +81,7 @@ Pi Agent 可用的具名工具：`library_search`、`read_paper_pages`、`downlo
 | 位置 | 内容 |
 | --- | --- |
 | `frontend/` | Vue 3 组件、响应式状态、Markdown 与阅读控制器 |
-| `dist/app.js`、`dist/LICENSE.vue.txt` | Vite 构建的浏览器入口及 Vue MIT 许可证 |
+| `dist/app.js`、`dist/LICENSE.vue.txt` | Vite 构建的浏览器入口及 Vue MIT 许可证；构建产物不入库，由 `npm run build:web` 生成 |
 | `public/index.html`、`public/css/` | 挂载入口与现有样式，无 CDN 依赖 |
 | `src/server.ts` | 本机 HTTP、PDF 范围读取、上传和事件流 |
 | `src/lib/paths.ts` | 解析文献库根目录及各内容、程序状态、缓存路径 |
@@ -120,6 +120,8 @@ npm test
 60 项网站测试覆盖资料路径边界、阅读标记、空分类与新建编号、重命名参数校验和归档工具委派、下载任务参数和日志、本地 PDF 批量导入的批次命令、逐项附加核验与 SHA-256 查重、进程关闭、PDF 范围请求、逐页渲染与缓存边界、文字层与旋转页面、上传、Pi SDK 接入、助手与会话路由、流式响应、停止后重发、具名工具、笔记草稿确认保存、笔记删除与回收站及显式审批。Vue DOM 测试另覆盖文字选择、输入焦点、审批草稿、笔记草稿预览与保存、笔记删除确认、模型键盘选择、日志展开状态，以及文件夹导入的分类预选、新建分类与手动选择保留。Python 测试另覆盖目录移动、引用与台账改写、锁等待、归档恢复和崩溃修复。测试使用隔离目录，不改变真实用户阅读状态。当前 `npm run typecheck` 通过，`npm test` 共 63 项全部通过（本机已配置项目内 Poppler）。
 
 2026-11-19：新增随包技能 `paper-experiments`（总结论文并拆解实验设计：数据与划分、任务与评测协议、基线、训练与推理细节、指标、主结果、消融、复现清单、疑点），并把 `paper-reading` 收窄为分诊判断，两者描述互相排除以避免误触发。`skills.test.ts` 新增“随包技能模板全部通过扫描”用例，`first-run-import.test.ts` 改为遍历模板目录逐个比对，新增技能不必再改测试。
+
+2026-11-19：前端构建产物改为不入库。`app/web/dist/` 加入 `.gitignore` 并 `git rm --cached`，原因是压缩后每次构建都会因变量名重排产生上千行无意义差异。Vue 的 MIT 许可证副本此前是手写入库的文件，现在由 `vite.config.ts` 的 `zhiyue-vue-license` 插件在 `closeBundle` 阶段从 `node_modules/vue/LICENSE` 复制生成（`vue` 的 `exports` 不导出 `LICENSE`，按包目录拼接路径）。`startServer` 在产物缺失时打印“缺少前端构建产物…请先运行 npm run build”并置失败退出码，不再白屏；`prepare-desktop.ts` 原有的产物校验保持有效。实测删除 `dist/` 后直接启动会给出该提示，`npm run build:web` 会同时生成 `app.js` 与许可证副本。`scripts/export_share.py` 是未入库的私有脚本，仍引用 TS 迁移前的 `.mjs` 路径，本次未改动。
 
 2026-11-19：收尾三处遗留问题。一是桌面壳在 `Builder::build` 前调用 `purge_legacy_storage`，删除旧端口遗留的 `EBWebView/Default/Local Storage` 并写 `legacy-local-storage.purged` 标记，避免这些按 origin 隔离的数据长期堆积（启动前清理，因为 WebView 一旦创建就会锁定文件）。二是 `UiStateStore` 改为每次读写前重读磁盘再合并字段，多实例交错写不再“后写覆盖先写”；新增用例“两个实例交错写 ui.json 不丢字段”，`npm test` 70 项通过。三是确认旧 `localStorage` 值已随目录清理一并消失，不存在迁移问题。`npm run typecheck`、`npm test`、`npm run test:desktop` 通过，已重建并重启，实测 `Local Storage/leveldb` 由 2497 字节重置为 30 字节且无任何旧 origin。
 

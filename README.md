@@ -102,9 +102,9 @@ npm run test:desktop    # 安装布局与首次启动测试（需先 desktop:bui
 npm run doctor          # 本机依赖体检
 ```
 
-服务端、测试、维护脚本与前端均为 strict TypeScript：`npm run build:node` 用 `tsc` 输出到 `build/`（不入库），前端由 Vite 直接编译 `frontend/main.ts` 与 Vue 单文件组件到 `dist/app.js`。测试与桌面版都运行编译后的 JS，源码目录不再直接启动。
+服务端、测试、维护脚本与前端均为 strict TypeScript：`npm run build:node` 用 `tsc` 输出到 `build/`（不入库），前端由 Vite 直接编译 `frontend/main.ts` 与 Vue 单文件组件到 `dist/app.js`，并顺带生成 Vue 的许可证副本（`dist/` 整体不入库）。测试与桌面版都运行编译后的 JS，源码目录不再直接启动；缺前端产物时服务会提示先运行 `npm run build`。
 
-前端使用 Vue 3 Composition API + Vite，不引入路由或全局状态库；`dist/app.js` 随源码保存。开发约定、模块职责与桌面打包细节见 [app/README.md](app/README.md)，界面使用与测试说明见 [app/web/README.md](app/web/README.md)。
+前端使用 Vue 3 Composition API + Vite，不引入路由或全局状态库；`app/web/dist/` 是构建产物，不入库，检出源码后需先构建。开发约定、模块职责与桌面打包细节见 [app/README.md](app/README.md)，界面使用与测试说明见 [app/web/README.md](app/web/README.md)。
 
 ## 隐私与数据
 
