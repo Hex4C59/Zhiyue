@@ -24,7 +24,7 @@
 
 2026-11-17：右侧只使用 Pi Agent，不再提供助手切换。网站改用项目依赖中的官方 Pi SDK 1.5.2，桌面安装包随包分发运行依赖，不再查找本机 Pi 的托管安装；模型和认证配置仍复用本机 `~/.pi/agent`。首次使用先在终端运行 `pi` 完成登录，或点击助手页头的设置按钮填写 API 密钥。设置面板可更换网站新会话的默认模型（同时写入 Pi 全局设置）、保存和清除 API 密钥；账号登录（OAuth）仍需在终端 Pi 中完成。`PI_CODING_AGENT_DIR` 可指定 Pi 配置目录。
 
-Pi 的网页会话只开放现有六项文献工具，支持流式回答、停止、论文上下文、图片与提取后的文件附件。当前接入不加载 Pi 的全局扩展、技能或任意 shell/文件写入工具。Pi 没有可用模型时，页面提示配置模型与密钥，并提供设置入口和重新检测；模型不支持图片时会明确报错。模型返回的推理内容单独收在消息上方的“推理过程”折叠块中，默认收起，随回答增量追加。Pi 生成的笔记先作为草稿显示在右侧，用户点击“保存为笔记”后才写入 `library/notes/`，同名文件不会被覆盖，必要时自动添加序号；选择丢弃不会留下文件。Pi 聊天显示记录在 `library/.zhiyue/data/pi/chats.json`，Pi SDK 会话在 `library/.zhiyue/data/pi-sessions/`。旧 Codex 聊天仍保存在 `library/.zhiyue/data/chats.json`，网站不再读取或显示。
+Pi 的网页会话开放六项文献工具与 `read_skill`，支持流式回答、停止、论文上下文、图片与提取后的文件附件。技能从文献库 `.zhiyue/skills/` 扫描：系统提示只放名称、描述与路径，正文由 `read_skill` 按需读取；不加载 Pi 的全局扩展、全局技能或任意 shell/文件写入工具，技能内的 `.md` 以外文件不会被读取。输入框以 `/` 开头时显示斜杠命令菜单（↑↓ 选择、Enter/Tab 插入、Esc 清空），命令由 `/api/commands` 提供、在 `/api/chats/:id/commands` 执行：`/help`、`/skills` 与 `/compact` 由服务端直接生成回执消息，不进入模型上下文；`/skill:<名称>` 把技能说明展开成本轮用户要求发给模型，聊天记录只保留用户输入的单行指令。Pi 没有可用模型时，页面提示配置模型与密钥，并提供设置入口和重新检测；模型不支持图片时会明确报错。模型返回的推理内容单独收在消息上方的“推理过程”折叠块中，默认收起，随回答增量追加。Pi 生成的笔记先作为草稿显示在右侧，用户点击“保存为笔记”后才写入 `library/notes/`，同名文件不会被覆盖，必要时自动添加序号；选择丢弃不会留下文件。Pi 聊天显示记录在 `library/.zhiyue/data/pi/chats.json`，Pi SDK 会话在 `library/.zhiyue/data/pi-sessions/`。旧 Codex 聊天仍保存在 `library/.zhiyue/data/chats.json`，网站不再读取或显示。
 
 - 左侧按主题、年份、阅读进度或收藏筛选，也可以搜索题名、作者和 L 编号。“分类”标题旁的加号新建文件夹，鼠标移到文件夹行或键盘聚焦时显示铅笔按钮重命名；分类对应 `papers/` 下的实际目录，空文件夹也会列出，新建时自动接续两位编号前缀。重命名保留编号，并同步改写 README、笔记、成果、来源记录、批次台账和索引中的路径；改名与后台归档通过库写锁串行，归档进行中会提示稍后重试。中间默认使用“连续阅读”：PDF 页面纵向排列，滚轮可跨页阅读，工具栏自动显示当前物理页序；仍可用前后页按钮或页码跳转，并保持当前位置缩放。在阅读区按住 Ctrl 滚动鼠标滚轮（触控板捏合同样上报为 Ctrl+滚轮）可按 10% 步进缩放页面，范围 100%–200%，缩放时保持当前页内阅读位置；普通滚轮不受影响，工具栏的缩小、适宽和放大按钮与缩放比例保持同步。页面图像按需加载附近页，离得较远的图像会释放，再滚回时重新加载。也可切换已有 Markdown 笔记；原文可单独打开并使用浏览器 PDF 阅读器选择文字、搜索。
 - 文献列表上方的“导入 PDF”打开导入对话框：可多选 PDF、选择整个文件夹或把文件与文件夹拖入，一次最多 100 个、单个最大 25 MB；文件夹中的来源记录等非 PDF 文件会被忽略。首次加入单个文件夹时，归档分类按文件夹名自动预选同名分类（忽略开头的编号），没有同名分类时预选以该文件夹名新建的“网站导入（新建）”分类，提交前按编号规则创建目录，归档只使用批次台账中已存在的分类；手动改过分类后不再覆盖，文件夹名不能用作 Windows 目录名时保持原分类。每个文件按文件名预填题名，可逐条修改并展开填写作者、年份和 DOI，统一选择归档分类；勾选已核对题名与作者后提交。文件先上传到网站数据目录，再由统一下载工具依次执行导入、逐条附加、按用户确认记录身份和整批归档；批次、来源记录、README 索引和编号照常生成。SHA-256 相同或库内已归档的 PDF 会跳过并列出原有 L 编号，不重复归档。
@@ -72,7 +72,9 @@ Pi 的网页会话只开放现有六项文献工具，支持流式回答、停�
 
 > 把下面这些 DOI 下载到语音与会话情感识别分类，保留原版本，未核实的不要归档：……
 
-Pi Agent 可用的具名工具：`library_search`、`read_paper_pages`、`download_papers`、`continue_download_batch`、`get_download_status`、`draft_note`。工具结果提供真实任务 ID 与状态；聊天中创建的任务也会进入任务中心。`download_papers` 与 `continue_download_batch` 直接入队，归档前只做自动身份核验，没有逐篇确认；`draft_note` 只把笔记草稿交给网页预览，用户确认后才写入 `notes/`，不能由模型直接覆盖已有笔记。无需为每个下载需求再写脚本。
+斜杠命令与技能的关系：不带斜杠时模型按技能描述自行决定是否调用 `read_skill`；`/skill:<名称>` 是显式入口，直接把技能正文放进本轮提示，适合需要强制套用某个流程的场合。技能可写 `disable-model-invocation: true` 只保留命令入口，此时系统提示的能力清单不再列出该技能。想查看当前加载情况可发送 `/skills`，它会列出技能与扫描诊断；`/compact [说明]` 调用 Pi 的会话压缩，把摘要写回同一会话文件，被中断的回答不会重试。
+
+Pi Agent 可用的具名工具：`library_search`、`read_paper_pages`、`download_papers`、`continue_download_batch`、`get_download_status`、`read_skill`、`draft_note`。工具结果提供真实任务 ID 与状态；聊天中创建的任务也会进入任务中心。`download_papers` 与 `continue_download_batch` 直接入队，归档前只做自动身份核验，没有逐篇确认；`draft_note` 只把笔记草稿交给网页预览，用户确认后才写入 `notes/`，不能由模型直接覆盖已有笔记。无需为每个下载需求再写脚本。
 
 ## 文件职责与保存
 
@@ -88,15 +90,19 @@ Pi Agent 可用的具名工具：`library_search`、`read_paper_pages`、`downlo
 | `src/lib/assistants.ts`、`src/lib/pi.ts` | Pi Agent 的接入、模型与连接状态 |
 | `src/lib/jobs.ts` | 串行调用下载工具，保存断点与任务日志 |
 | `src/lib/extract.py` | 只读附件提取，保留读取范围与截断提示 |
+| `src/lib/skills.ts` | 扫描 `.zhiyue/skills`，校验 frontmatter 并限制 `read_skill` 的读取范围；`SkillRegistry` 供系统提示、`read_skill` 与斜杠命令共用 |
+| `src/lib/commands.ts` | 斜杠命令目录、解析与本地命令回执，技能命令只做校验与展开 |
+| `frontend/components/CommandMenu.vue` | 输入框的斜杠命令菜单、键盘导航与插入 |
 | `src/lib/preview.ts`、`src/lib/render.py` | 用现有 Poppler 按需渲染单页；源 PDF 保持原样 |
 | `test/` | TypeScript 测试源码：HTTP/SSE、任务、PDF 边界与 jsdom 交互（编译后运行） |
 | 仓库根 `build/` | `tsc` 输出的服务端、测试与脚本；被 Git 忽略，桌面资源与测试从这里取 |
 | `../../library/.zhiyue/data/` | 网站聊天、上传原文件、任务输入和阅读标记；全部被 Git 忽略 |
+| `../../library/.zhiyue/skills/` | 指令型技能（每个目录一个 `SKILL.md`）；系统提示只列清单，正文由 `read_skill` 读取 |
 | `../../library/.zhiyue/batches/` | 长期下载批次、来源与状态记录 |
 | `../../library/.zhiyue/tmp/<批次>/` | 下载候选、接口响应和核验预览 |
 | `../../library/.zhiyue/cache/pdf-preview/` | 浏览时生成的单页图像缓存，可从原文重新生成 |
 
-需要迁移时，另行备份论文原文及 `library/.zhiyue/data/`；Git 不包含 PDF、上传文件或聊天。本服务只监听 `127.0.0.1`，并校验 Host、Origin、跨站标记、请求类型与可访问资料路径；这些校验只排除浏览器跨源请求和资料越界，不构成登录鉴权，同机其他程序可以直接调用接口，详见[架构说明](../../ARCHITECTURE.md#本机接口的信任边界)。若 Pi 发起审批请求，请求会显示在右侧，由用户选择允许或拒绝；当前六项文献工具不发起这类审批，只有笔记草稿需要用户确认后才写入 `notes/`。
+需要迁移时，另行备份论文原文及 `library/.zhiyue/data/`；Git 不包含 PDF、上传文件或聊天。本服务只监听 `127.0.0.1`，并校验 Host、Origin、跨站标记、请求类型与可访问资料路径；这些校验只排除浏览器跨源请求和资料越界，不构成登录鉴权，同机其他程序可以直接调用接口，详见[架构说明](../../ARCHITECTURE.md#本机接口的信任边界)。若 Pi 发起审批请求，请求会显示在右侧，由用户选择允许或拒绝；当前文献工具与 read_skill 不发起这类审批，只有笔记草稿需要用户确认后才写入 `notes/`。
 
 从托盘退出应用会停止本地服务及其子进程。未完成的任务会在下次启动时恢复中断标记，检查对应批次后再续跑。部分归档后遇到错误时，先检查批次与来源记录，必要时用“刷新索引”重建目录。
 
@@ -110,7 +116,13 @@ npm run typecheck
 npm test
 ```
 
-45 项网站测试覆盖资料路径边界、阅读标记、空分类与新建编号、重命名参数校验和归档工具委派、下载任务参数和日志、本地 PDF 批量导入的批次命令、逐项附加核验与 SHA-256 查重、进程关闭、PDF 范围请求、逐页渲染与缓存边界、文字层与旋转页面、上传、Pi SDK 接入、助手与会话路由、流式响应、停止后重发、具名工具、笔记草稿确认保存及显式审批。Vue DOM 测试另覆盖文字选择、输入焦点、审批草稿、笔记草稿预览与保存、模型键盘选择、日志展开状态，以及文件夹导入的分类预选、新建分类与手动选择保留。Python 测试另覆盖目录移动、引用与台账改写、锁等待、归档恢复和崩溃修复。测试使用隔离目录，不改变真实用户阅读状态。当前 `npm run typecheck` 通过，`npm test` 共 45 项、43 项通过；未通过的 2 项 PDF 预览测试需要本机 Poppler `pdftoppm`。
+60 项网站测试覆盖资料路径边界、阅读标记、空分类与新建编号、重命名参数校验和归档工具委派、下载任务参数和日志、本地 PDF 批量导入的批次命令、逐项附加核验与 SHA-256 查重、进程关闭、PDF 范围请求、逐页渲染与缓存边界、文字层与旋转页面、上传、Pi SDK 接入、助手与会话路由、流式响应、停止后重发、具名工具、笔记草稿确认保存及显式审批。Vue DOM 测试另覆盖文字选择、输入焦点、审批草稿、笔记草稿预览与保存、模型键盘选择、日志展开状态，以及文件夹导入的分类预选、新建分类与手动选择保留。Python 测试另覆盖目录移动、引用与台账改写、锁等待、归档恢复和崩溃修复。测试使用隔离目录，不改变真实用户阅读状态。当前 `npm run typecheck` 通过，`npm test` 共 60 项全部通过（本机已配置项目内 Poppler）。
+
+2026-11-19：新增随包技能 `paper-experiments`（总结论文并拆解实验设计：数据与划分、任务与评测协议、基线、训练与推理细节、指标、主结果、消融、复现清单、疑点），并把 `paper-reading` 收窄为分诊判断，两者描述互相排除以避免误触发。`skills.test.ts` 新增“随包技能模板全部通过扫描”用例，`first-run-import.test.ts` 改为遍历模板目录逐个比对，新增技能不必再改测试。
+
+2026-11-19：助手支持斜杠命令。`commands.ts` 提供命令目录、`/` 解析与本地命令回执，`SkillRegistry` 让系统提示、`read_skill` 与 `/skill:<名称>` 共用一份扫描结果；新增 `GET /api/commands`、`POST /api/chats/:id/commands` 与 `PiClient` 的 `thread/compact`，`/help`、`/skills`、`/compact` 由服务端回执，`/skill:<名称>` 展开为技能说明后作为用户回合发送。输入框以 `/` 开头时展示可搜索菜单，支持 ↑↓、Enter/Tab 插入与 Esc 清空；技能可写 `disable-model-invocation: true` 只保留命令入口。`npm test` 60 项全部通过，`npm run typecheck` 与 `npm run test:desktop` 通过。未用真实模型验证 `/skill:` 展开后的回答质量，也未在安装版窗口内复测命令菜单。
+
+2026-11-19：前端 lib 与 14 个 Vue 组件完成 strict TypeScript 迁移，`main.ts` 与 `vue-tsc` 接入 `npm run typecheck`；删除旧 `.js` 后重新构建，确认 Vite 使用 TS 实现。同日新增库内技能：`.zhiyue/skills/<名称>/SKILL.md` 由 `skills.ts` 扫描并校验 frontmatter，系统提示只列名称、描述与路径；新增 `read_skill` 工具，只允许读取技能目录内的 `.md`/`.txt`，拒绝路径穿越与脚本。新库首次启动复制随包技能，设置面板显示技能列表与诊断并可重新扫描。`npm test` 51 项全部通过；`npm run test:desktop` 核对首次启动复制技能模板、离线导入与归档。未用真实模型验证技能自动触发，也未在安装版桌面窗口内复测设置面板的技能区。
 
 2026-11-19：服务端、Node 测试与维护脚本迁移到 strict TypeScript，改由 `npm run build:node` 输出到 `build/` 后运行。静态资源、`render.py`、`extract.py` 和文献库模板改由 `appPaths.ts` 从 web 根目录定位，兼容源码构建与随包运行两种布局；`prepare-desktop.ts` 复制编译产物并校验 Python 辅助脚本。`npx tsc -p tsconfig.json --noEmit` 通过，`npm test` 45 项中 43 项通过（2 项因本机缺少 Poppler 失败），`node build/scripts/prepare-desktop.js` 生成安装资源，桌面布局测试因缺少 `desktop:build` 产物按设计跳过。前端逻辑、Vue 组件和 `frontend.test.mjs` 仍是 JavaScript，未包含在本次迁移内。
 

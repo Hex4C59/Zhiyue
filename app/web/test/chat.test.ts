@@ -57,6 +57,13 @@ async function fixture(t: test.TestContext): Promise<Fixture> {
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
   const client = new FakeAgent();
   const events: ChatEvent[] = [];
+  const skillList: Array<{ name: string; description: string; filePath: string; baseDir: string; disableModelInvocation: boolean }> = [
+    {
+      name: 'paper-reading', description: '判断论文是否值得精读。',
+      filePath: path.join(dir, '.zhiyue', 'skills', 'paper-reading', 'SKILL.md'),
+      baseDir: path.join(dir, '.zhiyue', 'skills', 'paper-reading'), disableModelInvocation: false,
+    },
+  ];
   const options = {
     root: dir,
     stateDir: dir,
@@ -73,6 +80,24 @@ async function fixture(t: test.TestContext): Promise<Fixture> {
     },
     emit: (event: ChatEvent) => events.push(structuredClone(event)),
     extract: async () => ({ text: '文件内容' }),
+    readSkill: async (name: unknown) => {
+      if (name === 'missing') throw new Error('技能不存在或未加载。');
+      return { name: String(name), file: 'SKILL.md', text: '# 技能正文' };
+    },
+    skills: {
+      list: () => skillList,
+      diagnostics: () => ['坏技能：缺少 description'],
+      reload: () => {},
+      read: (name: unknown) => {
+        if (String(name) !== 'paper-reading') throw new Error('技能不存在或未加载。');
+        return { name: 'paper-reading', file: 'SKILL.md', text: '# 精读步骤' };
+      },
+      expand: (name: string, args = '') => {
+        const block = `<skill name="${name}">\n\n# 精读步骤\n</skill>`;
+        return args ? `${block}\n\n${args}` : block;
+      },
+    },
+    compact: async () => ({ tokensBefore: 4000, estimatedTokensAfter: 1200 }),
     client,
   } as unknown as ChatServiceOptions;
   const chats = new ChatService(options);
@@ -109,7 +134,7 @@ test('会话接入真实协议形状，图片以localImage输入，文件提取�
   assert.equal(turn.input[1]?.type, 'localImage');
   assert.match(turn.input[0]?.text ?? '', /文件内容/);
   assert.match(String(client.calls[0]?.params?.developerInstructions), /文献研究助手/);
-  assert.equal((client.calls[0]?.params?.dynamicTools as unknown[]).length, 6);
+  assert.equal((client.calls[0]?.params?.dynamicTools as unknown[]).length, 7);
 });
 
 test('多条agent消息流可拼接并在turn完成后持久化', async (t) => {
@@ -163,11 +188,16 @@ test('下载请求必须通过命名工具，审批只响应明确点击', async
   await until(() => Boolean(chat.threadId));
   const request = (id: number, method: string, params: Record<string, unknown>): Promise<void> =>
     chats.serverRequest({ id, method, params } as ClientRequest);
+  await request(87, 'item/tool/call', { threadId: chat.threadId, tool: 'read_skill', arguments: { name: 'paper-reading' } });
+  assert.match(client.responses.at(-1)?.result.contentItems[0]?.text ?? '', /# 技能正文/);
+  await request(86, 'item/tool/call', { threadId: chat.threadId, tool: 'read_skill', arguments: { name: 'missing' } });
+  assert.match(client.responses.at(-1)?.result.contentItems[0]?.text ?? '', /不存在或未加载/);
   await request(88, 'item/tool/call', { threadId: chat.threadId, tool: 'download_papers', arguments: { input: '10.1234/example' } });
   assert.equal(client.responses.at(-1)?.result.success, true);
   assert.match(client.responses.at(-1)?.result.contentItems[0]?.text ?? '', /queued/);
+  const beforeApproval = client.responses.length;
   await request(89, 'item/commandExecution/requestApproval', { threadId: chat.threadId, command: 'a command' });
-  assert.equal(client.responses.length, 1);
+  assert.equal(client.responses.length, beforeApproval);
   const approval = events.find((event) => event.type === 'approval') as unknown as { approval: { id: string } };
   chats.approve(approval.approval.id, { decision: 'decline' });
   assert.equal(client.responses.at(-1)?.result.decision, 'decline');
@@ -274,4 +304,83 @@ test('启动turn的请求尚未返回时，停止会等待真实turn ID再中断
   };
   chats.notification(notification);
   assert.equal(lastMessage(chat).status, 'interrupted');
+});
+
+test('斜杠命令目录包含本地命令与技能命令，/help 与 /skills 直接回执', async (t) => {
+  const { chats, events } = await fixture(t);
+  const chat = chats.create();
+  const names = chats.commands().map((command) => command.name);
+  assert.deepEqual(names, ['help', 'skills', 'compact', 'skill:paper-reading']);
+  assert.equal(chats.commands().find((command) => command.name === 'compact')?.scope, 'chat');
+
+  const help = await chats.command(chat.id, '/help');
+  assert.equal(help.kind, 'local');
+  assert.match(help.text, /\/skills/);
+  assert.match(help.text, /\/compact/);
+  assert.match(help.text, /\/skill:paper-reading/);
+  assert.equal(lastMessage(chat).role, 'assistant');
+  assert.equal(lastMessage(chat).status, 'completed');
+  assert.equal(events.filter((event) => event.type === 'message').length, 1);
+
+  const skills = await chats.command(chat.id, '/skills');
+  assert.match(skills.text, /paper-reading/);
+  assert.match(skills.text, /坏技能/);
+  // 本地命令不进入 Pi 会话，也不消耗 user 轮次。
+  assert.equal(chat.messages.length, 2);
+  assert.equal(chat.threadId, null);
+});
+
+test('未知命令、非斜杠输入与非命令会话的 /compact 明确报错', async (t) => {
+  const { chats, client } = await fixture(t);
+  const chat = chats.create();
+  await assert.rejects(chats.command(chat.id, '/missing'), /未知命令/);
+  await assert.rejects(chats.command(chat.id, '普通问题'), /以斜杠开头/);
+  await assert.rejects(chats.command(chat.id, '/compact'), /还没有上下文/);
+  assert.equal(chat.messages.length, 0);
+  assert.equal(client.calls.some((call) => call.method === 'turn/start'), false);
+});
+
+test('技能命令作为用户回合发送展开后的技能说明，界面保留单行指令', async (t) => {
+  const { chats, client, dir } = await fixture(t);
+  const chat = chats.create();
+  const result = await chats.command(chat.id, '/skill:paper-reading 只看第 3 节');
+  assert.equal(result.kind, 'skill');
+  await until(() => client.calls.some((call) => call.method === 'turn/start'));
+  const turn = client.calls.find((call) => call.method === 'turn/start')?.params as {
+    input: Array<{ type: string; text?: string }>;
+  };
+  const prompt = turn.input[0]?.text ?? '';
+  assert.match(prompt, /<skill name="paper-reading">/);
+  assert.match(prompt, /# 精读步骤/);
+  assert.match(prompt, /只看第 3 节/);
+  const user = chat.messages.find((message) => message.role === 'user');
+  assert.equal(user?.text, '/skill:paper-reading 只看第 3 节');
+  // 保存的聊天记录只留可见指令，不落展开后的技能正文。
+  const saved = JSON.parse(await fs.readFile(path.join(dir, 'chats.json'), 'utf8')) as {
+    chats: Array<{ messages: ChatMessage[] }>;
+  };
+  assert.equal(saved.chats[0]?.messages[0]?.text, '/skill:paper-reading 只看第 3 节');
+});
+
+test('已开始回答时拒绝命令，避免与流式回合交错', async (t) => {
+  const { chats } = await fixture(t);
+  const chat = chats.create();
+  await chats.send(chat.id, { text: '问题' });
+  await until(() => Boolean(chat.threadId));
+  await assert.rejects(chats.command(chat.id, '/help'), /尚未完成/);
+  chats.notification({ method: 'turn/completed', params: { threadId: chat.threadId, turn: { status: 'completed' } } });
+  assert.equal((await chats.command(chat.id, '/help')).kind, 'local');
+});
+
+test('/compact 调用会话压缩并回执 token 变化', async (t) => {
+  const { chats } = await fixture(t);
+  const chat = chats.create();
+  await chats.send(chat.id, { text: '问题' });
+  await until(() => Boolean(chat.threadId));
+  chats.notification({ method: 'turn/completed', params: { threadId: chat.threadId, turn: { status: 'completed' } } });
+  const result = await chats.command(chat.id, '/compact 保留方法部分');
+  assert.equal(result.kind, 'local');
+  assert.match(result.text, /上下文已压缩/);
+  assert.match(result.text, /4000/);
+  assert.match(result.text, /1200/);
 });

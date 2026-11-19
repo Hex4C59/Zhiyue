@@ -3,6 +3,9 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { Store, redact } from './store.js';
 import { statusError } from './errors.js';
+import { buildCommands, findCommand, parseCommand, runCommand } from './commands.js';
+import type { CommandInfo, CommandOutcome } from './commands.js';
+import type { SkillRuntime } from './skills.js';
 import type { Library, LibraryPaper } from './library.js';
 import type { JobManager, JobRecord } from './jobs.js';
 
@@ -138,6 +141,11 @@ export interface ChatServiceOptions {
   jobs: Pick<JobManager, 'startDownload' | 'startAction' | 'getJob'>;
   emit: (event: ChatEvent) => unknown;
   extract: (file: string, pages?: number[]) => Promise<unknown>;
+  readSkill?: (name: unknown, file?: unknown) => Promise<{ name: string; file: string; text: string }>;
+  /** 斜杠命令与 read_skill 使用的库内技能注册表；未提供时只开放本地命令。 */
+  skills?: SkillRuntime;
+  /** 手动压缩会话上下文；未提供时 /compact 报错。 */
+  compact?: (chatId: string, instructions?: string) => Promise<{ tokensBefore: number; estimatedTokensAfter?: number }>;
   client: AssistantClient;
 }
 
@@ -167,6 +175,15 @@ interface TurnInput {
 }
 
 const stringSchema = { type: 'string' };
+
+// 未配置技能注册表时（旧调用方与测试夹具），命令系统退化为只提供本地命令。
+const emptySkills = (): SkillRuntime => ({
+  list: () => [],
+  diagnostics: () => [],
+  reload: () => {},
+  read: () => { throw statusError('尚未启用技能加载。', 400); },
+  expand: () => { throw statusError('尚未启用技能加载。', 400); },
+});
 const object = (properties: Record<string, unknown>, required: string[] = []): DynamicTool['inputSchema'] =>
   ({ type: 'object', properties, required, additionalProperties: false });
 
@@ -185,6 +202,12 @@ export const dynamicTools: DynamicTool[] = [
   { type: 'function', name: 'get_download_status', description: '查看文献下载任务的实际进度、日志及批次统计。', inputSchema: object({ jobId: stringSchema }, ['jobId']) },
   {
     type: 'function',
+    name: 'read_skill',
+    description: '读取文献库 .zhiyue/skills 下已加载技能的说明（SKILL.md）或技能目录内的 .md/.txt 附件。任务与技能描述匹配时先调用它，再按步骤执行；不要用它读取其他文件。',
+    inputSchema: object({ name: stringSchema, file: stringSchema }, ['name']),
+  },
+  {
+    type: 'function',
     name: 'draft_note',
     description: '把论文笔记草稿提交到网站，由用户在聊天中预览并确认后才写入 notes/。paperId 为 L 编号，title 为笔记标题，content 为完整 Markdown 正文（不要重复标题）。本工具不直接写文件；不得声称已保存，除非工具返回 saved。',
     inputSchema: object({ paperId: stringSchema, title: stringSchema, content: stringSchema }, ['paperId', 'title', 'content']),
@@ -197,6 +220,9 @@ export class ChatService {
   readonly jobs: ChatServiceOptions['jobs'];
   readonly emit: (event: ChatEvent) => unknown;
   extract: ChatServiceOptions['extract'];
+  readonly readSkill?: ChatServiceOptions['readSkill'];
+  readonly skills?: ChatServiceOptions['skills'];
+  readonly compactSession?: ChatServiceOptions['compact'];
   readonly store: Store<{ chats: Chat[] }>;
   readonly client: AssistantClient;
   loaded: Set<string>;
@@ -207,12 +233,15 @@ export class ChatService {
   authenticated: boolean;
   connecting?: Promise<ChatStatusResult>;
 
-  constructor({ root, stateDir, library, jobs, emit, extract, client }: ChatServiceOptions) {
+  constructor({ root, stateDir, library, jobs, emit, extract, readSkill, skills, compact, client }: ChatServiceOptions) {
     this.root = root;
     this.library = library;
     this.jobs = jobs;
     this.emit = emit;
     this.extract = extract;
+    this.readSkill = readSkill;
+    this.skills = skills;
+    this.compactSession = compact;
     this.store = new Store<{ chats: Chat[] }>(path.join(stateDir, 'chats.json'), { chats: [] });
     this.client = client;
     this.loaded = new Set();
@@ -297,11 +326,55 @@ export class ChatService {
     this.emit({ type: 'message', chatId, message });
   }
 
-  async send(chatId: string, { text = '', paperIds, attachments = [], model }: {
+  /** 当前可用的斜杠命令目录；没有技能注册表时只列本地命令。 */
+  commands(): CommandInfo[] {
+    return buildCommands(this.skills?.list() ?? []);
+  }
+
+  /**
+   * 执行一条斜杠命令。
+   * 本地命令直接生成回执；技能命令展开为技能说明后作为用户回合交给模型。
+   */
+  async command(chatId: string, text: string): Promise<{ kind: 'local' | 'skill'; chatId: string; text: string }> {
+    const chat = this.get(chatId);
+    if (this.active.has(chatId)) throw statusError('当前回答尚未完成，请先停止或等待。', 409);
+    const parsed = parseCommand(text);
+    if (!parsed) throw statusError('请以斜杠开头输入命令。');
+    const command = findCommand(this.commands(), parsed.name);
+    if (!command) throw statusError(`未知命令：/${parsed.name}。发送 /help 查看可用命令。`, 404);
+    // /compact 依赖已有会话上下文；未开始的会话先给出行内提示。
+    if (command.scope === 'chat' && !chat.threadId) {
+      throw statusError('当前会话还没有上下文，先提问或改用其他命令。', 409);
+    }
+    const outcome: CommandOutcome = await runCommand(command, parsed.args, {
+      skills: this.skills ?? emptySkills(),
+      compact: async (args) => {
+        if (!this.compactSession) throw statusError('当前助手不支持压缩上下文。', 400);
+        return this.compactSession(chatId, args || undefined);
+      },
+    });
+    if (outcome.kind === 'local') {
+      const message: ChatMessage = {
+        id: randomUUID(), role: 'assistant', text: outcome.result.text,
+        createdAt: new Date().toISOString(), status: 'completed',
+      };
+      chat.messages.push(message);
+      // 回执以已完成消息推送，前端按 message 事件并入当前会话。
+      this.updateMessage(chatId, message);
+      return { kind: 'local', chatId, text: outcome.result.text };
+    }
+    const display = parsed.args ? `/${outcome.result.command} ${parsed.args}` : `/${outcome.result.command}`;
+    await this.send(chatId, { text: display, promptOverride: outcome.result.prompt });
+    return { kind: 'skill', chatId, text: outcome.result.text };
+  }
+
+  async send(chatId: string, { text = '', paperIds, attachments = [], model, promptOverride }: {
     text?: string;
     paperIds?: string[];
     attachments?: AttachmentInput[];
     model?: string;
+    /** 实际发给模型的正文；技能命令用它替换界面上那行单行指令。 */
+    promptOverride?: string;
   }): Promise<{ accepted: true }> {
     const chat = this.get(chatId);
     if (this.active.has(chatId)) throw statusError('当前回答尚未完成，请先停止或等待。', 409);
@@ -325,7 +398,7 @@ export class ChatService {
     this.active.set(chatId, active);
     this.updateMessage(chatId, user);
     this.updateMessage(chatId, assistant);
-    this.run(chat, text, attachments, model, active).catch((error: Error) => {
+    this.run(chat, promptOverride ?? text, attachments, model, active).catch((error: Error) => {
       if (this.active.get(chatId) === active) this.finish(chatId, 'failed', redact(error.message));
     });
     return { accepted: true };
@@ -582,6 +655,9 @@ export class ChatService {
           });
         } else if (tool === 'get_download_status') {
           result = this.jobs.getJob(String(args.jobId ?? ''));
+        } else if (tool === 'read_skill') {
+          if (!this.readSkill) throw new Error('当前助手未启用技能加载。');
+          result = await this.readSkill(args.name, args.file);
         } else if (tool === 'draft_note') {
           const paper = await this.library.getPaper(String(args.paperId || ''));
           if (!paper) throw new Error('文献不存在，无法创建笔记草稿。');

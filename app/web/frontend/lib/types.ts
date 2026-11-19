@@ -173,6 +173,14 @@ export interface PDFSession {
   zoomDelta: number;
 }
 
+export interface CommandInfo {
+  name: string;
+  description: string;
+  source: 'local' | 'skill';
+  scope: 'composer' | 'chat';
+  argumentHint?: string;
+}
+
 export interface ModelOption {
   id: string;
   label: string;
@@ -226,7 +234,11 @@ export interface WorkspaceState {
   toasts: ToastItem[];
   pendingPatches: Set<string>;
   refreshing: boolean;
+  importing: boolean;
   importOpen: boolean;
+  /** 斜杠命令目录，来自 /api/commands；只影响输入框提示，不阻塞发送。 */
+  commands: CommandInfo[];
+  commandError: string;
 }
 
 export interface WorkspaceEvent {

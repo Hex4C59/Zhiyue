@@ -174,6 +174,11 @@ async function fixture(t: test.TestContext) {
       available: ['off', 'minimal', 'low', 'medium', 'high'],
     },
     compaction: { enabled: true, reserveTokens: 20000, keepRecentTokens: 30000 },
+    skills: {
+      count: 1,
+      items: [{ name: 'paper-reading', description: '判断论文是否值得精读。' }],
+      diagnostics: [],
+    },
   };
   const jobs = new Map([['job-1', { id: 'job-1', title: '测试下载', status: 'running', log: 'start' }]]);
   class Events {
@@ -213,6 +218,20 @@ async function fixture(t: test.TestContext) {
       Object.assign(piSettings.compaction, body);
       return structuredClone(piSettings);
     }
+    if (path === '/api/agents/pi/skills/reload') return structuredClone(piSettings);
+    if (path === '/api/commands')
+      return {
+        commands: [
+          { name: 'help', description: '列出可用的斜杠命令与技能。', source: 'local', scope: 'composer' },
+          { name: 'compact', description: '手动压缩当前会话上下文。', source: 'local', scope: 'chat', argumentHint: '[压缩说明]' },
+          {
+            name: 'skill:paper-reading',
+            description: '判断论文是否值得精读。',
+            source: 'skill',
+            scope: 'composer',
+          },
+        ],
+      };
     if (path.startsWith('/api/agents/')) return structuredClone(status);
     if (path === '/api/uploads')
       return {
@@ -224,6 +243,14 @@ async function fixture(t: test.TestContext) {
     if (path.startsWith('/api/approvals/')) {
       decisions.push(body);
       return { resolved: true };
+    }
+    if (path.startsWith('/api/chats/') && path.endsWith('/commands')) {
+      const chat = chats.get(path.split('/')[3]);
+      chat.messages.push(
+        { id: 'cmd-user', role: 'user', text: body.text, status: 'completed' },
+        { id: 'cmd-assistant', role: 'assistant', text: '## 斜杠命令', status: 'completed' },
+      );
+      return { kind: 'local', chatId: chat.id, text: '## 斜杠命令' };
     }
     if (path.startsWith('/api/note-drafts/')) {
       noteDecisions.push({ id: path.split('/').pop(), body });
@@ -734,9 +761,67 @@ test('设置面板显示当前思考强度与压缩阈值，修改后提交接�
     { enabled: true, reserveTokens: 18000, keepRecentTokens: 30000 },
   );
   assert.equal(page.piSettings.thinking.level, 'high');
+  assert.match(page.$('.settings-skills')?.textContent ?? '', /paper-reading/);
+  click(page.target.querySelector('.settings-skills')?.parentElement?.querySelector('.text-button'));
+  await until(() => page.calls.some((call) => call.path === '/api/agents/pi/skills/reload'));
   click(page.$('.settings-check input'));
   await until(() => page.piSettings.compaction.enabled === false);
   const last = page.calls.filter((call) => call.path === '/api/agents/pi/settings/compaction').at(-1);
   assert.deepEqual(last.body, { enabled: false, reserveTokens: 18000, keepRecentTokens: 30000 });
   assert.equal(page.$('#agent-settings').getAttribute('title'), '模型与密钥');
+});
+
+test('输入框唤起斜杠命令菜单，键盘与点击都能插入命令', async (t) => {
+  const page = await fixture(t);
+  const composer = page.$('#chat-input');
+  input(composer, '/');
+  await flush();
+  const menu = page.$('#command-menu');
+  assert.ok(menu, '输入 / 应显示命令菜单');
+  const names = [...menu.querySelectorAll('[data-command]')].map((node: any) => node.dataset.command);
+  assert.deepEqual(names, ['help', 'compact', 'skill:paper-reading']);
+  assert.equal(menu.querySelector('[aria-selected="true"]')?.dataset.command, 'help');
+
+  // 输入筛选词后上下键切换，Enter 只插入命令不提交表单。
+  input(composer, '/ski');
+  await flush();
+  assert.deepEqual(
+    [...page.$('#command-menu').querySelectorAll('[data-command]')].map((node: any) => node.dataset.command),
+    ['skill:paper-reading'],
+  );
+  composer.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+  await flush();
+  assert.equal(page.workspace.state.draft, '/skill:paper-reading');
+  assert.equal(page.$('#command-menu'), null);
+  assert.equal(page.calls.some((call) => call.path.startsWith('/api/chats/') && call.path.endsWith('/commands')), false);
+
+  // 点击菜单项同样只插入命令。
+  input(composer, '/help');
+  await flush();
+  click(page.$('#command-menu [data-command="help"]'));
+  await flush();
+  assert.equal(page.workspace.state.draft, '/help');
+  assert.equal(page.$('#command-menu'), null);
+
+  // 带参数后菜单收起，避免遮挡正文。
+  input(composer, '/skill:paper-reading 只看第三节');
+  await flush();
+  assert.equal(page.$('#command-menu'), null);
+  input(composer, '');
+  await flush();
+});
+
+test('提交斜杠命令走命令接口并保留提示菜单可发现性', async (t) => {
+  const page = await fixture(t);
+  const composer = page.$('#chat-input');
+  input(composer, '/help');
+  await flush();
+  page.$('#chat-form').dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+  await flush();
+  await until(() => page.calls.some((call) => call.path.startsWith('/api/chats/') && call.path.endsWith('/commands')));
+  const call = page.calls.find((item) => item.path.startsWith('/api/chats/') && item.path.endsWith('/commands'));
+  assert.equal(call.method, 'POST');
+  assert.equal(call.body.text, '/help');
+  assert.match(page.$('#messages').textContent, /斜杠命令/);
+  assert.equal(page.workspace.state.draft, '');
 });

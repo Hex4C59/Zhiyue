@@ -20,6 +20,7 @@ export interface LibraryPaths {
   pdfPreview: string;
   tmp: string;
   docs: string;
+  skills: string;
 }
 
 // 文献库对用户只暴露四个内容目录；程序状态、索引、批次和缓存统一放在隐藏的 .zhiyue 下。
@@ -47,6 +48,7 @@ export function libraryPaths(root: string): LibraryPaths {
     pdfPreview: path.join(cache, 'pdf-preview'),
     tmp: path.join(meta, 'tmp'),
     docs: path.join(meta, 'docs'),
+    skills: path.join(meta, 'skills'),
   };
 }
 
@@ -59,7 +61,7 @@ export async function ensureLibrary(paths: LibraryPaths): Promise<void> {
   const directories = [
     paths.root, paths.papers, paths.notes, paths.synthesis, paths.outputs,
     paths.meta, paths.catalog, paths.batches, paths.data, paths.uploads,
-    paths.pi, paths.piSessions, paths.cache, paths.pdfPreview, paths.tmp, paths.docs,
+    paths.pi, paths.piSessions, paths.cache, paths.pdfPreview, paths.tmp, paths.docs, paths.skills,
   ];
   await Promise.all(directories.map((directory) => mkdir(directory, { recursive: true })));
 }

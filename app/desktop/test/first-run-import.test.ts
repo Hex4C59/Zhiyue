@@ -264,6 +264,7 @@ test('安装布局首次启动自动创建文献库，并能离线导入一篇�
     'papers', 'notes', 'synthesis', 'outputs',
     '.zhiyue/catalog', '.zhiyue/batches', '.zhiyue/data/uploads', '.zhiyue/data/pi',
     '.zhiyue/data/pi-sessions', '.zhiyue/cache/pdf-preview', '.zhiyue/tmp', '.zhiyue/docs',
+    '.zhiyue/skills',
   ];
   for (const directory of directories) {
     assert.ok(fs.statSync(path.join(library, directory)).isDirectory(), `首次启动应创建 ${directory}`);
@@ -280,6 +281,17 @@ test('安装布局首次启动自动创建文献库，并能离线导入一篇�
     await fsp.readFile(path.join(runtimeDir, 'app/templates/library-AGENTS.md')),
     'AGENTS.md 应来自打包模板',
   );
+  // 随包技能整体复制：逐个比对模板目录下的每个技能，新增技能不必再改测试。
+  const skillTemplates = await fsp.readdir(path.join(runtimeDir, 'app/templates/skills'), { withFileTypes: true });
+  const skillNames = skillTemplates.filter((entry) => entry.isDirectory()).map((entry) => entry.name);
+  assert.deepEqual(skillNames.sort(), ['paper-experiments', 'paper-reading'], '随包技能清单变化时同步更新本断言');
+  for (const name of skillNames) {
+    assert.deepEqual(
+      await fsp.readFile(path.join(library, '.zhiyue/skills', name, 'SKILL.md')),
+      await fsp.readFile(path.join(runtimeDir, 'app/templates/skills', name, 'SKILL.md')),
+      `${name} 技能应来自打包模板`,
+    );
+  }
   const catalogFile = path.join(library, '.zhiyue/catalog/文献索引.json');
   const placeholder = JSON.parse(await fsp.readFile(catalogFile, 'utf8')) as Catalog;
   assert.equal(placeholder.record_count, 0);

@@ -122,6 +122,8 @@ const requiredFiles = [
   'app/downloader/run.py',
   'app/templates/library-README.md',
   'app/templates/library-AGENTS.md',
+  'app/templates/skills/paper-experiments/SKILL.md',
+  'app/templates/skills/paper-reading/SKILL.md',
   'node_modules/@earendil-works/pi-coding-agent/dist/index.js',
 ];
 for (const relative of requiredFiles) {

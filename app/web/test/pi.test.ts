@@ -57,6 +57,8 @@ interface MockSessionOptions {
     execute(callId: string, args: Record<string, unknown>, signal: AbortSignal): Promise<MockToolReply>;
   }>;
   settingsManager: MockMemoryManager;
+  resourceLoader: { getSystemPrompt(): string };
+  tools: string[];
 }
 
 interface MockSession {
@@ -65,6 +67,7 @@ interface MockSession {
   thinkingLevel: string;
   thinkingOptions?: unknown;
   lastPrompt?: { text: string; images?: Array<{ data: string }>; expandPromptTemplates?: boolean };
+  compaction?: string;
   toolReply?: MockToolReply;
   subscribe(listener: (event: Record<string, unknown>) => void): () => void;
   setModel(model: MockModel, options?: { persist?: boolean }): Promise<void>;
@@ -73,6 +76,7 @@ interface MockSession {
   prompt(text: string, options?: { images?: unknown[]; expandPromptTemplates?: boolean }): Promise<void>;
   abort(): Promise<void>;
   dispose(): void;
+  compact?(instructions?: string): Promise<{ tokensBefore: number; estimatedTokensAfter?: number }>;
 }
 
 interface MockSdk {
@@ -201,6 +205,10 @@ function mockSDK(agentDir: string): MockSdk {
           });
         },
         abort: async () => { hold?.(); },
+        compact: async (instructions?: string) => {
+          session.compaction = instructions ?? '';
+          return { tokensBefore: 5000, estimatedTokensAfter: 1500 };
+        },
         dispose: () => { hold?.(); },
       };
       created.push(session);
@@ -277,7 +285,8 @@ test('Pi 复用流式消息、附件和文献工具', async (t) => {
   assert.match(session.toolReply?.content[0]?.text ?? '', /Test paper/);
   assert.deepEqual(
     (session.options as unknown as { tools: string[] }).tools,
-    ['library_search', 'read_paper_pages', 'download_papers', 'continue_download_batch', 'get_download_status', 'draft_note'],
+    ['library_search', 'read_paper_pages', 'download_papers', 'continue_download_batch', 'get_download_status',
+      'read_skill', 'draft_note'],
   );
   assert.equal(session.lastPrompt?.expandPromptTemplates, false);
   assert.equal(pi.pending.size, 0);
@@ -352,6 +361,86 @@ test('Pi 设置可保存和清除密钥并更换默认模型', async (t) => {
   assert.equal(updated.defaultModel, 'test/backup-model');
   assert.ok(chats.models.find((model) => model.id === 'test/backup-model'));
   await assert.rejects(() => chats.setDefaultModel('test/missing'), /不可用/);
+});
+
+test('Pi 加载库内技能：系统提示列出清单，read_skill 读取正文', async (t) => {
+  const { chats, pi, sdk, dir } = fixture(t);
+  const skillDir = path.join(dir, '.zhiyue', 'skills', 'paper-reading');
+  fs.mkdirSync(skillDir, { recursive: true });
+  fs.writeFileSync(path.join(skillDir, 'SKILL.md'), [
+    '---',
+    'name: paper-reading',
+    'description: 判断论文是否值得精读。',
+    '---',
+    '',
+    '# 步骤',
+    '',
+    '1. 读首页与末页。',
+  ].join('\n'));
+  await chats.connect();
+  const settings = await chats.settings();
+  assert.equal(settings.skills.count, 1);
+  assert.equal(settings.skills.items[0]?.name, 'paper-reading');
+  const chat = chats.create();
+  await chats.send(chat.id, { text: '读一下这篇论文' });
+  await wait(() => lastMessage(chats, chat.id).status === 'completed');
+  const prompt = sdk.created[0]?.options.resourceLoader.getSystemPrompt() ?? '';
+  assert.match(prompt, /<available_skills>/);
+  assert.match(prompt, /<name>paper-reading<\/name>/);
+  assert.match(prompt, /read_skill/);
+  const loaded = await pi.readSkill('paper-reading');
+  assert.match(loaded.text, /# 步骤/);
+  await assert.rejects(pi.readSkill('../AGENTS.md'), /无效/);
+  await pi.close();
+});
+
+test('Pi 斜杠命令：本地回执不进入模型，技能命令展开后发给 Pi', async (t) => {
+  const { chats, sdk, dir } = fixture(t);
+  const skillDir = path.join(dir, '.zhiyue', 'skills', 'paper-reading');
+  fs.mkdirSync(skillDir, { recursive: true });
+  fs.writeFileSync(path.join(skillDir, 'SKILL.md'), [
+    '---', 'name: paper-reading', 'description: 判断论文是否值得精读。', '---', '', '# 精读步骤', '', '1. 读首页。',
+  ].join('\n'));
+  chats.pi.refreshSkills();
+  await chats.connect();
+  const chat = chats.create();
+
+  const names = chats.commands().map((command) => command.name);
+  assert.deepEqual(names, ['help', 'skills', 'compact', 'skill:paper-reading']);
+  const help = await chats.command(chat.id, '/help');
+  assert.equal(help.kind, 'local');
+  assert.match(help.text, /skill:paper-reading/);
+  assert.equal(sdk.created.length, 0, '本地命令不应创建 Pi 会话');
+  assert.equal(chats.get(chat.id).messages.length, 1);
+  assert.equal(chats.get(chat.id).messages[0]?.status, 'completed');
+
+  await chats.command(chat.id, '/skill:paper-reading 只看第 3 节');
+  await wait(() => lastMessage(chats, chat.id).status === 'completed');
+  const session = sdk.created[0] as MockSession;
+  assert.match(session.lastPrompt?.text ?? '', /<skill name="paper-reading"/);
+  assert.match(session.lastPrompt?.text ?? '', /# 精读步骤/);
+  assert.match(session.lastPrompt?.text ?? '', /只看第 3 节/);
+  // 会话记录里只保留用户输入的单行指令。
+  const user = chats.get(chat.id).messages.find((message) => message.role === 'user');
+  assert.equal(user?.text, '/skill:paper-reading 只看第 3 节');
+
+  await assert.rejects(() => chats.command(chat.id, '/skill:missing'), /未知命令/);
+  await assert.rejects(() => chats.command(chat.id, '/unknown'), /未知命令/);
+});
+
+test('Pi /compact 走会话压缩，未载入会话时恢复后压缩', async (t) => {
+  const { chats, sdk } = fixture(t);
+  await chats.connect();
+  const chat = chats.create();
+  await chats.send(chat.id, { text: '问题' });
+  await wait(() => lastMessage(chats, chat.id).status === 'completed');
+  const result = await chats.command(chat.id, '/compact 保留方法部分');
+  assert.equal(result.kind, 'local');
+  assert.match(result.text, /上下文已压缩/);
+  assert.match(result.text, /5000/);
+  assert.match(result.text, /1500/);
+  const session = sdk.created[0] as MockSession;
+  assert.equal(session.compaction, '保留方法部分');
 });
 
 test('Pi 思考强度按模型能力提供档位，并同步到当前会话', async (t) => {
@@ -450,6 +539,15 @@ test('HTTP 提供 Pi 状态和连接接口', async (t) => {
   response = await post('/api/agents/pi/settings/model', { model: 'test/backup-model' });
   assert.equal(response.status, 200);
   assert.equal((await response.json() as { defaultModel: string }).defaultModel, 'test/backup-model');
+  const reloadSkillDir = path.join(dir, '.zhiyue', 'skills', 'demo');
+  fs.mkdirSync(reloadSkillDir, { recursive: true });
+  fs.writeFileSync(path.join(reloadSkillDir, 'SKILL.md'), '---\nname: demo\ndescription: 演示技能。\n---\n\n# 演示\n');
+  response = await post('/api/agents/pi/skills/reload', {});
+  assert.equal(response.status, 200);
+  const reloaded = await response.json() as { skills: { count: number; items: Array<{ name: string }> } };
+  assert.equal(reloaded.skills.count, 1);
+  assert.equal(reloaded.skills.items[0]?.name, 'demo');
+
   response = await post('/api/agents/pi/settings/model', { model: '' });
   assert.equal(response.status, 400);
   response = await post('/api/agents/pi/settings/thinking', { level: 'high', model: 'test/test-model' });
@@ -476,6 +574,22 @@ test('HTTP 提供 Pi 状态和连接接口', async (t) => {
   const stored = await (await fetch(base + `/api/chats/${piChat.id}`)).json() as { messages: Array<{ text: string }> };
   assert.equal(stored.messages.at(-1)?.text, 'Pi已连接');
   assert.equal(lastMessage(app.chats, piChat.id).thinking, '先核对再回答');
+  // 斜杠命令目录与执行接口：本地命令回执，未知命令 404，非命令输入 400。
+  const catalog = await (await fetch(base + '/api/commands')).json() as {
+    commands: Array<{ name: string; source: string }>;
+  };
+  assert.deepEqual(catalog.commands.map((command) => command.name), ['help', 'skills', 'compact', 'skill:demo']);
+  assert.equal(catalog.commands.find((command) => command.name === 'skill:demo')?.source, 'skill');
+  const helpReply = await post(`/api/chats/${piChat.id}/commands`, { text: '/help' });
+  assert.equal(helpReply.status, 202);
+  assert.equal(((await helpReply.json()) as { kind: string }).kind, 'local');
+  assert.match(
+    ((await (await fetch(base + `/api/chats/${piChat.id}`)).json()) as { messages: Array<{ text: string }> })
+      .messages.at(-1)?.text ?? '',
+    /skill:demo/,
+  );
+  assert.equal((await post(`/api/chats/${piChat.id}/commands`, { text: '/nope' })).status, 404);
+  assert.equal((await post(`/api/chats/${piChat.id}/commands`, { text: '普通问题' })).status, 400);
   const chats = await (await fetch(base + '/api/chats')).json() as unknown[];
   assert.equal(chats.length, 1);
   assert.equal((await post('/api/agents/codex/connect')).status, 404);

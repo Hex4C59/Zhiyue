@@ -263,6 +263,8 @@ export async function createApp({
       }
       if (method === 'POST' && route === '/api/agents/pi/connect') return json(res, await chats.connect());
       if (method === 'GET' && route === '/api/agents/pi/settings') return json(res, await chats.settings());
+      if (method === 'POST' && route === '/api/agents/pi/skills/reload') return json(res, await chats.reloadSkills());
+      if (method === 'GET' && route === '/api/commands') return json(res, { commands: chats.commands() });
       if (method === 'POST' && route === '/api/agents/pi/settings/key') {
         const { provider, key } = await readJson(req);
         if (typeof provider !== 'string' || !/^[A-Za-z0-9._-]{1,100}$/.test(provider)) throw error('服务商名称不合法。');
@@ -305,10 +307,15 @@ export async function createApp({
       }
       if (method === 'GET' && route === '/api/chats') return json(res, chats.list());
       if (method === 'POST' && route === '/api/chats') return json(res, chats.create(await readJson(req) as { title?: string; paperIds?: string[] }), 201);
-      const chatMatch = /^\/api\/chats\/([\w-]+)(?:\/(messages|interrupt))?$/.exec(route);
+      const chatMatch = /^\/api\/chats\/([\w-]+)(?:\/(messages|interrupt|commands))?$/.exec(route);
       if (chatMatch) {
         const [, id, action] = chatMatch as unknown as [string, string, string | undefined];
         if (method === 'GET' && !action) return json(res, chats.get(id));
+        if (method === 'POST' && action === 'commands') {
+          const { text } = await readJson(req);
+          if (typeof text !== 'string' || !text.trim() || text.length > 50000) throw error('请输入以斜杠开头的命令。');
+          return json(res, await chats.command(id, text), 202);
+        }
         if (method === 'POST' && action === 'messages') {
           const data = await readJson(req);
           const result = await chats.send(id, {
@@ -461,10 +468,23 @@ export async function createApp({
   };
 }
 
+// 新库首次启动时补入随包技能；已有同名技能不覆盖用户修改。
+async function seedSkills(paths: ReturnType<typeof libraryPaths>): Promise<void> {
+  const source = path.join(appPaths().templatesDir, 'skills');
+  if (!fs.existsSync(source)) return;
+  for (const entry of await fsp.readdir(source, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    const target = path.join(paths.skills, entry.name);
+    if (fs.existsSync(target)) continue;
+    await fsp.cp(path.join(source, entry.name), target, { recursive: true });
+  }
+}
+
 export async function startServer(): Promise<App> {
   const workspace = resolveLibraryRoot(HERE);
   const paths = libraryPaths(workspace);
   await ensureLibrary(paths);
+  await seedSkills(paths);
   if (!fs.existsSync(paths.readme)) {
     await fsp.copyFile(path.join(appPaths().templatesDir, 'library-README.md'), paths.readme);
   }

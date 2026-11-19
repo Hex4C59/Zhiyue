@@ -23,7 +23,7 @@ app/
 │  ├─ public/css/         样式
 │  └─ test/               本地服务与界面测试
 ├─ downloader/            下载、核验、归档、来源记录与测试
-├─ templates/             文献库初始 AGENTS.md 与 README.md
+├─ templates/             文献库初始 AGENTS.md、README.md 与默认技能
 └─ desktop/               Tauri 2 桌面外壳（Rust 窗口、托盘与本地服务进程）
    ├─ src-tauri/          Rust 程序、图标、NSIS 配置和生成的运行资源
    ├─ test/               安装布局、首次启动与导入的端到端测试

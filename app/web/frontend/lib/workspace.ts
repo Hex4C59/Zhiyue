@@ -1,7 +1,10 @@
 import { computed, markRaw, reactive } from 'vue';
 import { request } from './api';
 import { endpoint, json, titleOf } from './content';
-import type { Category, Chat, ChatMessage, JobRecord, ModelOption, Paper, PiAgentStatus, StatusInfo, WorkspaceEvent, WorkspaceState } from './types';
+import type {
+  Category, Chat, ChatMessage, CommandInfo, JobRecord, ModelOption, Paper, PiAgentStatus, StatusInfo,
+  WorkspaceEvent, WorkspaceState,
+} from './types';
 
 export type { WorkspaceState } from './types';
 
@@ -107,6 +110,8 @@ export function createWorkspace({
     batches: [],
     sending: false,
     noteSaving: '',
+    commands: [],
+    commandError: '',
     creating: false,
     chatEpoch: 0,
     noteEpoch: 0,
@@ -302,6 +307,63 @@ export function createWorkspace({
     } catch (error) {
       toast(messageOf(error), true);
     }
+  }
+
+  async function loadCommands(): Promise<void> {
+    try {
+      const data = await api<{ commands?: CommandInfo[] }>('/api/commands');
+      state.commands = Array.isArray(data.commands) ? data.commands : [];
+      state.commandError = '';
+    } catch (error) {
+      // 命令目录只用于输入提示；拉取失败时仍可直接发消息。
+      state.commandError = messageOf(error);
+    }
+  }
+
+  /**
+   * 发送一条以斜杠开头的输入。
+   * 本地命令由服务端直接回执，技能命令展开后作为用户回合发给模型。
+   */
+  async function runCommand(text: string): Promise<boolean> {
+    if (!canSend.value) return false;
+    state.sending = true;
+    const paperIds = [...state.context];
+    try {
+      if (!state.chat) {
+        state.creating = true;
+        try {
+          const chat = await api<ChatResponse>(
+            '/api/chats',
+            json('POST', { paperIds, title: text.slice(0, 50) || titleOf(currentPaper.value || {}) }),
+          );
+          state.chat = { ...chat, messages: chat.messages || [] };
+          remember('zhiyue.chat', chat.id);
+          state.chats.unshift(chat);
+        } finally {
+          state.creating = false;
+        }
+      }
+      const chat = state.chat as Chat;
+      const body: Record<string, unknown> = { text, paperIds };
+      if (state.model) body.model = state.model;
+      await api(`/api/chats/${endpoint(chat.id)}/commands`, json('POST', body));
+      if (state.draft.trim() === text) state.draft = '';
+      await syncChat(chat.id);
+      loadChats();
+      return true;
+    } catch (error) {
+      toast(`命令未执行：${messageOf(error)}`, true);
+      return false;
+    } finally {
+      state.sending = false;
+    }
+  }
+
+  /** 输入框提交入口：以斜杠开头走命令通道，其余按普通消息发送。 */
+  async function submit(): Promise<boolean> {
+    const text = state.draft.trim();
+    if (text.startsWith('/')) return runCommand(text);
+    return sendMessage();
   }
 
   function newChat(): void {
@@ -682,7 +744,7 @@ export function createWorkspace({
         receive(data);
       };
     }
-    await Promise.allSettled([loadLibrary(), loadStatus(), loadChats(), loadDownloads()]);
+    await Promise.allSettled([loadLibrary(), loadStatus(), loadChats(), loadDownloads(), loadCommands()]);
     if (stopped) return;
     const saved = recalled('zhiyue.chat');
     if (saved && state.chats.some((chat) => chat.id === saved)) await openChat(saved);
@@ -718,10 +780,13 @@ export function createWorkspace({
     loadStatus,
     reconnectAgent,
     loadChats,
+    loadCommands,
     openChat,
     syncChat,
     newChat,
     sendMessage,
+    runCommand,
+    submit,
     interrupt,
     uploadFile,
     uploadFiles,

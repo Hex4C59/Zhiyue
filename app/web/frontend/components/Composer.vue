@@ -3,6 +3,7 @@ import { inject, nextTick, onMounted, ref, watch } from 'vue';
 import { endpoint } from '../lib/content';
 import Icon from './Icon.vue';
 import ModelPicker from './ModelPicker.vue';
+import CommandMenu from './CommandMenu.vue';
 import type { AttachmentItem } from '../lib/types';
 import type { WorkspaceApi } from '../lib/workspace';
 
@@ -11,6 +12,7 @@ const state = workspace.state;
 const { canSend, generating } = workspace;
 const input = ref<HTMLTextAreaElement | null>(null);
 const form = ref<HTMLFormElement | null>(null);
+const menu = ref<InstanceType<typeof CommandMenu> | null>(null);
 const stopping = ref(false);
 function resize(): void {
   if (!input.value) return;
@@ -28,6 +30,8 @@ watch(
 );
 onMounted(resize);
 function keydown(event: KeyboardEvent): void {
+  // 命令菜单优先处理导航键，避免 Enter 插入命令时同时提交表单。
+  if (menu.value?.keydown(event)) return;
   if (event.key === 'Enter' && !event.shiftKey && !event.isComposing && event.keyCode !== 229) {
     event.preventDefault();
     if (canSend.value) form.value?.requestSubmit();
@@ -67,7 +71,7 @@ async function stop(): Promise<void> {
     id="chat-form"
     ref="form"
     class="composer"
-    @submit.prevent="workspace.sendMessage"
+    @submit.prevent="workspace.submit()"
     @dragover.prevent
     @drop.prevent="workspace.uploadFiles([...($event.dataTransfer?.files || [])])"
   >
@@ -93,12 +97,17 @@ async function stop(): Promise<void> {
       </div>
     </div>
     <label class="sr-only" for="chat-input">向研究助手提问</label>
+    <CommandMenu
+      ref="menu"
+      :draft="state.draft"
+      :can-send="canSend"
+    />
     <textarea
       id="chat-input"
       ref="input"
       v-model="state.draft"
       rows="2"
-      placeholder="输入问题…"
+      placeholder="输入问题，或用 / 唤起命令…"
       @keydown="keydown"
       @paste="pasted"
     />

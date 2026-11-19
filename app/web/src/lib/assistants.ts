@@ -1,5 +1,6 @@
 import path from 'node:path';
 import { ChatService, dynamicTools } from './chat.js';
+import { statusError } from './errors.js';
 import type { ChatEvent, ChatModel, ChatServiceOptions, ChatStatusSnapshot } from './chat.js';
 import { PiClient } from './pi.js';
 import type { CompactionPatch, PiSettingsInfo, ThinkingLevel } from './pi.js';
@@ -29,6 +30,10 @@ export class AssistantService extends ChatService {
       ...options,
       client,
       stateDir: path.join(options.stateDir, 'pi'),
+      // 技能注册表、read_skill 与 /skill:名称 共用 PiClient 的同一份扫描结果。
+      skills: client.skills,
+      readSkill: (name, file) => client.readSkill(name, file),
+      compact: (chatId, instructions) => this.compactThread(chatId, instructions),
       emit: (event) => options.emit(event.type === 'status' && event.status
         ? { type: 'status', agents: { pi: { ...(event.status as ChatStatusSnapshot), models: event.models as ChatModel[] } } }
         : event),
@@ -85,5 +90,22 @@ export class AssistantService extends ChatService {
   async setCompaction(values: CompactionPatch): Promise<PiSettingsInfo> {
     await this.connect();
     return this.pi.setCompaction(values);
+  }
+
+  async reloadSkills(): Promise<PiSettingsInfo> {
+    await this.connect();
+    this.pi.refreshSkills();
+    return this.pi.settingsInfo();
+  }
+
+  /** `/compact`：把压缩请求交给已载入的 Pi 会话；未开始的会话先报错。 */
+  async compactThread(
+    chatId: string, instructions?: string,
+  ): Promise<{ tokensBefore: number; estimatedTokensAfter?: number }> {
+    const chat = this.get(chatId);
+    if (!chat.threadId) throw statusError('当前会话还没有上下文，先提问再压缩。', 409);
+    return await this.pi.request<{ tokensBefore: number; estimatedTokensAfter?: number }>('thread/compact', {
+      threadId: chat.threadId, ...(instructions ? { instructions } : {}),
+    }, 120000);
   }
 }

@@ -5,6 +5,8 @@ import { pathToFileURL, fileURLToPath } from 'node:url';
 import { EventEmitter } from 'node:events';
 import { randomUUID } from 'node:crypto';
 import { redact } from './store.js';
+import { SkillRegistry, formatSkillsPrompt } from './skills.js';
+import type { SkillRuntime } from './skills.js';
 import type {
   AccountResult, AssistantClient, ChatModel, ModelListResult, ThreadResult, TurnResult,
 } from './chat.js';
@@ -77,6 +79,11 @@ export interface PiSettingsInfo {
     perModel: Record<string, ThinkingLevel>;
   };
   compaction: CompactionSettings;
+  skills: {
+    count: number;
+    items: Array<{ name: string; description: string }>;
+    diagnostics: string[];
+  };
 }
 
 interface SettingsManager {
@@ -162,6 +169,8 @@ export interface PiSession {
   prompt(text: string, options?: { images?: Array<Record<string, string>>; expandPromptTemplates?: boolean }): Promise<void>;
   abort(): Promise<void>;
   dispose(): void;
+  /** 手动压缩上下文；SDK 会先中止当前回答。 */
+  compact?(instructions?: string): Promise<{ tokensBefore: number; estimatedTokensAfter?: number }>;
 }
 
 interface PiRuntime {
@@ -285,6 +294,7 @@ export class PiClient extends EventEmitter implements AssistantClient {
   sequence: number;
   instructions?: string;
   toolDefinitions?: unknown;
+  skills: SkillRuntime;
   private starting?: Promise<void>;
 
   constructor({ root, stateDir, sdk, agentDir = process.env.PI_CODING_AGENT_DIR || path.join(os.homedir(), '.pi', 'agent') }: PiClientOptions) {
@@ -298,6 +308,7 @@ export class PiClient extends EventEmitter implements AssistantClient {
     this.turns = new Map();
     this.pending = new Map();
     this.sequence = 0;
+    this.skills = new SkillRegistry(root);
   }
 
   async start(): Promise<void> {
@@ -314,6 +325,7 @@ export class PiClient extends EventEmitter implements AssistantClient {
         this.settingsManager = this.sdk.SettingsManager.create(this.root, this.agentDir);
         this.settings = this.settingsManager.getGlobalSettings();
         this.models = await this.runtime.getAvailable();
+        this.refreshSkills();
         this.available = true;
         this.lastError = this.models.length ? null : 'Pi 尚无可用模型。请检查模型与密钥配置，然后重新检测。';
       } catch (error) {
@@ -334,7 +346,8 @@ export class PiClient extends EventEmitter implements AssistantClient {
       || this.models[0];
   }
 
-  async request<R = unknown>(method: string, params: Record<string, unknown> = {}): Promise<R> {
+  // 第三个参数由聊天层的 RPC 形状保留；Pi SDK 是进程内调用，忽略超时值。
+  async request<R = unknown>(method: string, params: Record<string, unknown> = {}, _timeout?: number): Promise<R> {
     if (method === 'account/read') {
       // Recheck availability after the user has configured Pi in another terminal or in the settings panel.
       this.models = await this.runtime.getAvailable();
@@ -379,6 +392,18 @@ export class PiClient extends EventEmitter implements AssistantClient {
       await this.sessions.get(params.threadId as string)?.abort();
       return {} as R;
     }
+    if (method === 'thread/compact') {
+      const threadId = params.threadId as string;
+      if (this.turns.has(threadId)) throw new Error('当前回答尚未结束，请先停止后再压缩上下文。');
+      // 服务重启后会话文件尚未载入，先按路径恢复再压缩；摘要写回同一个会话文件。
+      if (!this.sessions.has(threadId)) await this.createSession({}, threadId);
+      const session = this.sessions.get(threadId);
+      if (!session) throw new Error('Pi 会话尚未载入，无法压缩上下文。');
+      if (!session.compact) throw new Error('当前 Pi SDK 不支持手动压缩上下文。');
+      const instructions = typeof params.instructions === 'string' ? params.instructions.trim() : '';
+      const result = await session.compact(instructions || undefined);
+      return { tokensBefore: result.tokensBefore, estimatedTokensAfter: result.estimatedTokensAfter } as R;
+    }
     throw new Error(`Pi 不支持此请求：${method}`);
   }
 
@@ -421,7 +446,22 @@ export class PiClient extends EventEmitter implements AssistantClient {
         enabled: compaction.enabled, reserveTokens: compaction.reserveTokens,
         keepRecentTokens: compaction.keepRecentTokens,
       },
+      skills: {
+        count: this.skills.list().length,
+        items: this.skills.list().map((skill) => ({ name: skill.name, description: skill.description })),
+        diagnostics: this.skills.diagnostics(),
+      },
     };
+  }
+
+  /** 重新扫描文献库内的技能目录；失败时保留上次结果并记录诊断。 */
+  refreshSkills(): void {
+    this.skills.reload();
+  }
+
+  /** 供 read_skill 工具调用：只读取技能目录内的 Markdown/文本。 */
+  async readSkill(name: unknown, file?: unknown): Promise<{ name: string; file: string; text: string }> {
+    return this.skills.read(name, file);
   }
 
   /** 当前生效档位：模型档位优先，其次全局默认，再按模型能力收窄。 */
@@ -561,13 +601,14 @@ export class PiClient extends EventEmitter implements AssistantClient {
     this.instructions = instructions;
     const projectRules = path.join(this.root, '.zhiyue', 'AGENTS.md');
     const rules = fs.existsSync(projectRules) ? fs.readFileSync(projectRules, 'utf8') : '';
+    this.refreshSkills();
     const loader: ResourceLoader = {
       getExtensions: () => ({ extensions: [], errors: [], runtime: sdk.createExtensionRuntime() }),
       getSkills: () => ({ skills: [], diagnostics: [] }),
       getPrompts: () => ({ prompts: [], diagnostics: [] }),
       getThemes: () => ({ themes: [], diagnostics: [] }),
       getAgentsFiles: () => ({ agentsFiles: [] }),
-      getSystemPrompt: () => `${instructions}\n\n${rules}`,
+      getSystemPrompt: () => `${instructions}\n\n${rules}${formatSkillsPrompt(this.skills.list())}`,
       getSystemPromptSource: () => undefined,
       getAppendSystemPrompt: () => [],
       getAppendSystemPromptSources: () => [],
@@ -701,3 +742,4 @@ export class PiClient extends EventEmitter implements AssistantClient {
 
 export type { ChatModel };
 export type { PiRuntime };
+// PROBE2

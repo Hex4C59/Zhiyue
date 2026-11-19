@@ -21,6 +21,11 @@ interface SettingsInfo {
   providers: ProviderInfo[];
   thinking?: { level?: string; available?: string[] };
   compaction?: { enabled?: boolean; reserveTokens?: number; keepRecentTokens?: number };
+  skills?: {
+    count?: number;
+    items?: Array<{ name: string; description: string }>;
+    diagnostics?: string[];
+  };
 }
 
 const workspace = inject('workspace') as WorkspaceApi;
@@ -218,6 +223,19 @@ async function saveCompaction(): Promise<void> {
     busy.value = '';
   }
 }
+async function reloadSkills(): Promise<void> {
+  if (busy.value) return;
+  busy.value = 'skills';
+  error.value = '';
+  try {
+    apply(await workspace.api<SettingsInfo>('/api/agents/pi/skills/reload', json('POST', {})));
+    workspace.toast(`已加载 ${info.value.skills?.count ?? 0} 个技能。`);
+  } catch (err) {
+    error.value = (err as Error).message || '无法扫描技能。';
+  } finally {
+    busy.value = '';
+  }
+}
 async function reload(): Promise<void> {
   if (busy.value) return;
   busy.value = 'reload';
@@ -340,6 +358,27 @@ async function reload(): Promise<void> {
             <p class="settings-hint">
               预留越大越早压缩；保留量决定压缩后仍原样保留的近期对话长度。修改后对当前会话生效。
             </p>
+          </section>
+          <section class="settings-section">
+            <span class="settings-label">技能</span>
+            <ul v-if="info.skills?.items?.length" class="settings-skills">
+              <li v-for="skill in info.skills.items" :key="skill.name">
+                <strong>{{ skill.name }}</strong>
+                <span>{{ skill.description }}</span>
+              </li>
+            </ul>
+            <p v-else class="settings-hint">
+              尚未加载技能。把指令型技能放入 <code>library/.zhiyue/skills/&lt;名称&gt;/SKILL.md</code>。
+            </p>
+            <p v-if="info.skills?.diagnostics?.length" class="settings-hint">
+              {{ info.skills.diagnostics.join('；') }}
+            </p>
+            <p class="settings-hint">
+              技能只提供说明；模型按需调用 read_skill 读取，不会执行技能内的脚本。重新扫描后对新会话生效。
+            </p>
+            <button type="button" class="text-button" :disabled="!!busy" @click="reloadSkills">
+              {{ busy === 'skills' ? '正在扫描…' : '重新扫描技能' }}
+            </button>
           </section>
           <section class="settings-section">
             <label class="settings-label" for="settings-provider">API 密钥</label>
