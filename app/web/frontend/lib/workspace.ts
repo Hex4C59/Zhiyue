@@ -93,6 +93,7 @@ export function createWorkspace({
     downloadsError: '',
     readerMode: 'pdf',
     notePath: '',
+    noteDeleting: false,
     chat: null,
     chats: [],
     context: new Set(),
@@ -543,6 +544,32 @@ export function createWorkspace({
   const saveNoteDraft = (id: string): Promise<void> => resolveNoteDraft(id, 'save');
   const discardNoteDraft = (id: string): Promise<void> => resolveNoteDraft(id, 'discard');
 
+  /**
+   * 删除已保存的阅读笔记。服务端只把文件移到 `.zhiyue/trash/notes/`，所以确认文案要说明可以找回；
+   * 删除后回到笔记列表第一项，没有剩余笔记时清空选中路径。
+   */
+  async function deleteNote(relativePath: string): Promise<boolean> {
+    if (!relativePath || state.noteDeleting) return false;
+    state.noteDeleting = true;
+    try {
+      const result = await api<{ trashed: string; library?: LibraryResponse }>(
+        '/api/notes/delete',
+        json('POST', { path: relativePath }),
+      );
+      state.papers = Array.isArray(result.library?.papers) ? result.library.papers : state.papers;
+      const paper = state.papers.find((item) => item.literature_id === state.current);
+      const remaining = Array.isArray(paper?.notes) ? paper.notes : [];
+      state.notePath = remaining[0]?.path ?? '';
+      toast(`笔记已移入回收站：${result.trashed}`);
+      return true;
+    } catch (error) {
+      toast(messageOf(error), true);
+      return false;
+    } finally {
+      state.noteDeleting = false;
+    }
+  }
+
   async function decideApproval(
     id: string,
     decision: string,
@@ -795,6 +822,7 @@ export function createWorkspace({
     decideApproval,
     saveNoteDraft,
     discardNoteDraft,
+    deleteNote,
     loadDownloads,
     createDownload,
     batchAction,

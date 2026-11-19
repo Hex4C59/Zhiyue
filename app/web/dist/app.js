@@ -2937,6 +2937,7 @@ var X = (e) => String(e ?? "").replace(/[&<>"']/g, (e) => ({
 	external: "M14 3h7v7 M21 3L10 14 M10 4H4v16h16v-6",
 	folder: "M3 5h7l2 3h9v12H3z",
 	edit: "M4 20h4L19 9l-4-4L4 16z M13.5 6.5l4 4",
+	trash: "M4 7h16 M9 7V4h6v3 M6 7l1 13h10l1-13 M10 11v6 M14 11v6",
 	user: "M16 7a4 4 0 1 1-8 0 4 4 0 0 1 8 0 M4 21v-3a8 8 0 0 1 16 0v3",
 	settings: "M20 7h-9 M14 17H5 M17 17a3 3 0 1 0 6 0 3 3 0 0 0-6 0 M7 7a3 3 0 1 0-6 0 3 3 0 0 0 6 0"
 }, ao = (e) => `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="${io[e] || io.book}"/></svg>`, Z = (e, t) => ({
@@ -3396,9 +3397,9 @@ var _o = {
 	}
 });
 // app/web/frontend/lib/reader.ts
-function ss({ state: e, api: t, toast: n, patchPaper: r, setPanel: i, setDraft: a, scope: o }) {
-	let s = (e) => o.querySelector(e), c = (e) => [...o.querySelectorAll(e)], l = () => e.papers.find((t) => t.literature_id === e.current), u = o.ownerDocument.defaultView, d = new u.AbortController();
-	function f() {
+function ss({ state: e, api: t, toast: n, patchPaper: r, deleteNote: i, setPanel: a, setDraft: o, scope: s }) {
+	let c = (e) => s.querySelector(e), l = (e) => [...s.querySelectorAll(e)], u = () => e.papers.find((t) => t.literature_id === e.current), d = s.ownerDocument.defaultView, f = new d.AbortController();
+	function p() {
 		let t = e.pdfSession;
 		if (t) {
 			t.disposed = !0, t.observer?.disconnect(), t.resizeObserver?.disconnect(), t.root.removeEventListener("scroll", t.onScroll), document.removeEventListener("copy", t.onCopy);
@@ -3415,13 +3416,19 @@ function ss({ state: e, api: t, toast: n, patchPaper: r, setPanel: i, setDraft: 
 		}
 		e.pdfSession = null, e.previewLoading = !1;
 	}
-	function p() {
-		let t = s("#pdf-controls");
+	function m() {
+		let t = c("#pdf-controls");
 		if (!t) return;
 		let n = e.pdfSession?.textLayers.get(e.pdfPage)?.data, r = n ? n.error ? "文字层不可用" : n.hasText ? "可选中文字并按 Ctrl+C" : "本页无文字层" : "正在加载文字层…";
 		t.innerHTML = `<button class="icon-button" data-pdf-step="-1" aria-label="上一页" title="上一页" ${e.pdfPage <= 1 || e.previewLoading ? "disabled" : ""}>‹</button><label class="pdf-page-label">PDF 物理页 <input id="pdf-page" type="number" min="1" ${e.pdfTotal ? `max="${e.pdfTotal}"` : ""} value="${e.pdfPage}" aria-label="PDF物理页序"></label><span class="pdf-total">/ ${e.pdfTotal || "…"}</span><button class="icon-button" data-pdf-step="1" aria-label="下一页" title="下一页" ${!e.pdfTotal || e.pdfPage >= e.pdfTotal || e.previewLoading ? "disabled" : ""}>›</button><span class="pdf-control-divider"></span><button class="icon-button" data-pdf-zoom="-50" aria-label="缩小" title="缩小" ${e.pdfZoom <= 100 ? "disabled" : ""}>−</button><button class="text-button pdf-zoom" id="pdf-fit" title="适合宽度">${e.pdfZoom === 100 ? "适宽 100%" : e.pdfZoom + "%"}</button><button class="icon-button" data-pdf-zoom="50" aria-label="放大" title="放大" ${e.pdfZoom >= 200 ? "disabled" : ""}>＋</button><button class="button subtle pdf-copy-page" id="copy-pdf-page" ${n?.hasText ? "" : "disabled"}>复制本页文字</button><span class="pdf-text-status" title="${X(n?.error || (n?.hasText ? "" : "扫描页或无文字内容的页面需要 OCR 才能复制。"))}">${X(r)}</span>`;
 	}
-	async function m() {
+	async function h() {
+		let t = u(), n = Array.isArray(t?.notes) ? t.notes : [], r = n.find((t) => t.path === e.notePath) ?? n[0];
+		if (!t || !r) return;
+		let a = r.title || r.path.split(/[\\/]/).pop() || r.path;
+		d.confirm(`删除笔记“${a}”？\n\n文件会移到文献库的 .zhiyue/trash/notes/，需要时可以手动找回。`) && await i(r.path) && te();
+	}
+	async function g() {
 		let t = e.pdfSession?.textLayers.get(e.pdfPage)?.data.text;
 		if (t) try {
 			await navigator.clipboard.writeText(t), n("本页文字已复制");
@@ -3429,28 +3436,28 @@ function ss({ state: e, api: t, toast: n, patchPaper: r, setPanel: i, setDraft: 
 			n("无法访问剪贴板，请在页面选中文字后按 Ctrl+C。", !0);
 		}
 	}
-	function h(t) {
+	function _(t) {
 		let r = Number(t);
 		if (!Number.isInteger(r) || r < 1 || e.pdfTotal && r > e.pdfTotal) {
-			n("请输入有效的 PDF 物理页序。"), p();
+			n("请输入有效的 PDF 物理页序。"), m();
 			return;
 		}
 		let i = e.pdfSession, a = i?.pages.get(r);
 		i && a ? (e.pdfPage = r, i.root.scrollTop = Math.max(0, a.offsetTop - 24), i.manualPage = {
 			page: r,
 			scrollTop: i.root.scrollTop
-		}, p(), T(i), C(i, r, !0)) : r !== e.pdfPage && (e.pdfPage = r, E());
+		}, m(), E(i), T(i, r, !0)) : r !== e.pdfPage && (e.pdfPage = r, te());
 	}
-	function g(t) {
+	function v(t) {
 		let n = e.pdfSession, r = n?.pages.get(e.pdfPage), i = n && r ? (n.root.scrollTop - r.offsetTop) / r.offsetHeight : 0;
 		e.pdfZoom = Math.max(100, Math.min(200, e.pdfZoom + t));
-		for (let t of c(".pdf-page-sheet")) t.style.width = `${e.pdfZoom}%`, t.style.setProperty("--pdf-zoom", String(e.pdfZoom / 100));
-		n && y(n), n && r && (n.root.scrollTop = r.offsetTop + i * r.offsetHeight, n.manualPage && (n.manualPage.scrollTop = n.root.scrollTop), T(n)), p();
+		for (let t of l(".pdf-page-sheet")) t.style.width = `${e.pdfZoom}%`, t.style.setProperty("--pdf-zoom", String(e.pdfZoom / 100));
+		n && x(n), n && r && (n.root.scrollTop = r.offsetTop + i * r.offsetHeight, n.manualPage && (n.manualPage.scrollTop = n.root.scrollTop), E(n)), m();
 	}
-	function _(t) {
+	function y(t) {
 		return !t.disposed && e.pdfSession === t && e.noteEpoch === t.epoch;
 	}
-	async function v(e, n) {
+	async function b(e, n) {
 		let r = new AbortController();
 		e.controllers.set(n, r);
 		let i = setTimeout(() => r.abort(), 45e3), a = "";
@@ -3473,10 +3480,10 @@ function ss({ state: e, api: t, toast: n, patchPaper: r, setPanel: i, setDraft: 
 			}
 			if (!(o.headers.get("content-type") || "").startsWith("image/png")) throw Error("预览接口未返回 PNG 页面图片。");
 			let s = Number(o.headers.get("X-PDF-Pages")), c = await o.blob();
-			if (!_(e) || r.signal.aborted) throw new DOMException("已停止加载", "AbortError");
+			if (!y(e) || r.signal.aborted) throw new DOMException("已停止加载", "AbortError");
 			a = URL.createObjectURL(c);
 			let l = new Image();
-			if (l.className = "pdf-page-image", l.alt = "", l.setAttribute("aria-hidden", "true"), l.draggable = !1, l.src = a, await l.decode(), !_(e) || r.signal.aborted) throw new DOMException("已停止加载", "AbortError");
+			if (l.className = "pdf-page-image", l.alt = "", l.setAttribute("aria-hidden", "true"), l.draggable = !1, l.src = a, await l.decode(), !y(e) || r.signal.aborted) throw new DOMException("已停止加载", "AbortError");
 			if (!Number.isSafeInteger(s) || s < n) throw Error("PDF总页数无效。");
 			return {
 				img: l,
@@ -3490,13 +3497,13 @@ function ss({ state: e, api: t, toast: n, patchPaper: r, setPanel: i, setDraft: 
 			clearTimeout(i), e.controllers.delete(n);
 		}
 	}
-	function y(e) {
+	function x(e) {
 		for (let [t, { data: n, element: r }] of e.textLayers) {
 			let i = e.pages.get(t);
 			r && i && (r.style.transform = `scale(${i.clientWidth / n.width},${i.clientHeight / n.height})`);
 		}
 	}
-	function b(e, t, n) {
+	function S(e, t, n) {
 		let r = e.pages.get(t);
 		if (!r || (e.textLayers.set(t, {
 			data: n,
@@ -3534,17 +3541,17 @@ function ss({ state: e, api: t, toast: n, patchPaper: r, setPanel: i, setDraft: 
 		r.append(i), e.textLayers.set(t, {
 			data: n,
 			element: i
-		}), y(e);
+		}), x(e);
 	}
-	function x(e) {
+	function C(e) {
 		if (!e) return !1;
 		let t = document.getSelection();
 		if (!t || t.isCollapsed) return !1;
 		for (let n = 0; n < t.rangeCount; n++) if (t.getRangeAt(n).intersectsNode(e)) return !0;
 		return !1;
 	}
-	function S(t, n, { img: r, url: i, textLayer: a }) {
-		if (!_(t)) {
+	function w(t, n, { img: r, url: i, textLayer: a }) {
+		if (!y(t)) {
 			URL.revokeObjectURL(i);
 			return;
 		}
@@ -3554,27 +3561,27 @@ function ss({ state: e, api: t, toast: n, patchPaper: r, setPanel: i, setDraft: 
 			return;
 		}
 		let s = o.offsetHeight, c = o.offsetTop + s < t.root.scrollTop;
-		o.style.aspectRatio = `${r.naturalWidth} / ${r.naturalHeight}`, o.replaceChildren(r), o.dataset.loaded = "true", b(t, n, a), t.urls.set(n, i), t.errors.delete(n), c && (t.root.scrollTop += o.offsetHeight - s, t.manualPage && (t.manualPage.scrollTop = t.root.scrollTop)), n === e.pdfPage && p(), T(t);
+		o.style.aspectRatio = `${r.naturalWidth} / ${r.naturalHeight}`, o.replaceChildren(r), o.dataset.loaded = "true", S(t, n, a), t.urls.set(n, i), t.errors.delete(n), c && (t.root.scrollTop += o.offsetHeight - s, t.manualPage && (t.manualPage.scrollTop = t.root.scrollTop)), n === e.pdfPage && m(), E(t);
 	}
-	function C(e, t, n = !1) {
-		!_(e) || !e.pages.has(t) || e.urls.has(t) || e.controllers.has(t) || e.errors.has(t) || (e.queue.includes(t) || (n ? e.queue.unshift(t) : e.queue.push(t)), w(e));
+	function T(e, t, n = !1) {
+		!y(e) || !e.pages.has(t) || e.urls.has(t) || e.controllers.has(t) || e.errors.has(t) || (e.queue.includes(t) || (n ? e.queue.unshift(t) : e.queue.push(t)), ee(e));
 	}
-	function w(t) {
-		if (_(t)) for (t.queue = t.queue.filter((t) => Math.abs(t - e.pdfPage) <= 3), t.queue.sort((t, n) => Math.abs(t - e.pdfPage) - Math.abs(n - e.pdfPage)); t.running < 2 && t.queue.length;) {
+	function ee(t) {
+		if (y(t)) for (t.queue = t.queue.filter((t) => Math.abs(t - e.pdfPage) <= 3), t.queue.sort((t, n) => Math.abs(t - e.pdfPage) - Math.abs(n - e.pdfPage)); t.running < 2 && t.queue.length;) {
 			let e = t.queue.shift();
-			t.urls.has(e) || t.controllers.has(e) || (t.running++, v(t, e).then((n) => S(t, e, n)).catch((n) => {
-				if (!_(t) || n.name === "AbortError") return;
+			t.urls.has(e) || t.controllers.has(e) || (t.running++, b(t, e).then((n) => w(t, e, n)).catch((n) => {
+				if (!y(t) || n.name === "AbortError") return;
 				t.errors.add(e);
 				let r = t.pages.get(e);
 				r && (r.innerHTML = `<div class="pdf-page-placeholder"><span>第 ${e} 页加载失败</span><small>${X(n.message)}</small><button class="button subtle" data-pdf-retry="${e}">重试第 ${e} 页</button></div>`);
 			}).finally(() => {
-				t.running--, _(t) && (w(t), T(t));
+				t.running--, y(t) && (ee(t), E(t));
 			}));
 		}
 	}
-	function T(t) {
-		_(t) && !t.frame && (t.frame = requestAnimationFrame(() => {
-			if (t.frame = null, !_(t) || !t.pages.size || !t.root.clientHeight || !t.root.clientWidth) return;
+	function E(t) {
+		y(t) && !t.frame && (t.frame = requestAnimationFrame(() => {
+			if (t.frame = null, !y(t) || !t.pages.size || !t.root.clientHeight || !t.root.clientWidth) return;
 			let n = t.root.scrollTop + Math.min(t.root.clientHeight * .3, 200), r = 1, i = t.pages.size;
 			for (; r < i;) {
 				let e = Math.floor((r + i) / 2), a = t.pages.get(e);
@@ -3582,30 +3589,30 @@ function ss({ state: e, api: t, toast: n, patchPaper: r, setPanel: i, setDraft: 
 			}
 			t.manualPage && Math.abs(t.root.scrollTop - t.manualPage.scrollTop) < 2 ? r = t.manualPage.page : (t.manualPage = null, t.root.scrollTop > 0 && t.root.scrollTop + t.root.clientHeight >= t.root.scrollHeight - 2 && (r = t.pages.size));
 			let a = e.pdfPage !== r;
-			e.pdfPage = r, a && p();
-			let s = o.querySelector("#pdf-page");
-			s && document.activeElement !== s && (s.value = String(r));
-			for (let t of c("[data-pdf-step]")) t.disabled = Number(t.dataset.pdfStep) < 0 ? r <= 1 : r >= e.pdfTotal;
-			let l = t.pages.get(r);
-			l && (t.anchor = {
+			e.pdfPage = r, a && m();
+			let o = s.querySelector("#pdf-page");
+			o && document.activeElement !== o && (o.value = String(r));
+			for (let t of l("[data-pdf-step]")) t.disabled = Number(t.dataset.pdfStep) < 0 ? r <= 1 : r >= e.pdfTotal;
+			let c = t.pages.get(r);
+			c && (t.anchor = {
 				page: r,
-				offset: (t.root.scrollTop - l.offsetTop) / l.offsetHeight
+				offset: (t.root.scrollTop - c.offsetTop) / c.offsetHeight
 			});
 			for (let e of [
 				r,
 				r + 1,
 				r - 1
-			]) C(t, e, !0);
+			]) T(t, e, !0);
 			for (let [e, n] of t.urls) if (Math.abs(e - r) > 3) {
 				let r = t.pages.get(e);
-				if (!r || x(r)) continue;
+				if (!r || C(r)) continue;
 				r.innerHTML = `<div class="pdf-page-placeholder">第 ${e} 页</div>`, delete r.dataset.loaded, URL.revokeObjectURL(n), t.urls.delete(e), t.textLayers.delete(e);
 			}
 			for (let [e, n] of t.controllers) Math.abs(e - r) > 3 && n.abort();
 		}));
 	}
-	async function ee(t, n) {
-		let r = s("#reader-content"), i = {
+	async function D(t, n) {
+		let r = c("#reader-content"), i = {
 			paper: t,
 			epoch: n,
 			root: r,
@@ -3623,10 +3630,10 @@ function ss({ state: e, api: t, toast: n, patchPaper: r, setPanel: i, setDraft: 
 		};
 		e.pdfSession = Wt(i), e.previewLoading = !0;
 		let a = e.pdfPage;
-		p(), r.innerHTML = `<div class="loading"><span class="busy-spinner"></span>正在加载 PDF 第 ${a} 页…</div>`;
+		m(), r.innerHTML = `<div class="loading"><span class="busy-spinner"></span>正在加载 PDF 第 ${a} 页…</div>`;
 		try {
-			let t = await v(i, a);
-			if (!_(i)) {
+			let t = await b(i, a);
+			if (!y(i)) {
 				URL.revokeObjectURL(t.url);
 				return;
 			}
@@ -3637,10 +3644,10 @@ function ss({ state: e, api: t, toast: n, patchPaper: r, setPanel: i, setDraft: 
 				let a = document.createElement("div");
 				a.className = "pdf-page-sheet", a.dataset.pdfPage = String(r), a.style.width = `${e.pdfZoom}%`, a.style.setProperty("--pdf-zoom", String(e.pdfZoom / 100)), a.style.aspectRatio = `${t.img.naturalWidth} / ${t.img.naturalHeight}`, a.setAttribute("role", "group"), a.setAttribute("aria-label", `PDF物理页序 ${r}`), a.innerHTML = `<div class="pdf-page-placeholder">第 ${r} 页</div>`, n.append(a), i.pages.set(r, a);
 			}
-			r.replaceChildren(n), r.scrollLeft = 0, S(i, a, t), r.scrollTop = Math.max(0, i.pages.get(a).offsetTop - 24), i.manualPage = {
+			r.replaceChildren(n), r.scrollLeft = 0, w(i, a, t), r.scrollTop = Math.max(0, i.pages.get(a).offsetTop - 24), i.manualPage = {
 				page: a,
 				scrollTop: r.scrollTop
-			}, i.onScroll = () => T(i), r.addEventListener("scroll", i.onScroll, { passive: !0 }), i.onCopy = (e) => {
+			}, i.onScroll = () => E(i), r.addEventListener("scroll", i.onScroll, { passive: !0 }), i.onCopy = (e) => {
 				let t = e.target;
 				if (e.defaultPrevented || t?.isContentEditable || t?.closest?.("input,textarea")) return;
 				let n = document.getSelection();
@@ -3656,7 +3663,7 @@ function ss({ state: e, api: t, toast: n, patchPaper: r, setPanel: i, setDraft: 
 					"Home",
 					"End",
 					" "
-				].includes(e.key) || e.type === "pointerdown" && e.target !== r || (i.manualPage = null, T(i));
+				].includes(e.key) || e.type === "pointerdown" && e.target !== r || (i.manualPage = null, E(i));
 			};
 			for (let e of [
 				"wheel",
@@ -3668,9 +3675,9 @@ function ss({ state: e, api: t, toast: n, patchPaper: r, setPanel: i, setDraft: 
 				if (!e.ctrlKey && !e.metaKey) return;
 				e.preventDefault(), i.zoomDelta += e.deltaY;
 				let t = Math.trunc(i.zoomDelta / 100);
-				t && (i.zoomDelta -= t * 100, g(t < 0 ? 10 * -t : -10 * t));
+				t && (i.zoomDelta -= t * 100, v(t < 0 ? 10 * -t : -10 * t));
 			}, r.addEventListener("wheel", i.onZoomWheel, { passive: !1 }), i.observer = new IntersectionObserver((e) => {
-				for (let t of e) t.isIntersecting && C(i, Number(t.target.dataset.pdfPage));
+				for (let t of e) t.isIntersecting && T(i, Number(t.target.dataset.pdfPage));
 			}, {
 				root: r,
 				rootMargin: "100% 0px",
@@ -3682,66 +3689,66 @@ function ss({ state: e, api: t, toast: n, patchPaper: r, setPanel: i, setDraft: 
 				let e = r.clientWidth;
 				if (!e || !r.clientHeight) s = !0;
 				else {
-					if (y(i), (s || e !== o) && i.anchor) {
+					if (x(i), (s || e !== o) && i.anchor) {
 						let e = i.pages.get(i.anchor.page);
 						e && (r.scrollTop = e.offsetTop + i.anchor.offset * e.offsetHeight), i.manualPage && (i.manualPage.scrollTop = r.scrollTop);
 					}
-					s = !1, o = e, T(i);
+					s = !1, o = e, E(i);
 				}
-			}), i.resizeObserver.observe(r), T(i);
+			}), i.resizeObserver.observe(r), E(i);
 		} catch (e) {
-			if (!_(i)) return;
+			if (!y(i)) return;
 			let t = e;
 			r.innerHTML = `<div class="empty"><h2>页面预览暂不可用</h2><p class="error-text">${X(t.name === "AbortError" ? "预览请求超时，请重试。" : t.message)}</p><button id="retry-preview" class="button subtle">重新加载第 ${a} 页</button><p>也可使用工具栏的“单独打开”查看原 PDF。</p></div>`;
 		} finally {
-			_(i) && (e.previewLoading = !1, p());
+			y(i) && (e.previewLoading = !1, m());
 		}
 	}
-	function E() {
-		let n = l();
+	function te() {
+		let n = u();
 		if (!n) {
-			f(), s("#reader-header").innerHTML = "<span class=\"muted\">阅读</span>", s("#reader-toolbar").hidden = !0, s("#reader-content").innerHTML = `<div class="empty reader-empty"><span class="empty-art">${ao("book")}</span><h2>选择论文</h2><p>从左侧选择，查看原文或笔记。</p></div>`;
+			p(), c("#reader-header").innerHTML = "<span class=\"muted\">阅读</span>", c("#reader-toolbar").hidden = !0, c("#reader-content").innerHTML = `<div class="empty reader-empty"><span class="empty-art">${ao("book")}</span><h2>选择论文</h2><p>从左侧选择，查看原文或笔记。</p></div>`;
 			return;
 		}
 		let r = ++e.noteEpoch;
-		f(), s("#reader-header").innerHTML = `<div class="reader-heading"><h2>${X(co(n))}</h2><div class="reader-meta">${X(n.literature_id)} · ${X(n.year || "年份待核实")} · ${X(n.pages ? n.pages + " 页" : "页数待核实")}<br>${X(lo(n))}</div></div><select id="paper-read-status" aria-label="标记阅读进度">${Object.entries(ho).map(([e, t]) => `<option value="${e}" ${go(n.readStatus) === e ? "selected" : ""}>${t}</option>`).join("")}</select>`;
-		let i = Array.isArray(n.notes) ? n.notes : [];
-		s("#reader-toolbar").hidden = !1, s("#reader-toolbar").innerHTML = `<div class="segmented"><button data-reader-mode="pdf" class="${e.readerMode === "pdf" ? "active" : ""}">原文 PDF</button><button data-reader-mode="note" class="${e.readerMode === "note" ? "active" : ""}">阅读笔记 <small>${i.length}</small></button></div>${e.readerMode === "pdf" && n.file ? `<select id="pdf-renderer" aria-label="PDF显示方式"><option value="preview" ${e.pdfBrowser ? "" : "selected"}>连续阅读</option><option value="browser" ${e.pdfBrowser ? "selected" : ""}>浏览器阅读器</option></select>` : ""}${e.readerMode === "note" && i.length ? `<select id="note-select" aria-label="选择笔记">${i.map((t) => `<option value="${X(t.path)}" ${t.path === e.notePath ? "selected" : ""}>${X(t.title || t.path.split(/[\\/]/).pop())}</option>`).join("")}</select>` : ""}${n.file ? `<a class="open-original" href="${X(so(n.file))}" target="_blank" rel="noopener noreferrer">单独打开${ao("external")}</a>` : ""}${e.readerMode === "pdf" && n.file && !e.pdfBrowser ? "<div id=\"pdf-controls\" class=\"pdf-controls\" role=\"group\" aria-label=\"PDF翻页与缩放\"></div>" : ""}`, e.readerMode === "pdf" ? n.file ? e.pdfBrowser ? s("#reader-content").innerHTML = `<iframe class="pdf-frame" title="${X(co(n))} PDF原文" src="${X(so(n.file))}"></iframe>` : ee(n, r) : s("#reader-content").innerHTML = "<div class=\"empty\"><p>该条目尚无可用原文文件。</p></div>" : i.length ? (e.notePath = i.some((t) => t.path === e.notePath) ? e.notePath : i[0]?.path ?? "", s("#reader-content").innerHTML = "<div class=\"loading\"><span class=\"busy-spinner\"></span>正在读取笔记…</div>", t(`/api/text?path=${encodeURIComponent(e.notePath)}`).then((t) => {
-			r === e.noteEpoch && (s("#reader-content").innerHTML = `<article class="note-document markdown">${mo(t.text, e.notePath)}</article>`);
+		p(), c("#reader-header").innerHTML = `<div class="reader-heading"><h2>${X(co(n))}</h2><div class="reader-meta">${X(n.literature_id)} · ${X(n.year || "年份待核实")} · ${X(n.pages ? n.pages + " 页" : "页数待核实")}<br>${X(lo(n))}</div></div><select id="paper-read-status" aria-label="标记阅读进度">${Object.entries(ho).map(([e, t]) => `<option value="${e}" ${go(n.readStatus) === e ? "selected" : ""}>${t}</option>`).join("")}</select>`;
+		let i = Array.isArray(n.notes) ? n.notes : [], a = i.some((t) => t.path === e.notePath) ? e.notePath : i[0]?.path ?? "", o = e.readerMode === "note" && a ? `<button id="delete-note" class="icon-button danger" aria-label="删除当前笔记" title="删除当前笔记" ${e.noteDeleting ? "disabled" : ""}>${ao("trash")}</button>` : "";
+		c("#reader-toolbar").hidden = !1, c("#reader-toolbar").innerHTML = `<div class="segmented"><button data-reader-mode="pdf" class="${e.readerMode === "pdf" ? "active" : ""}">原文 PDF</button><button data-reader-mode="note" class="${e.readerMode === "note" ? "active" : ""}">阅读笔记 <small>${i.length}</small></button></div>${e.readerMode === "pdf" && n.file ? `<select id="pdf-renderer" aria-label="PDF显示方式"><option value="preview" ${e.pdfBrowser ? "" : "selected"}>连续阅读</option><option value="browser" ${e.pdfBrowser ? "selected" : ""}>浏览器阅读器</option></select>` : ""}${e.readerMode === "note" && i.length ? `<select id="note-select" aria-label="选择笔记">${i.map((e) => `<option value="${X(e.path)}" ${e.path === a ? "selected" : ""}>${X(e.title || e.path.split(/[\\/]/).pop())}</option>`).join("")}</select>${o}` : ""}${n.file ? `<a class="open-original" href="${X(so(n.file))}" target="_blank" rel="noopener noreferrer">单独打开${ao("external")}</a>` : ""}${e.readerMode === "pdf" && n.file && !e.pdfBrowser ? "<div id=\"pdf-controls\" class=\"pdf-controls\" role=\"group\" aria-label=\"PDF翻页与缩放\"></div>" : ""}`, e.readerMode === "pdf" ? n.file ? e.pdfBrowser ? c("#reader-content").innerHTML = `<iframe class="pdf-frame" title="${X(co(n))} PDF原文" src="${X(so(n.file))}"></iframe>` : D(n, r) : c("#reader-content").innerHTML = "<div class=\"empty\"><p>该条目尚无可用原文文件。</p></div>" : i.length ? (e.notePath = i.some((t) => t.path === e.notePath) ? e.notePath : i[0]?.path ?? "", c("#reader-content").innerHTML = "<div class=\"loading\"><span class=\"busy-spinner\"></span>正在读取笔记…</div>", t(`/api/text?path=${encodeURIComponent(e.notePath)}`).then((t) => {
+			r === e.noteEpoch && (c("#reader-content").innerHTML = `<article class="note-document markdown">${mo(t.text, e.notePath)}</article>`);
 		}).catch((t) => {
-			r === e.noteEpoch && (s("#reader-content").innerHTML = `<div class="empty"><p class="error-text">${X(t.message)}</p><button id="retry-note" class="button subtle">重试</button></div>`);
-		})) : s("#reader-content").innerHTML = "<div class=\"empty\"><h2>阅读笔记尚待积累</h2><p>可以向研究助手提问，整理阅读笔记。</p><button id=\"ask-note\" class=\"button subtle\">请助手帮我精读</button></div>";
+			r === e.noteEpoch && (c("#reader-content").innerHTML = `<div class="empty"><p class="error-text">${X(t.message)}</p><button id="retry-note" class="button subtle">重试</button></div>`);
+		})) : c("#reader-content").innerHTML = "<div class=\"empty\"><h2>阅读笔记尚待积累</h2><p>可以向研究助手提问，整理阅读笔记。</p><button id=\"ask-note\" class=\"button subtle\">请助手帮我精读</button></div>";
 	}
-	return o.addEventListener("click", (t) => {
+	return s.addEventListener("click", (t) => {
 		let n = t.target.closest("button");
 		if (n) {
-			if (n.dataset.readerMode && (e.readerMode = n.dataset.readerMode), n.dataset.pdfStep && h(e.pdfPage + Number(n.dataset.pdfStep)), n.dataset.pdfZoom && g(Number(n.dataset.pdfZoom)), n.id === "pdf-fit" && g(100 - e.pdfZoom), n.id === "copy-pdf-page" && m(), ["retry-preview", "retry-note"].includes(n.id) && E(), n.dataset.pdfRetry && e.pdfSession) {
+			if (n.dataset.readerMode && (e.readerMode = n.dataset.readerMode), n.dataset.pdfStep && _(e.pdfPage + Number(n.dataset.pdfStep)), n.dataset.pdfZoom && v(Number(n.dataset.pdfZoom)), n.id === "pdf-fit" && v(100 - e.pdfZoom), n.id === "copy-pdf-page" && g(), n.id === "delete-note" && h(), ["retry-preview", "retry-note"].includes(n.id) && te(), n.dataset.pdfRetry && e.pdfSession) {
 				let t = Number(n.dataset.pdfRetry);
-				e.pdfSession.errors.delete(t), C(e.pdfSession, t, !0);
+				e.pdfSession.errors.delete(t), T(e.pdfSession, t, !0);
 			}
-			n.id === "ask-note" && (a("请精读当前论文，解释核心方法、证据和局限，给出原文定位，并整理阅读笔记。"), i("chat"));
+			n.id === "ask-note" && (o("请精读当前论文，解释核心方法、证据和局限，给出原文定位，并整理阅读笔记。"), a("chat"));
 		}
-	}, { signal: d.signal }), o.addEventListener("change", (t) => {
+	}, { signal: f.signal }), s.addEventListener("change", (t) => {
 		let n = t.target;
 		if (n.id === "paper-read-status") {
 			let t = e.current;
 			if (!t) return;
 			n.disabled = !0, r(t, { readStatus: n.value }).then((r) => {
-				!r && e.current === t && (n.value = go(l()?.readStatus)), n.disabled = !1;
+				!r && e.current === t && (n.value = go(u()?.readStatus)), n.disabled = !1;
 			});
 		}
-		n.id === "note-select" && (e.notePath = n.value), n.id === "pdf-renderer" && (e.pdfBrowser = n.value === "browser"), n.id === "pdf-page" && h(n.value);
-	}, { signal: d.signal }), o.addEventListener("keydown", (e) => {
+		n.id === "note-select" && (e.notePath = n.value), n.id === "pdf-renderer" && (e.pdfBrowser = n.value === "browser"), n.id === "pdf-page" && _(n.value);
+	}, { signal: f.signal }), s.addEventListener("keydown", (e) => {
 		let t = e.target;
-		t.id === "pdf-page" && e.key === "Enter" && (e.preventDefault(), h(t.value));
-	}, { signal: d.signal }), u.addEventListener("pagehide", () => {
-		++e.noteEpoch, f();
-	}, { signal: d.signal }), u.addEventListener("pageshow", (t) => {
-		t.persisted && l() && e.readerMode === "pdf" && E();
-	}, { signal: d.signal }), {
-		render: E,
+		t.id === "pdf-page" && e.key === "Enter" && (e.preventDefault(), _(t.value));
+	}, { signal: f.signal }), d.addEventListener("pagehide", () => {
+		++e.noteEpoch, p();
+	}, { signal: f.signal }), d.addEventListener("pageshow", (t) => {
+		t.persisted && u() && e.readerMode === "pdf" && te();
+	}, { signal: f.signal }), {
+		render: te,
 		dispose: () => {
-			++e.noteEpoch, f(), d.abort();
+			++e.noteEpoch, p(), f.abort();
 		}
 	};
 }
@@ -3757,6 +3764,7 @@ var cs = /* @__PURE__ */ R({
 				api: t.api,
 				toast: t.toast,
 				patchPaper: t.patchPaper,
+				deleteNote: t.deleteNote,
 				setPanel: t.setPanel,
 				setDraft: t.setDraft
 			}), i.render());
@@ -4175,6 +4183,7 @@ function Is({ api: e = Ms, EventSourceImpl: t = globalThis.EventSource, pollInte
 		downloadsError: "",
 		readerMode: "pdf",
 		notePath: "",
+		noteDeleting: !1,
 		chat: null,
 		chats: [],
 		context: /* @__PURE__ */ new Set(),
@@ -4250,7 +4259,7 @@ function Is({ api: e = Ms, EventSourceImpl: t = globalThis.EventSource, pollInte
 		r.draft = e, r.focusComposer++;
 	}
 	function S(e) {
-		r.view = e, e === "downloads" && ve();
+		r.view = e, e === "downloads" && ye();
 	}
 	function C(e) {
 		r.current = e, r.readerMode = "pdf", r.notePath = "", r.pdfPage = 1, r.pdfTotal = null, r.pdfZoom = 100, r.pdfBrowser = !1, r.context.size < 6 || r.context.has(e) ? r.context.add(e) : y("最多附带 6 篇论文；请先移除不需要的上下文。", !0), window.matchMedia("(max-width:680px)").matches && b("reader");
@@ -4518,7 +4527,21 @@ function Is({ api: e = Ms, EventSourceImpl: t = globalThis.EventSource, pollInte
 		}
 	}
 	let he = (e) => k(e, "save"), ge = (e) => k(e, "discard");
-	async function _e(t, n, i = {}) {
+	async function _e(t) {
+		if (!t || r.noteDeleting) return !1;
+		r.noteDeleting = !0;
+		try {
+			let n = await e("/api/notes/delete", Z("POST", { path: t }));
+			r.papers = Array.isArray(n.library?.papers) ? n.library.papers : r.papers;
+			let i = r.papers.find((e) => e.literature_id === r.current), a = Array.isArray(i?.notes) ? i.notes : [];
+			return r.notePath = a[0]?.path ?? "", y(`笔记已移入回收站：${n.trashed}`), !0;
+		} catch (e) {
+			return y($(e), !0), !1;
+		} finally {
+			r.noteDeleting = !1;
+		}
+	}
+	async function ve(t, n, i = {}) {
 		let a = r.approvals.get(t);
 		if (a && !a.submitting) {
 			a.submitting = !0;
@@ -4530,7 +4553,7 @@ function Is({ api: e = Ms, EventSourceImpl: t = globalThis.EventSource, pollInte
 			}
 		}
 	}
-	async function ve() {
+	async function ye() {
 		try {
 			let t = await e("/api/downloads");
 			for (let e of t.jobs || []) r.jobs.set(e.id, e);
@@ -4539,7 +4562,7 @@ function Is({ api: e = Ms, EventSourceImpl: t = globalThis.EventSource, pollInte
 			r.downloadsError = $(e);
 		}
 	}
-	async function ye(t) {
+	async function be(t) {
 		try {
 			let n = await e("/api/downloads", Z("POST", t));
 			return r.jobs.set(n.id, n), y("下载任务已创建"), !0;
@@ -4547,7 +4570,7 @@ function Is({ api: e = Ms, EventSourceImpl: t = globalThis.EventSource, pollInte
 			return y($(e), !0), !1;
 		}
 	}
-	async function be(t, n) {
+	async function xe(t, n) {
 		try {
 			let i = await e("/api/downloads/action", Z("POST", {
 				batch: t,
@@ -4559,7 +4582,7 @@ function Is({ api: e = Ms, EventSourceImpl: t = globalThis.EventSource, pollInte
 			return y($(e), !0), !1;
 		}
 	}
-	async function xe() {
+	async function Se() {
 		r.refreshing = !0;
 		try {
 			let t = await e("/api/catalog/refresh", Z("POST", {}));
@@ -4570,11 +4593,11 @@ function Is({ api: e = Ms, EventSourceImpl: t = globalThis.EventSource, pollInte
 			r.refreshing = !1;
 		}
 	}
-	function Se(e) {
+	function Ce(e) {
 		let t = r.chat, n = t.messages ||= [], i = n.findIndex((t) => t.id === e.id);
 		i < 0 ? n.push(e) : Object.assign(n[i], e);
 	}
-	function Ce(e) {
+	function A(e) {
 		if (_) return;
 		let t = r.chat;
 		if (e.type === "connected" && Array.isArray(e.approvals)) {
@@ -4589,9 +4612,9 @@ function Is({ api: e = Ms, EventSourceImpl: t = globalThis.EventSource, pollInte
 			let n = e.draft, r = t.noteDrafts ||= [], i = r.findIndex((e) => e.id === n.id);
 			i < 0 ? r.push(n) : r[i] = n;
 		}
-		if (e.type === "noteDraftResolved" && e.chatId === t?.id && (t.noteDrafts = (t.noteDrafts || []).filter((t) => t.id !== e.id)), e.type === "message" && e.chatId === t?.id && e.message?.id && Se(e.message), e.type === "delta" && e.chatId === t?.id) {
+		if (e.type === "noteDraftResolved" && e.chatId === t?.id && (t.noteDrafts = (t.noteDrafts || []).filter((t) => t.id !== e.id)), e.type === "message" && e.chatId === t?.id && e.message?.id && Ce(e.message), e.type === "delta" && e.chatId === t?.id) {
 			let n = t.messages?.find((t) => t.id === e.messageId);
-			n ||= (Se({
+			n ||= (Ce({
 				id: String(e.messageId),
 				role: "assistant",
 				text: "",
@@ -4624,17 +4647,17 @@ function Is({ api: e = Ms, EventSourceImpl: t = globalThis.EventSource, pollInte
 			r.jobs.set(i.id, {
 				...e,
 				...i
-			}), e && Fs(e) && !Fs(i) && (y(`任务${Ps[i.status] || i.status}：${i.title || i.id}`, ["error", "failed"].includes(i.status)), T(), r.view === "downloads" && ve());
+			}), e && Fs(e) && !Fs(i) && (y(`任务${Ps[i.status] || i.status}：${i.title || i.id}`, ["error", "failed"].includes(i.status)), T(), r.view === "downloads" && ye());
 		}
 	}
-	async function A() {
+	async function we() {
 		if (!(document.hidden || p || _)) {
 			p = !0;
 			try {
 				let t = [te()], n = r.chat;
 				n && (!r.eventsOpen || u.value) && t.push(ce(n.id));
 				for (let n of r.jobs.values()) Fs(n) && t.push(e(`/api/jobs/${oo(n.id)}`).then((e) => {
-					r.jobs.set(e.id, e), Fs(e) || (T(), r.view === "downloads" && ve());
+					r.jobs.set(e.id, e), Fs(e) || (T(), r.view === "downloads" && ye());
 				}));
 				await Promise.allSettled(t);
 			} finally {
@@ -4642,7 +4665,7 @@ function Is({ api: e = Ms, EventSourceImpl: t = globalThis.EventSource, pollInte
 			}
 		}
 	}
-	async function we() {
+	async function Te() {
 		if (t && (f = new t("/api/events"), f.onopen = () => {
 			r.eventsOpen = !0, te(), r.chat && ce(r.chat.id).catch(() => {});
 		}, f.onerror = () => {
@@ -4654,18 +4677,18 @@ function Is({ api: e = Ms, EventSourceImpl: t = globalThis.EventSource, pollInte
 			} catch {
 				return;
 			}
-			Ce(t);
+			A(t);
 		}), await Promise.allSettled([
 			T(),
 			te(),
 			ne(),
-			ve(),
+			ye(),
 			re()
 		]), _) return;
 		let e = a("zhiyue.chat");
-		e && r.chats.some((t) => t.id === e) && await se(e), n && (m = setInterval(A, n));
+		e && r.chats.some((t) => t.id === e) && await se(e), n && (m = setInterval(we, n));
 	}
-	function Te() {
+	function j() {
 		_ = !0, f?.close(), m && clearInterval(m);
 		for (let e of v) clearTimeout(e);
 	}
@@ -4703,16 +4726,17 @@ function Is({ api: e = Ms, EventSourceImpl: t = globalThis.EventSource, pollInte
 		uploadFiles: pe,
 		uploadOne: fe,
 		importPdfs: me,
-		decideApproval: _e,
+		decideApproval: ve,
 		saveNoteDraft: he,
 		discardNoteDraft: ge,
-		loadDownloads: ve,
-		createDownload: ye,
-		batchAction: be,
-		refreshCatalog: xe,
-		receive: Ce,
-		start: we,
-		stop: Te
+		deleteNote: _e,
+		loadDownloads: ye,
+		createDownload: be,
+		batchAction: xe,
+		refreshCatalog: Se,
+		receive: A,
+		start: Te,
+		stop: j
 	};
 }
 // app/web/frontend/components/ChatMessage.vue?vue&type=script&setup=true&lang.ts

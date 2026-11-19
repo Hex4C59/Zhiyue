@@ -155,3 +155,27 @@ test('symlink file alias cannot expose an unindexed target', async t => {
   }
   await assert.rejects(library.safeFile('notes/leak.txt'));
 });
+
+// 删除笔记只做移动，回收站路径带时间戳，索引与统计随之刷新。
+test('删除笔记移入回收站并刷新索引', async t => {
+  const { root, library } = await fixture(t);
+  const before = await library.getPaper('L001');
+  assert.equal(before?.notes.length, 1);
+  const result = await library.deleteNote('notes/子目录/L001_笔记.md');
+  assert.match(result.trashed, /^\.zhiyue\/trash\/notes\/.+L001_笔记\.md$/);
+  const trashed = path.join(root, ...result.trashed.split('/'));
+  assert.equal(await readFile(trashed, 'utf8'), '# Note');
+  await assert.rejects(readFile(path.join(root, 'notes/子目录/L001_笔记.md')), /ENOENT/);
+  assert.deepEqual(result.library.papers[0]?.notes, []);
+  assert.equal(result.library.stats.withNotes, 0);
+
+  for (const rel of [
+    'notes/../../README.md',
+    'papers/08_SER/01_资源/paper.pdf',
+    'synthesis/review.md',
+    'notes/assets/image.png',
+    'notes/missing.md',
+  ]) {
+    await assert.rejects(library.deleteNote(rel), () => true, rel);
+  }
+});

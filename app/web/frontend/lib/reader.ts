@@ -8,6 +8,7 @@ export interface ReaderOptions {
   api: ApiFn;
   toast: (message: string, error?: boolean) => void;
   patchPaper: (id: string, update: Record<string, unknown>) => Promise<boolean>;
+  deleteNote: (relativePath: string) => Promise<boolean>;
   setPanel: (panel: 'list' | 'reader' | 'chat') => void;
   setDraft: (text: string) => void;
   scope: HTMLElement;
@@ -19,7 +20,7 @@ export interface ReaderController {
 }
 
 export function createReader({
-  state, api, toast, patchPaper, setPanel, setDraft, scope,
+  state, api, toast, patchPaper, deleteNote, setPanel, setDraft, scope,
 }: ReaderOptions): ReaderController {
   const $ = (selector: string): HTMLElement => scope.querySelector(selector) as HTMLElement;
   const $$ = (selector: string): HTMLElement[] => [...scope.querySelectorAll<HTMLElement>(selector)];
@@ -61,6 +62,22 @@ export function createReader({
           : '本页无文字层';
     controls.innerHTML = `<button class="icon-button" data-pdf-step="-1" aria-label="上一页" title="上一页" ${state.pdfPage <= 1 || state.previewLoading ? 'disabled' : ''}>‹</button><label class="pdf-page-label">PDF 物理页 <input id="pdf-page" type="number" min="1" ${state.pdfTotal ? `max="${state.pdfTotal}"` : ''} value="${state.pdfPage}" aria-label="PDF物理页序"></label><span class="pdf-total">/ ${state.pdfTotal || '…'}</span><button class="icon-button" data-pdf-step="1" aria-label="下一页" title="下一页" ${!state.pdfTotal || state.pdfPage >= state.pdfTotal || state.previewLoading ? 'disabled' : ''}>›</button><span class="pdf-control-divider"></span><button class="icon-button" data-pdf-zoom="-50" aria-label="缩小" title="缩小" ${state.pdfZoom <= 100 ? 'disabled' : ''}>−</button><button class="text-button pdf-zoom" id="pdf-fit" title="适合宽度">${state.pdfZoom === 100 ? '适宽 100%' : state.pdfZoom + '%'}</button><button class="icon-button" data-pdf-zoom="50" aria-label="放大" title="放大" ${state.pdfZoom >= 200 ? 'disabled' : ''}>＋</button><button class="button subtle pdf-copy-page" id="copy-pdf-page" ${!textInfo?.hasText ? 'disabled' : ''}>复制本页文字</button><span class="pdf-text-status" title="${esc(textInfo?.error || (!textInfo?.hasText ? '扫描页或无文字内容的页面需要 OCR 才能复制。' : ''))}">${esc(textStatus)}</span>`;
   }
+
+  /**
+   * 删除当前笔记。服务端只移到 `.zhiyue/trash/notes/`，所以确认文案说明可以手动找回；
+   * 删除后重新渲染工具栏与正文，笔记选择框自动落到剩下的第一项。
+   */
+  async function confirmDeleteNote(): Promise<void> {
+    const paper = currentPaper();
+    const notes = Array.isArray(paper?.notes) ? paper.notes : [];
+    const target = notes.find((note) => note.path === state.notePath) ?? notes[0];
+    if (!paper || !target) return;
+    const label = target.title || target.path.split(/[\\/]/).pop() || target.path;
+    const confirmed = view.confirm(`删除笔记“${label}”？\n\n文件会移到文献库的 .zhiyue/trash/notes/，需要时可以手动找回。`);
+    if (!confirmed) return;
+    if (await deleteNote(target.path)) renderReader();
+  }
+
   async function copyPDFPageText(): Promise<void> {
     const text = state.pdfSession?.textLayers.get(state.pdfPage)?.data.text;
     if (!text) return;
@@ -503,9 +520,13 @@ export function createReader({
         )
         .join('')}</select>`;
     const notes = Array.isArray(paper.notes) ? paper.notes : [];
+    const noteSelected = notes.some((note) => note.path === state.notePath) ? state.notePath : notes[0]?.path ?? '';
+    const deleteNote = state.readerMode === 'note' && noteSelected
+      ? `<button id="delete-note" class="icon-button danger" aria-label="删除当前笔记" title="删除当前笔记" ${state.noteDeleting ? 'disabled' : ''}>${icon('trash')}</button>`
+      : '';
     $('#reader-toolbar').hidden = false;
     $('#reader-toolbar').innerHTML =
-      `<div class="segmented"><button data-reader-mode="pdf" class="${state.readerMode === 'pdf' ? 'active' : ''}">原文 PDF</button><button data-reader-mode="note" class="${state.readerMode === 'note' ? 'active' : ''}">阅读笔记 <small>${notes.length}</small></button></div>${state.readerMode === 'pdf' && paper.file ? `<select id="pdf-renderer" aria-label="PDF显示方式"><option value="preview" ${!state.pdfBrowser ? 'selected' : ''}>连续阅读</option><option value="browser" ${state.pdfBrowser ? 'selected' : ''}>浏览器阅读器</option></select>` : ''}${state.readerMode === 'note' && notes.length ? `<select id="note-select" aria-label="选择笔记">${notes.map((note) => `<option value="${esc(note.path)}" ${note.path === state.notePath ? 'selected' : ''}>${esc(note.title || note.path.split(/[\\/]/).pop())}</option>`).join('')}</select>` : ''}${paper.file ? `<a class="open-original" href="${esc(fileURL(paper.file))}" target="_blank" rel="noopener noreferrer">单独打开${icon('external')}</a>` : ''}${state.readerMode === 'pdf' && paper.file && !state.pdfBrowser ? '<div id="pdf-controls" class="pdf-controls" role="group" aria-label="PDF翻页与缩放"></div>' : ''}`;
+      `<div class="segmented"><button data-reader-mode="pdf" class="${state.readerMode === 'pdf' ? 'active' : ''}">原文 PDF</button><button data-reader-mode="note" class="${state.readerMode === 'note' ? 'active' : ''}">阅读笔记 <small>${notes.length}</small></button></div>${state.readerMode === 'pdf' && paper.file ? `<select id="pdf-renderer" aria-label="PDF显示方式"><option value="preview" ${!state.pdfBrowser ? 'selected' : ''}>连续阅读</option><option value="browser" ${state.pdfBrowser ? 'selected' : ''}>浏览器阅读器</option></select>` : ''}${state.readerMode === 'note' && notes.length ? `<select id="note-select" aria-label="选择笔记">${notes.map((note) => `<option value="${esc(note.path)}" ${note.path === noteSelected ? 'selected' : ''}>${esc(note.title || note.path.split(/[\\/]/).pop())}</option>`).join('')}</select>${deleteNote}` : ''}${paper.file ? `<a class="open-original" href="${esc(fileURL(paper.file))}" target="_blank" rel="noopener noreferrer">单独打开${icon('external')}</a>` : ''}${state.readerMode === 'pdf' && paper.file && !state.pdfBrowser ? '<div id="pdf-controls" class="pdf-controls" role="group" aria-label="PDF翻页与缩放"></div>' : ''}`;
     if (state.readerMode === 'pdf') {
       if (!paper.file) {
         $('#reader-content').innerHTML = '<div class="empty"><p>该条目尚无可用原文文件。</p></div>';
@@ -545,6 +566,7 @@ export function createReader({
       if (button.dataset.pdfZoom) zoomPDF(Number(button.dataset.pdfZoom));
       if (button.id === 'pdf-fit') zoomPDF(100 - state.pdfZoom);
       if (button.id === 'copy-pdf-page') copyPDFPageText();
+      if (button.id === 'delete-note') void confirmDeleteNote();
       if (['retry-preview', 'retry-note'].includes(button.id)) renderReader();
       if (button.dataset.pdfRetry && state.pdfSession) {
         const page = Number(button.dataset.pdfRetry);

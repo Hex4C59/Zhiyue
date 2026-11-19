@@ -124,7 +124,7 @@ async function fixture(t: test.TestContext) {
       year: 2026,
       file: 'papers/test.pdf',
       category: '01_超声',
-      notes: [],
+      notes: [{ path: 'notes/L001_测试笔记.md', title: 'L001_测试笔记' }],
       readStatus: 'unread',
       starred: false,
     },
@@ -197,6 +197,17 @@ async function fixture(t: test.TestContext) {
     if (path === '/api/status') return structuredClone(status);
     if (path === '/api/library')
       return { papers: structuredClone(papers), categories: ['01_超声', '02_模型'] };
+    if (path === '/api/notes/delete') {
+      const paper = papers.find((item) => item.notes.some((note) => note.path === body.path))!;
+      if (!paper) throw new Error('笔记不存在。');
+      paper.notes = paper.notes.filter((note) => note.path !== body.path);
+      return {
+        trashed: `.zhiyue/trash/notes/${body.path.split('/').pop()}`,
+        library: { papers: structuredClone(papers), categories: ['01_超声', '02_模型'] },
+      };
+    }
+    if (path.startsWith('/api/text?'))
+      return { path: decodeURIComponent(path.split('=')[1]), text: '# 测试笔记\n\n正文内容' };
     if (path === '/api/downloads' && options.method === 'POST') {
       const job = { ...body, id: 'job-new', status: 'queued' };
       jobs.set(job.id, job);
@@ -656,6 +667,48 @@ test('Vue 阅读区保留 PDF 文字层与复制内容，其他面板更新不�
   assert.equal(page.$('.pdf-text-layer span'), word);
   assert.equal(document.getSelection()!.toString(), 'Selectable ');
   assert.equal(workspace.state.papers[0].readStatus, 'unread');
+});
+
+// 删除笔记只在用户确认后调接口，确认框默认拒绝不产生请求。
+test('阅读笔记可删除，取消确认不发请求', async (t) => {
+  const page = await fixture(t),
+    { workspace } = page;
+  const confirmations: string[] = [];
+  let answer = false;
+  window.confirm = ((message: string) => {
+    confirmations.push(message);
+    return answer;
+  }) as typeof window.confirm;
+  t.after(() => {
+    delete (window as { confirm?: unknown }).confirm;
+  });
+  click(page.$('[data-paper="L001"]'));
+  await flush();
+  click(page.$('[data-reader-mode="note"]'));
+  await until(() => page.$('.note-document'));
+  assert.match(page.$('.note-document').textContent, /正文内容/);
+  const remove = page.$('#delete-note');
+  assert.equal(remove.getAttribute('aria-label'), '删除当前笔记');
+
+  click(remove);
+  await flush();
+  assert.equal(confirmations.length, 1);
+  assert.match(confirmations[0], /L001_测试笔记/);
+  assert.equal(page.calls.some((call) => call.path === '/api/notes/delete'), false);
+  assert.equal(workspace.state.papers[0].notes.length, 1);
+
+  answer = true;
+  click(page.$('#delete-note'));
+  await until(() => page.calls.some((call) => call.path === '/api/notes/delete'));
+  await until(() => !page.$('#delete-note'));
+  assert.deepEqual(
+    page.calls.find((call) => call.path === '/api/notes/delete').body,
+    { path: 'notes/L001_测试笔记.md' },
+  );
+  assert.equal(workspace.state.papers[0].notes.length, 0);
+  assert.equal(workspace.state.notePath, '');
+  assert.match(page.$('#reader-content').textContent, /阅读笔记尚待积累/);
+  assert.match(page.$('.toast-region').textContent, /回收站/);
 });
 
 test('连续阅读中 Ctrl+滚轮缩放 PDF 页面，普通滚轮不受影响', async (t) => {

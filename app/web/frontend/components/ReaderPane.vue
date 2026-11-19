@@ -16,6 +16,7 @@ onMounted(() => {
     api: workspace.api,
     toast: workspace.toast,
     patchPaper: workspace.patchPaper,
+    deleteNote: workspace.deleteNote,
     setPanel: workspace.setPanel,
     setDraft: workspace.setDraft,
   });

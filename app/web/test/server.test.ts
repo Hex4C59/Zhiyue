@@ -30,6 +30,11 @@ interface NoteDraftResponse {
   path: string;
 }
 
+interface NoteDeleteResponse {
+  trashed: string;
+  library: { papers: Array<{ notes: Array<{ path: string }> }>; stats: { withNotes: number } };
+}
+
 interface ErrorResponse {
   error: string;
 }
@@ -120,6 +125,25 @@ test('本地HTTP服务提供目录、PDF范围读取和上传，拒绝跨站与�
   assert.equal(response.status, 200);
   assert.equal((await readJson<NoteDraftResponse>(response)).path, 'notes/L001_测试笔记.md');
   assert.match(await fs.readFile(path.join(root, 'notes', 'L001_测试笔记.md'), 'utf8'), /## 要点/);
+  // 删除笔记走 POST /api/notes/delete：文件移到 .zhiyue/trash/notes，响应带回新索引。
+  response = await fetch(base + '/api/notes/delete', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path: 'notes/L001_测试笔记.md' }),
+  });
+  assert.equal(response.status, 200);
+  const removed = await readJson<NoteDeleteResponse>(response);
+  assert.match(removed.trashed, /^\.zhiyue\/trash\/notes\/[^/]+_L001_测试笔记\.md$/);
+  assert.equal(removed.library.papers[0]?.notes.length, 0);
+  assert.equal(removed.library.stats.withNotes, 0);
+  // 文件已移走，再读同一路径只剩 ENOENT，删除也不再成功。
+  assert.equal((await fetch(base + '/api/text?path=' + encodeURIComponent('notes/L001_测试笔记.md'))).status, 404);
+  response = await fetch(base + '/api/notes/delete', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path: 'notes/L001_测试笔记.md' }),
+  });
+  assert.equal(response.status, 404);
+  response = await fetch(base + '/api/notes/delete', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path: 'papers/论文.pdf' }),
+  });
+  assert.equal(response.status, 400);
   response = await fetch(base + '/api/note-drafts/missing', {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'save' }),
   });

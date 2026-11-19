@@ -7,4 +7,5 @@
 - 修复编译产物定位：`downloaderScript` 改为向上查找 `app/downloader/run.py`，下载任务与虚拟环境探测不再落到 `build/app/downloader`；预览与桌面测试统一使用仓库根定位夹具。`start-desktop.ps1` 在未设置 `PDFTOPPM` 时指向项目内 `tools/poppler`。
 - 助手支持斜杠命令：输入框以 `/` 开头时显示可搜索命令菜单，↑↓ 选择、Enter/Tab 插入、Esc 清空。`/help`、`/skills`、`/compact` 由服务端直接回执，不进入模型上下文；`/skill:<名称>` 把技能说明展开成本轮要求发给模型，聊天记录只留用户输入的单行指令。技能可用 `disable-model-invocation: true` 只保留命令入口。命令目录来自 `GET /api/commands`，执行走 `POST /api/chats/:id/commands`；`/compact` 调用 Pi 的 `thread/compact`。
 - 助手支持库内技能：从 `.zhiyue/skills/<名称>/SKILL.md` 扫描 frontmatter，系统提示只列名称、描述与路径，新增 `read_skill` 工具按需读取技能目录内的 `.md`/`.txt`；新库首次启动复制随包技能，设置面板可查看并重新扫描。随包两个技能分工：`paper-experiments` 总结论文并拆解实验设计（数据、基线、训练与推理设置、主结果、消融、复现清单），`paper-reading` 判断是否值得精读并给出取舍结论。
+- 阅读笔记可删除：笔记模式下工具栏出现删除按钮，确认后调用 `POST /api/notes/delete`，由 `Library.deleteNote` 把文件移到 `.zhiyue/trash/notes/`（带时间戳前缀）并返回刷新后的索引；只接受 `notes/` 下的 `.md`/`.txt`，拒绝路径穿越、符号链接与其他目录，误删可从回收站手动找回。
 - 移除独立浏览器启动入口（`start-web.cmd`、`start-web.ps1` 和 `npm start`）；桌面界面由 Tauri 外壳启动，历史提交可能仍包含旧入口。

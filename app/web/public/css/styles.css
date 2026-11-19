@@ -162,6 +162,9 @@ pre,code,kbd,samp { font-family:var(--font-mono); }
 .reader-header select { font-size:11px; flex-shrink:0; width:70px; padding:6px; }
 .reader-toolbar { padding:8px 16px; display:flex; align-items:center; gap:8px; border-bottom:1px solid var(--line); background:#fff; flex-wrap:wrap; font-size:12px; }
 .reader-toolbar select { font-size:11px; min-width:0; max-width:170px; }
+.reader-toolbar .icon-button.danger { width:28px; height:28px; color:#8c8d92; }
+.reader-toolbar .icon-button.danger:hover { background:#fbf1f0; color:var(--danger); }
+.reader-toolbar .icon-button.danger:disabled { opacity:.5; }
 .open-original { margin-left:auto; display:flex; gap:5px; align-items:center; white-space:nowrap; font-size:11px; color:var(--muted); }
 .open-original svg { width:14px; height:14px; }
 .segmented { display:flex; gap:2px; border-radius:5px; padding:2px; background:#f3f3f5; }

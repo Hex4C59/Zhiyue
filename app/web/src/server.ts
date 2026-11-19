@@ -351,6 +351,10 @@ export async function createApp({
       if ((method === 'GET' || method === 'HEAD') && route === '/api/file') {
         return await serveFile(req, res, await library.safeFile(url.searchParams.get('path') || ''));
       }
+      if (method === 'POST' && route === '/api/notes/delete') {
+        const { path: notePath } = await readJson(req);
+        return json(res, await library.deleteNote(notePath));
+      }
       if (method === 'GET' && route === '/api/text') {
         const relative = url.searchParams.get('path') || '';
         const file = await library.safeFile(relative);

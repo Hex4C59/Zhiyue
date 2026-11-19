@@ -447,6 +447,35 @@ export class Library {
     return result;
   }
 
+  /**
+   * 删除一篇阅读笔记：只接受 notes/ 下的 Markdown/文本，移动到 `.zhiyue/trash/notes/` 而不是直接抹掉，
+   * 以便误删后可手动找回。返回回收站内的相对路径与新的文献索引数据。
+   */
+  async deleteNote(relativePath: unknown): Promise<{ trashed: string; library: LibraryPayload }> {
+    if (typeof relativePath !== 'string' || !this._validRelative(relativePath)) {
+      throw statusError('笔记路径无效。', 400);
+    }
+    const parts = relativePath.split('/');
+    const ext = path.posix.extname(relativePath).toLowerCase();
+    if (parts[0] !== 'notes' || !['.md', '.txt'].includes(ext)) throw statusError('只能删除 notes/ 下的笔记文件。', 400);
+    const operation = this.writes.then(async () => {
+      const file = await this._resolve(relativePath);
+      const root = await realpath(this.root);
+      const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+      const trashDir = path.join(root, '.zhiyue', 'trash', 'notes');
+      const trashFile = path.join(trashDir, `${stamp}_${path.basename(file)}`);
+      await mkdir(trashDir, { recursive: true });
+      await rename(file, trashFile);
+      this.cache = null;
+      return {
+        trashed: `.zhiyue/trash/notes/${path.basename(trashFile)}`,
+        library: await this.getLibrary(),
+      };
+    });
+    this.writes = operation.catch(() => {});
+    return operation;
+  }
+
   async safeFile(relativePath: unknown): Promise<string> {
     if (typeof relativePath !== 'string' || !this._validRelative(relativePath)) throw statusError('不允许访问此路径', 403);
     const ext = path.posix.extname(relativePath).toLowerCase();

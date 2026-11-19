@@ -26,6 +26,7 @@ export const paths: Record<string, string> = {
   external: 'M14 3h7v7 M21 3L10 14 M10 4H4v16h16v-6',
   folder: 'M3 5h7l2 3h9v12H3z',
   edit: 'M4 20h4L19 9l-4-4L4 16z M13.5 6.5l4 4',
+  trash: 'M4 7h16 M9 7V4h6v3 M6 7l1 13h10l1-13 M10 11v6 M14 11v6',
   user: 'M16 7a4 4 0 1 1-8 0 4 4 0 0 1 8 0 M4 21v-3a8 8 0 0 1 16 0v3',
   settings: 'M20 7h-9 M14 17H5 M17 17a3 3 0 1 0 6 0 3 3 0 0 0-6 0 M7 7a3 3 0 1 0-6 0 3 3 0 0 0 6 0',
 };

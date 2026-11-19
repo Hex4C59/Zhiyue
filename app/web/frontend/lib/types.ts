@@ -203,6 +203,7 @@ export interface WorkspaceState {
   downloadsError: string;
   readerMode: 'pdf' | 'note';
   notePath: string;
+  noteDeleting: boolean;
   chat: Chat | null;
   chats: Chat[];
   context: Set<string>;
