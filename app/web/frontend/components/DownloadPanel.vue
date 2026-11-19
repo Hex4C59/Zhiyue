@@ -1,10 +1,13 @@
-<script setup>
+<script setup lang="ts">
 import { computed, inject, reactive, ref } from 'vue';
-import { statusLabels } from '../lib/workspace.js';
-import { categoryChoices } from '../lib/content.js';
+import { categoryChoices } from '../lib/content';
+import { statusLabels } from '../lib/workspace';
 import Icon from './Icon.vue';
-const workspace = inject('workspace'),
-  state = workspace.state;
+import type { WorkspaceApi } from '../lib/workspace';
+import type { JobRecord } from '../lib/types';
+
+const workspace = inject('workspace') as WorkspaceApi;
+const state = workspace.state;
 const defaultCategory = 'papers/09_情感综述调研/网站导入';
 const form = reactive({
   title: '',
@@ -13,27 +16,31 @@ const form = reactive({
   channel: 'public',
   autoArchive: false,
 });
-const submitting = ref(false),
-  pendingActions = reactive(new Set());
+const submitting = ref(false);
+const pendingActions = reactive(new Set<string>());
 const categories = computed(() => categoryChoices(state.categories, defaultCategory));
 const jobs = computed(() => [...state.jobs.values()].reverse());
-const counts = (value) =>
-  Object.entries(value || {})
-    .map(([key, count]) => `${statusLabels[key] || key} ${count}`)
+const resultCounts = (job: JobRecord): unknown => {
+  const result = job.result;
+  return result && typeof result === 'object' ? (result as { counts?: unknown }).counts : undefined;
+};
+const counts = (value: unknown): string =>
+  Object.entries((value && typeof value === 'object' ? value : {}) as Record<string, unknown>)
+    .map(([key, count]) => `${statusLabels[key] || key} ${String(count)}`)
     .join(' · ');
-const errorText = (error) => (typeof error === 'string' ? error : JSON.stringify(error));
-const logText = (log) =>
+const errorText = (error: unknown): string => (typeof error === 'string' ? error : JSON.stringify(error));
+const logText = (log: unknown): string =>
   Array.isArray(log)
     ? log.map((item) => (typeof item === 'string' ? item : JSON.stringify(item))).join('\n')
-    : log || '暂无日志';
-const actions = [
+    : typeof log === 'string' && log ? log : '暂无日志';
+const actions: Array<[string, string]> = [
   ['download', '继续下载'],
   ['verify', '核验文件'],
   ['archive', '归档入库'],
   ['ieee', '提交IEEE获取'],
   ['collect', '收集机构下载'],
 ];
-async function submit() {
+async function submit(): Promise<void> {
   if (!form.input.trim() || submitting.value) return;
   submitting.value = true;
   try {
@@ -42,7 +49,7 @@ async function submit() {
     submitting.value = false;
   }
 }
-async function act(batch, action) {
+async function act(batch: string, action: string): Promise<void> {
   const key = `${batch}:${action}`;
   if (pendingActions.has(key)) return;
   pendingActions.add(key);
@@ -118,8 +125,8 @@ async function act(batch, action) {
             </div>
             <p v-if="job.error" class="error-text">{{ errorText(job.error) }}</p>
             <p>{{ job.message || job.action || '' }}</p>
-            <p v-if="job.result?.counts" class="job-counts">
-              批次结果：{{ counts(job.result.counts) || '暂无计数' }}
+            <p v-if="resultCounts(job)" class="job-counts">
+              批次结果：{{ counts(resultCounts(job)) || '暂无计数' }}
             </p>
             <details :data-job-details="job.id">
               <summary>查看任务日志</summary>
@@ -137,7 +144,7 @@ async function act(batch, action) {
             <div class="job-heading">
               <h4>{{ batch.batch }}</h4>
               <span class="status-badge">
-                {{ Array.isArray(batch.entries) ? batch.entries.length : (batch.entries ?? '—') }} 条</span
+                {{ batch.entries }} 条</span
               >
             </div>
             <p>{{ counts(batch.counts) }}</p>

@@ -38,3 +38,6 @@ secrets.json
 *.tar*
 .DS_Store
 Thumbs.db
+
+# TypeScript 服务端与脚本构建输出
+/build/

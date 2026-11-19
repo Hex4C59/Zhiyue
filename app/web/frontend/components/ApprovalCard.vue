@@ -1,22 +1,37 @@
-<script setup>
+<script setup lang="ts">
 import { computed, inject, reactive } from 'vue';
-const props = defineProps({ approval: { type: Object, required: true } });
-const workspace = inject('workspace'),
-  answers = reactive({});
-const questions = computed(() =>
-  (props.approval.params?.questions || []).map((question, index) => ({
-    ...question,
-    id: String(question.id ?? question.questionId ?? index),
-    text: question.question || question.text || question.label || '请补充信息',
-  })),
-);
-const optionLabel = (option) =>
+import type { ApprovalRecord } from '../lib/types';
+import type { WorkspaceApi } from '../lib/workspace';
+
+interface ApprovalQuestion {
+  id: string;
+  text: string;
+  options?: Array<string | { label?: string; title?: string; value?: string; description?: string }>;
+}
+
+const props = defineProps<{ approval: ApprovalRecord }>();
+const workspace = inject('workspace') as WorkspaceApi;
+const answers = reactive<Record<string, string>>({});
+const questions = computed<ApprovalQuestion[]>(() => {
+  const list = props.approval.params.questions;
+  if (!Array.isArray(list)) return [];
+  return list.map((question, index) => {
+    const item = question as Record<string, unknown>;
+    return {
+      ...item,
+      id: String(item.id ?? item.questionId ?? index),
+      text: String(item.question || item.text || item.label || '请补充信息'),
+      options: Array.isArray(item.options) ? item.options as ApprovalQuestion['options'] : undefined,
+    };
+  });
+});
+const optionLabel = (option: string | { label?: string; title?: string; value?: string }): string =>
   typeof option === 'string' ? option : option.label || option.title || option.value || '';
-function submit() {
+function submit(): void {
   const response = Object.fromEntries(
     questions.value.map((question) => [question.id, { answers: [(answers[question.id] || '').trim()] }]),
   );
-  workspace.decideApproval(props.approval.id, 'accept', response);
+  void workspace.decideApproval(props.approval.id, 'accept', response);
 }
 </script>
 
@@ -42,7 +57,7 @@ function submit() {
             :key="index"
             type="button"
             class="button subtle"
-            :title="option.description || ''"
+            :title="typeof option === 'string' ? '' : option.description || ''"
             @click="answers[question.id] = optionLabel(option)"
           >
             {{ optionLabel(option) }}

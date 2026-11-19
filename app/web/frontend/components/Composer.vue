@@ -1,15 +1,18 @@
-<script setup>
-import { inject, nextTick, ref, watch, onMounted } from 'vue';
-import { endpoint } from '../lib/content.js';
+<script setup lang="ts">
+import { inject, nextTick, onMounted, ref, watch } from 'vue';
+import { endpoint } from '../lib/content';
 import Icon from './Icon.vue';
 import ModelPicker from './ModelPicker.vue';
-const workspace = inject('workspace'),
-  state = workspace.state;
+import type { AttachmentItem } from '../lib/types';
+import type { WorkspaceApi } from '../lib/workspace';
+
+const workspace = inject('workspace') as WorkspaceApi;
+const state = workspace.state;
 const { canSend, generating } = workspace;
-const input = ref(null),
-  form = ref(null),
-  stopping = ref(false);
-function resize() {
+const input = ref<HTMLTextAreaElement | null>(null);
+const form = ref<HTMLFormElement | null>(null);
+const stopping = ref(false);
+function resize(): void {
   if (!input.value) return;
   input.value.style.height = '0px';
   input.value.style.height = `${Math.min(200, Math.max(58, input.value.scrollHeight))}px`;
@@ -24,31 +27,32 @@ watch(
   },
 );
 onMounted(resize);
-function keydown(event) {
+function keydown(event: KeyboardEvent): void {
   if (event.key === 'Enter' && !event.shiftKey && !event.isComposing && event.keyCode !== 229) {
     event.preventDefault();
-    if (canSend.value) form.value.requestSubmit();
+    if (canSend.value) form.value?.requestSubmit();
   }
 }
-function pasted(event) {
+function pasted(event: ClipboardEvent): void {
   const files = [...(event.clipboardData?.items || [])]
     .filter((item) => item.kind === 'file')
     .map((item) => item.getAsFile())
-    .filter(Boolean);
+    .filter((file): file is File => Boolean(file));
   if (files.length) {
     event.preventDefault();
     workspace.uploadFiles(files);
   }
 }
-function selected(event) {
-  const files = [...event.target.files];
-  event.target.value = '';
+function selected(event: Event): void {
+  const target = event.target as HTMLInputElement;
+  const files = [...(target.files || [])];
+  target.value = '';
   workspace.uploadFiles(files);
 }
-function remove(key) {
+function remove(key: string): void {
   state.attachments = state.attachments.filter((file) => file.key !== key);
 }
-async function stop() {
+async function stop(): Promise<void> {
   stopping.value = true;
   try {
     await workspace.interrupt();
@@ -69,7 +73,7 @@ async function stop() {
   >
     <div id="attachments" class="attachments">
       <div
-        v-for="file in state.attachments"
+        v-for="file in (state.attachments as AttachmentItem[])"
         :key="file.key"
         class="attachment"
         :class="{ error: file.status === 'error' }"

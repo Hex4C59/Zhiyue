@@ -1,25 +1,30 @@
-<script setup>
+<script setup lang="ts">
 import { computed } from 'vue';
-import { markdown, endpoint } from '../lib/content.js';
-import { activeStatuses } from '../lib/workspace.js';
-const props = defineProps({
-  message: { type: Object, required: true },
-});
+import { markdown, endpoint } from '../lib/content';
+import { activeStatuses } from '../lib/workspace';
+import type { ChatMessage } from '../lib/types';
+
+const props = defineProps<{ message: ChatMessage }>();
 const role = computed(() =>
   ['user', 'assistant', 'tool', 'system'].includes(props.message.role) ? props.message.role : 'assistant',
 );
 const label = computed(
-  () => ({ user: '你', assistant: 'Pi Agent', tool: '工具', system: '系统' })[role.value],
+  () => ({ user: '你', assistant: 'Pi Agent', tool: '工具', system: '系统' })[role.value] ?? 'Pi Agent',
 );
 const working = computed(() => activeStatuses.includes(props.message.status));
 const failed = computed(() => ['error', 'failed'].includes(props.message.status));
 const body = computed(() => markdown(props.message.text));
-const error = computed(() => props.message.error?.message || props.message.error);
+const thinking = computed(() => markdown(props.message.thinking));
+const error = computed(() => {
+  const value = props.message.error;
+  if (value && typeof value === 'object' && 'message' in value) return String((value as { message?: unknown }).message ?? '');
+  return value ? String(value) : '';
+});
 const stopped = computed(() => ['interrupted', 'cancelled'].includes(props.message.status));
 const attachments = computed(() =>
   (props.message.attachments || props.message.attachmentIds || [])
     .map((file) => (typeof file === 'string' ? { id: file } : file))
-    .filter((file) => file.id),
+    .filter((file): file is { id: string; name?: string; mime?: string } => Boolean(file.id)),
 );
 </script>
 
@@ -27,7 +32,13 @@ const attachments = computed(() =>
   <article class="message" :class="[role, { streaming: working, error: failed }]" :data-message="message.id">
     <div class="message-label sr-only">{{ label }}</div>
     <div v-if="role === 'user'" class="message-body">{{ message.text }}</div>
-    <div v-else class="message-body markdown" v-html="body" />
+    <template v-else>
+      <details v-if="message.thinking" class="message-thinking">
+        <summary>推理过程</summary>
+        <div class="message-thinking-body markdown" v-html="thinking" />
+      </details>
+      <div class="message-body markdown" v-html="body" />
+    </template>
     <div v-if="attachments.length" class="message-attachments">
       <a
         v-for="file in attachments"
@@ -37,7 +48,7 @@ const attachments = computed(() =>
         rel="noopener noreferrer"
       >
         <img
-          v-if="(file.mime || file.mimeType || '').startsWith('image/')"
+          v-if="(file.mime || '').startsWith('image/')"
           :src="`/api/uploads/${endpoint(file.id)}`"
           :alt="file.name || '上传的图片'"
           loading="lazy"

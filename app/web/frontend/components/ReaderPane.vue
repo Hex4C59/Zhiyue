@@ -1,11 +1,15 @@
-<script setup>
-import { inject, onMounted, onBeforeUnmount, ref, watch } from 'vue';
-import { createReader } from '../lib/reader.js';
-const workspace = inject('workspace'),
-  state = workspace.state,
-  scope = ref(null);
-let reader;
+<script setup lang="ts">
+import { inject, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import { createReader } from '../lib/reader';
+import type { ReaderController } from '../lib/reader';
+import type { WorkspaceApi } from '../lib/workspace';
+
+const workspace = inject('workspace') as WorkspaceApi;
+const state = workspace.state;
+const scope = ref<HTMLElement | null>(null);
+let reader: ReaderController | undefined;
 onMounted(() => {
+  if (!scope.value) return;
   reader = createReader({
     state,
     scope: scope.value,

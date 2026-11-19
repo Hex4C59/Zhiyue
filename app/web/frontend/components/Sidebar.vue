@@ -1,112 +1,127 @@
-<script setup>
+<script setup lang="ts">
 import { computed, inject, nextTick, ref } from 'vue';
 import Icon from './Icon.vue';
 import PanelHandle from './PanelHandle.vue';
-const workspace = inject('workspace'),
-  state = workspace.state;
-const rows = computed(() => {
-  const result = [{ category: '', child: '', label: '全部文献', name: '', count: state.papers.length }];
+import type { WorkspaceApi } from '../lib/workspace';
+
+interface CategoryRow {
+  category: string;
+  child: string;
+  label: string;
+  name: string;
+  count: number;
+}
+
+interface ListResult {
+  category?: string;
+  subcategory?: string;
+}
+
+const workspace = inject('workspace') as WorkspaceApi;
+const state = workspace.state;
+const rows = computed<CategoryRow[]>(() => {
+  const result: CategoryRow[] = [{ category: '', child: '', label: '全部文献', name: '', count: state.papers.length }];
   for (const category of state.categories || []) {
     if (!category.id) continue;
     result.push({
       category: category.id,
       child: '',
-      label: category.name,
-      name: category.name,
-      count: category.count,
+      label: category.name ?? category.id,
+      name: category.name ?? category.id,
+      count: category.count ?? 0,
     });
     if (state.category !== category.id) continue;
     for (const child of category.children || []) {
       result.push({
         category: category.id,
-        child: child.name,
-        label: child.name,
-        name: child.name,
-        count: child.count,
+        child: child.name ?? '',
+        label: child.name ?? '',
+        name: child.name ?? '',
+        count: child.count ?? 0,
       });
     }
   }
   return result;
 });
-const label = (text) => text.replace(/^\d+_/, '').replaceAll('_', ' ');
+const label = (text: string): string => text.replace(/^\d+_/, '').replaceAll('_', ' ');
 const creating = ref(false);
-const editing = ref(null);
+const editing = ref<{ category: string; child: string } | null>(null);
 const draft = ref('');
 const saving = ref(false);
-const editor = ref(null);
-const setEditor = (element) => {
-  if (element) editor.value = element;
+const editor = ref<HTMLInputElement | null>(null);
+const setEditor = (element: unknown): void => {
+  if (element) editor.value = element as HTMLInputElement;
 };
-function choose(row) {
+function choose(row: CategoryRow): void {
   state.category = row.category;
   state.subcategory = row.child;
   workspace.setView('library');
   workspace.setPanel('list');
 }
-async function focusEditor() {
+async function focusEditor(): Promise<void> {
   await nextTick();
   editor.value?.focus();
   editor.value?.select();
 }
-async function startCreate() {
+async function startCreate(): Promise<void> {
   if (saving.value) return;
   editing.value = null;
   draft.value = '';
   creating.value = true;
   await focusEditor();
 }
-function startRename(row) {
+function startRename(row: CategoryRow): void {
   if (saving.value) return;
   creating.value = false;
   editing.value = { category: row.category, child: row.child };
   draft.value = row.name.replace(/^\d+_/, '');
-  focusEditor();
+  void focusEditor();
 }
-function cancelEdit() {
+function cancelEdit(): void {
   if (saving.value) return;
   creating.value = false;
   editing.value = null;
   draft.value = '';
 }
-function isEditing(row) {
+function isEditing(row: CategoryRow): boolean {
   return (
     !!editing.value &&
     editing.value.category === row.category &&
     editing.value.child === row.child
   );
 }
-async function submitCreate() {
+async function submitCreate(): Promise<void> {
   const name = draft.value.trim();
   if (!name || saving.value) return;
   saving.value = true;
-  const result = await workspace.createCategory(name);
+  const result = await workspace.createCategory(name) as ListResult | null;
   saving.value = false;
   if (!result) return;
   creating.value = false;
   draft.value = '';
-  state.category = result.category;
+  state.category = result.category ?? state.category;
   state.subcategory = '';
   workspace.setView('library');
   workspace.setPanel('list');
-  workspace.toast(`已新建文件夹「${label(result.category)}」`);
+  workspace.toast(`已新建文件夹「${label(result.category ?? '')}」`);
 }
-async function submitRename(row) {
+async function submitRename(row: CategoryRow): Promise<void> {
   const name = draft.value.trim();
   if (!name || saving.value) return;
   saving.value = true;
-  const result = await workspace.renameCategory(row.category, row.child, name);
+  const result = await workspace.renameCategory(row.category, row.child, name) as ListResult | null;
   saving.value = false;
   if (!result) return;
   editing.value = null;
   draft.value = '';
   if (row.child) {
     if (state.category === row.category && state.subcategory === row.child) {
-      state.subcategory = result.subcategory;
+      state.subcategory = result.subcategory ?? '';
     }
   } else if (state.category === row.category) {
-    state.category = result.category;
+    state.category = result.category ?? state.category;
   }
-  workspace.toast(`文件夹已重命名为「${label(result.subcategory || result.category)}」`);
+  workspace.toast(`文件夹已重命名为「${label(result.subcategory || result.category || '')}」`);
 }
 </script>
 

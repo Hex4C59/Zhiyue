@@ -1,6 +1,6 @@
-<script setup>
+<script setup lang="ts">
 import { computed, inject, nextTick, ref, watch } from 'vue';
-import { titleOf } from '../lib/content.js';
+import { titleOf } from '../lib/content';
 import Icon from './Icon.vue';
 import PanelHandle from './PanelHandle.vue';
 import Composer from './Composer.vue';
@@ -8,17 +8,20 @@ import ChatMessage from './ChatMessage.vue';
 import ApprovalCard from './ApprovalCard.vue';
 import NoteDraftCard from './NoteDraftCard.vue';
 import AgentSettingsDialog from './AgentSettingsDialog.vue';
-const workspace = inject('workspace'),
-  state = workspace.state;
-const { agent } = workspace,
-  messages = ref(null),
-  settingsOpen = ref(false);
+import type { PaperLike } from '../lib/content';
+import type { Chat } from '../lib/types';
+import type { WorkspaceApi } from '../lib/workspace';
+
+const workspace = inject('workspace') as WorkspaceApi;
+const state = workspace.state;
+const { agent } = workspace;
+const messages = ref<HTMLElement | null>(null);
+const settingsOpen = ref(false);
 const detecting = computed(
   () =>
     agent.value.loading === true ||
     agent.value.available == null ||
-    agent.value.authenticated == null ||
-    agent.value.available === 'loading',
+    agent.value.authenticated == null,
 );
 const connected = computed(() => agent.value.available === true && agent.value.authenticated === true);
 const status = computed(() =>
@@ -34,25 +37,25 @@ const statusText = computed(
     agent.value.error ||
     (connected.value && state.eventsOpen ? '已连接' : detecting.value ? '正在连接' : '等待配置'),
 );
-const banner = computed(() => state.statusError || (!detecting.value && !connected.value));
+const banner = computed(() => Boolean(state.statusError) || (!detecting.value && !connected.value));
 const approvals = computed(() =>
   [...state.approvals.values()].filter(
     (approval) => approval.chatId === state.chat?.id && !state.resolvedApprovals.has(approval.id),
   ),
 );
 const noteDrafts = computed(() => state.chat?.noteDrafts || []);
-const presets = [
+const presets: Array<[string, string, string]> = [
   ['book', '概括论文', '请结合当前选中的论文，解释它的研究问题、核心贡献与证据，并给出原文定位。'],
   ['spark', '解释方法', '请详细解释当前论文的核心方法、输入输出和关键假设，区分作者报告与补充解释。'],
   ['link', '比较论文', '请比较选中论文的研究任务、数据、评价条件和局限；不可比的指标请明确指出。'],
   ['download', '查找与下载', '请帮我检索并下载相关论文，先核对来源与版本，按项目约定归档并更新索引。'],
 ];
-const paperTitle = (id) =>
-  titleOf(state.papers.find((paper) => paper.literature_id === id) || { literature_id: id });
+const paperTitle = (id: string): string =>
+  titleOf((state.papers.find((paper) => paper.literature_id === id) || { literature_id: id }) as PaperLike);
 watch(
   () => {
-    const items = state.chat?.messages || [],
-      last = items.at(-1);
+    const items = state.chat?.messages || [];
+    const last = items.at(-1);
     return [state.chat?.id, items.length, last?.id, last?.text?.length, last?.status, state.historyOpen];
   },
   async (value, previous) => {
@@ -64,9 +67,12 @@ watch(
     }
   },
 );
-function history() {
+function history(): void {
   state.historyOpen = !state.historyOpen;
   if (state.historyOpen) workspace.loadChats();
+}
+function historyDate(chat: Chat): string {
+  return new Date(chat.createdAt ?? '').toLocaleString('zh-CN');
 }
 </script>
 
@@ -128,7 +134,7 @@ function history() {
       >
         {{ chat.title || '新会话' }}
         <small
-          >{{ new Date(chat.createdAt).toLocaleString('zh-CN') }}
+          >{{ historyDate(chat) }}
           {{ (chat.paperIds || []).join(' · ') }}</small
         >
       </button>

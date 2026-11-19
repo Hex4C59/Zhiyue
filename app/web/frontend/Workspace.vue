@@ -1,39 +1,46 @@
-<script setup>
-import { computed, provide, onMounted, onBeforeUnmount } from 'vue';
-import { initializePanelResizing } from './lib/layout.js';
+<script setup lang="ts">
+import { onBeforeUnmount, onMounted, provide, computed } from 'vue';
+import { initializePanelResizing } from './lib/layout';
 import Sidebar from './components/Sidebar.vue';
 import PaperList from './components/PaperList.vue';
 import ReaderPane from './components/ReaderPane.vue';
 import AssistantPane from './components/AssistantPane.vue';
 import DownloadPanel from './components/DownloadPanel.vue';
 import ImportPaperDialog from './components/ImportPaperDialog.vue';
+import type { WorkspaceApi } from './lib/workspace';
 
-const props = defineProps({ workspace: { type: Object, required: true } });
+const props = defineProps<{ workspace: WorkspaceApi }>();
 provide('workspace', props.workspace);
-const workspace = props.workspace,
-  state = workspace.state;
+const workspace = props.workspace;
+const state = workspace.state;
 const noteCount = computed(() => state.papers.filter((paper) => paper.notes?.length).length);
-function afterImport(id) {
+function afterImport(id?: string): void {
   workspace.setView('library');
   if (id) workspace.selectPaper(id);
 }
-let disposeLayout, lifecycle;
+const panelKeys: Array<['list' | 'reader' | 'chat', string]> = [
+  ['list', '文献'],
+  ['reader', '阅读'],
+  ['chat', '研究助手'],
+];
+let disposeLayout: (() => void) | undefined;
+let lifecycle: AbortController | undefined;
 onMounted(() => {
   disposeLayout = initializePanelResizing(document);
   lifecycle = new window.AbortController();
   document.addEventListener(
     'keydown',
     (event) => {
+      const target = event.target as HTMLElement;
       if (
         event.key !== '/' ||
-        /INPUT|TEXTAREA|SELECT/.test(event.target.tagName) ||
-        event.target.isContentEditable
-      )
-        return;
+        /INPUT|TEXTAREA|SELECT/.test(target.tagName) ||
+        target.isContentEditable
+      ) return;
       event.preventDefault();
       workspace.setView('library');
       workspace.setPanel('list');
-      document.querySelector('#search')?.focus();
+      document.querySelector<HTMLElement>('#search')?.focus();
     },
     { signal: lifecycle.signal },
   );
@@ -59,11 +66,7 @@ onBeforeUnmount(() => {
       </header>
       <div v-show="state.view === 'library'" class="mobile-tabs" aria-label="工作面板">
         <button
-          v-for="[panel, label] in [
-            ['list', '文献'],
-            ['reader', '阅读'],
-            ['chat', '研究助手'],
-          ]"
+          v-for="[panel, label] in panelKeys"
           :key="panel"
           :class="{ active: state.panel === panel }"
           :data-panel="panel"

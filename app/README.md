@@ -15,9 +15,9 @@
 ```text
 app/
 ├─ web/
-│  ├─ src/server.mjs      HTTP 与服务装配
+│  ├─ src/server.ts      HTTP 与服务装配（tsc 编译到 build/）
 │  ├─ src/lib/            书目、助手协议、任务、预览、路径和提取
-│  ├─ frontend/          Vue 3 单文件组件与状态、阅读控制器
+│  ├─ frontend/          Vue 3 单文件组件与状态、阅读控制器（TypeScript）
 │  ├─ dist/              Vite 构建的 app.js 与 Vue MIT 许可证
 │  ├─ public/index.html   Vue 挂载入口
 │  ├─ public/css/         样式
@@ -37,11 +37,14 @@ app/
 ```powershell
 # 开发、构建和测试前安装依赖（推荐 Node.js 24.15+）
 npm ci
-npm run build:web
+npm run build
+npm run typecheck
 npm test
 npm run test:downloads
 npm run test:desktop
 npm run doctor
+npm run build:node
+npm run build:web
 npm run share -- --name new-name
 npm run desktop:dev
 npm run desktop:prepare
@@ -60,7 +63,7 @@ npm run desktop:build
 
 ## 桌面应用
 
-桌面版由 Tauri 2 启动原生窗口和托盘，并拉起内置 Node 运行 `app/web/src/server.mjs`；服务仅监听 127.0.0.1，由系统分配空闲端口，并在标准输出写入 `ZHIYUE_URL=` 握手行供窗口加载界面，关闭窗口只隐藏到托盘，托盘菜单可显示、检查更新或退出。Rust 代码在 `app/desktop/src-tauri/src/`。调试构建从仓库根定位网站源码；发布构建读取 `resources/runtime/`，该目录由 `npm run desktop:prepare` 生成并被 Git 忽略，包含网站、下载器、文献库模板、当前机器的 Node 可执行文件和网站的 npm 运行依赖（含项目自带的官方 Pi SDK）。安装版默认使用 `文档/Zhiyue/library`，`LITERATURE_LIBRARY` 可覆盖；Pi Agent 登录配置、Python 和 Poppler 取用户本机安装。本机构建可用 `./start-desktop.cmd` 让桌面版直接使用项目文献库和虚拟环境。
+桌面版由 Tauri 2 启动原生窗口和托盘，并拉起内置 Node 运行 `app/web/src/server.ts`；服务仅监听 127.0.0.1，由系统分配空闲端口，并在标准输出写入 `ZHIYUE_URL=` 握手行供窗口加载界面，关闭窗口只隐藏到托盘，托盘菜单可显示、检查更新或退出。Rust 代码在 `app/desktop/src-tauri/src/`。调试构建从仓库根定位网站源码；发布构建读取 `resources/runtime/`，该目录由 `npm run desktop:prepare` 生成并被 Git 忽略，包含网站、下载器、文献库模板、当前机器的 Node 可执行文件和网站的 npm 运行依赖（含项目自带的官方 Pi SDK）。安装版默认使用 `文档/Zhiyue/library`，`LITERATURE_LIBRARY` 可覆盖；Pi Agent 登录配置、Python 和 Poppler 取用户本机安装。本机构建可用 `./start-desktop.cmd` 让桌面版直接使用项目文献库和虚拟环境，并在未设置 `PDFTOPPM` 时指向项目内 `tools/poppler`。
 
 握手成功后 Tauri 每秒检查 Node 子进程：服务意外退出时窗口回到启动页，显示退出码和 stderr 最近输出，不会自动重启，需从托盘退出后重新打开。关闭窗口只隐藏；托盘退出和更新安装前用 `taskkill /T /F` 终止 Node 进程树，Windows 作业对象在桌面进程被强制结束时兜底终止 Node 及其子进程。两条退出路径都不执行任务与事务的优雅收尾（库写锁由操作系统释放），下次启动会把 `running`/`queued` 任务标为失败，流式回答标为中断，归档按事务日志用 `run.py repair` 恢复。真实安装版的验收步骤见 [桌面进程验收清单](desktop/桌面进程验收.md)。
 
@@ -73,7 +76,7 @@ npm run desktop:build
 
 文献库由随包本地服务在首次启动时创建：默认在 `文档/Zhiyue/library`（`LITERATURE_LIBRARY` 可覆盖）建立 `papers/`、`notes/`、`synthesis/`、`outputs/` 和隐藏的 `.zhiyue/`（索引、批次、数据、缓存、临时文件），从随包模板复制 `README.md` 与 `.zhiyue/AGENTS.md`，并写入记录数为 0 的 `文献索引.json`。已有文件不覆盖；导入前在 `papers/` 下创建所选分类，归档只向已存在的分类写入并更新索引。侧栏“分类”旁的加号可新建文件夹，文件夹行悬停或聚焦时出现的铅笔按钮可重命名；两者操作 `papers/` 下的编号目录，重命名还会同步更新 README、笔记、成果、来源记录、批次台账和索引中的路径。文献页的“导入 PDF”支持多选、选择文件夹或拖放批量导入本机 PDF（单次最多 100 个），逐条预填并编辑题名、作者、年份和 DOI，复用下载工具的导入、逐条核验与整批归档流程；PDF 内容按 SHA-256 查重，重复文件跳过并给出已有编号；文件夹导入按文件夹名预选同名分类，没有同名分类时在提交前按编号规则新建。
 
-`npm run test:desktop` 验证安装后的首次启动与导入流程，运行前需先有 `npm run desktop:build` 的产物。测试在系统临时目录复制一份安装布局（可执行文件和 `resources/`），用随包 Node 从新位置启动服务，检查文献库骨架、模板和空索引，再通过下载器的 `import`、`attach` 和服务器归档任务离线导入一篇合成 PDF，核对编号、来源记录、README 索引和网站接口。它不运行 NSIS 安装器，也不启动 Tauri 窗口，因此不覆盖注册表、快捷方式和 WebView 界面；缺少打包产物时跳过，缺少 pypdf 或 Poppler 时只验证首次启动并注明跳过导入阶段。测试使用 `LITERATURE_PYTHON` 或 `app/downloader/.venv`，Poppler 可用 `PDFTOPPM` 指定。测试直接启动随包 Node 并显式传入 `LITERATURE_LIBRARY`，因此不覆盖桌面壳、WebView2、默认库路径定位、握手后崩溃和强制退出；这些在真实安装版上按 [桌面进程验收清单](desktop/桌面进程验收.md) 验收。
+`npm run test:desktop` 验证安装后的首次启动与导入流程，运行前需先有 `npm run desktop:build` 的产物。测试在系统临时目录复制一份安装布局（可执行文件和 `resources/`），用随包 Node 从新位置启动服务，检查文献库骨架、模板和空索引，再通过下载器的 `import`、`attach` 和服务器归档任务离线导入一篇合成 PDF，核对编号、来源记录、README 索引和网站接口。它不运行 NSIS 安装器，也不启动 Tauri 窗口，因此不覆盖注册表、快捷方式和 WebView 界面；缺少打包产物时跳过，缺少 pypdf 或 Poppler 时只验证首次启动并注明跳过导入阶段。测试使用 `LITERATURE_PYTHON` 或 `app/downloader/.venv`；Poppler 依次取 `PDFTOPPM`、PATH 和项目内 `tools/poppler`。测试直接启动随包 Node 并显式传入 `LITERATURE_LIBRARY`，因此不覆盖桌面壳、WebView2、默认库路径定位、握手后崩溃和强制退出；这些在真实安装版上按 [桌面进程验收清单](desktop/桌面进程验收.md) 验收。
 
 打包若在解压 NSIS 时提示 `os error 17`（不同磁盘驱动器），可把 `%LOCALAPPDATA%\tauri\nsis-3.13` 手动改名为同目录下的 `NSIS`，再把 `nsis_tauri_utils.dll` 放入 `NSIS\Plugins\x86-unicode\additional\` 后重试。目录被加密导致无法改名时，可把工具集放在其他磁盘的普通目录，用目录联接让 `%LOCALAPPDATA%\tauri\NSIS` 指向它。
 
@@ -81,7 +84,7 @@ WebView2 要求可执行文件所在目录的完整性级别为 Medium。旧沙�
 
 ## 修改和检查
 
-前端组件改 web/frontend，样式改 web/public/css，业务改 web/src/lib，HTTP 改 web/src/server.mjs，下载改 app/downloader，启动维护改 scripts/，桌面外壳与打包改 app/desktop。前端使用 Vue 3 Composition API 与 Vite，依赖由根 package-lock.json 固定；不引入路由或全局状态库。dist/app.js 随源码保存。安装版自带 Node 和 Pi SDK，源码开发使用 npm ci 安装开发及运行依赖。组件修改后在根目录运行 npm run build:web。npm test 自动先构建再运行后端与 DOM 测试。路径变更须同步检查分享文件清单、默认工作区与测试。
+前端组件改 web/frontend，样式改 web/public/css，业务改 web/src/lib，HTTP 改 web/src/server.ts，下载改 app/downloader，启动维护改 scripts/，桌面外壳与打包改 app/desktop。前端使用 Vue 3 Composition API 与 Vite，依赖由根 package-lock.json 固定；不引入路由或全局状态库。dist/app.js 随源码保存。安装版自带 Node 和 Pi SDK，源码开发使用 npm ci 安装开发及运行依赖。服务端、测试、脚本和前端都用 strict TypeScript：服务端改后运行 npm run build:node（或 npm run build），组件改后运行 npm run build:web。npm run typecheck 同时检查服务端 tsc 与前端 vue-tsc，npm test 自动先构建再运行后端与 DOM 测试。路径变更须同步检查分享文件清单、默认工作区与测试。
 
 本地服务的静态资源路径为 `/js/app.js` 和 `/css/styles.css`。
 

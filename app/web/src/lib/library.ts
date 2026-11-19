@@ -1,0 +1,464 @@
+import { readFile, writeFile, mkdir, rename, realpath, stat, readdir, lstat } from 'node:fs/promises';
+import type { Dirent } from 'node:fs';
+import path from 'node:path';
+import { randomUUID } from 'node:crypto';
+import { libraryPaths } from './paths.js';
+import { statusError } from './errors.js';
+
+export type ReadStatus = 'unread' | 'reading' | 'read';
+
+export interface NoteRef {
+  path: string;
+  title: string;
+}
+
+/** 索引记录只保证 literature_id；其余字段按索引实际内容原样透传。 */
+export interface CatalogRecord {
+  literature_id?: unknown;
+  file?: unknown;
+  source_record?: unknown;
+  display_title_zh?: unknown;
+  authors?: unknown;
+  versions?: unknown;
+  [key: string]: unknown;
+}
+
+export interface Paper extends Record<string, unknown> {
+  id: string;
+  file: string;
+  authors: string[];
+  titleZh: string;
+  category: string;
+  subcategory: string;
+  notes: NoteRef[];
+}
+
+export interface LibraryPaper extends Paper {
+  readStatus: ReadStatus;
+  starred: boolean;
+}
+
+export interface CategoryChild {
+  id: string;
+  name: string;
+  count: number;
+}
+
+export interface Category {
+  id: string;
+  name: string;
+  count: number;
+  children: CategoryChild[];
+}
+
+export interface LibraryStats {
+  total: number;
+  unread: number;
+  reading: number;
+  read: number;
+  starred: number;
+  withNotes: number;
+}
+
+export interface LibraryPayload {
+  papers: LibraryPaper[];
+  categories: Category[];
+  stats: LibraryStats;
+}
+
+export interface PaperPatch {
+  readStatus?: ReadStatus;
+  starred?: boolean;
+}
+
+interface LibraryData {
+  papers: Paper[];
+  allowed: Set<string>;
+  categories: Category[];
+}
+
+interface ReadingEntry {
+  readStatus?: unknown;
+  starred?: unknown;
+}
+
+type ReadingState = Record<string, ReadingEntry>;
+
+export interface LibraryOptions {
+  root: string;
+  stateDir: string;
+  categoryCommand?: (args: string[]) => Promise<unknown>;
+}
+
+const statuses = new Set<string>(['unread', 'reading', 'read']);
+const images = new Set(['.png', '.jpg', '.jpeg', '.webp', '.gif']);
+const extensions = new Set(['.pdf', '.md', '.txt', '.json', ...images]);
+const copy = <T>(value: T): T => structuredClone(value);
+const normalize = (value: unknown): string => String(value).replaceAll('\\', '/');
+const denied = (parts: string[]): boolean => parts.some((p) => p.startsWith('.') || /申请资料|凭据|credentials|secrets/i.test(p));
+const inside = (base: string, target: string): boolean => {
+  const rel = path.relative(base, target);
+  return rel === '' || (!rel.startsWith(`..${path.sep}`) && rel !== '..' && !path.isAbsolute(rel));
+};
+const categoryName = (value: string): string => String(value).replace(/^\d+_/, '');
+const reservedCategory = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?$/i;
+
+export class Library {
+  readonly root: string;
+  readonly stateDir: string;
+  cache: Promise<LibraryData> | null;
+  writes: Promise<unknown>;
+  categoryCommand: (args: string[]) => Promise<unknown>;
+
+  constructor({ root, stateDir, categoryCommand }: LibraryOptions) {
+    this.root = path.resolve(root);
+    this.stateDir = path.resolve(stateDir);
+    this.cache = null;
+    this.writes = Promise.resolve();
+    // 分类改名由 Python 在库写锁下完成；Node 只做参数校验，新建分类只做 mkdir。
+    this.categoryCommand = categoryCommand ?? (() => Promise.reject(statusError('分类操作需要Python文献工具。', 500)));
+  }
+
+  // No PDF parsing: bibliography and explicitly associated JSON sidecars only.
+  async _load(): Promise<LibraryData> {
+    const root = await realpath(this.root);
+    const catalogText = (await readFile(path.join(libraryPaths(root).catalog, '文献索引.json'), 'utf8')).replace(/^\uFEFF/, '');
+    const catalog = JSON.parse(catalogText) as { records?: CatalogRecord[] };
+    const allowed = new Set<string>();
+    const add = (value: unknown): void => {
+      if (typeof value !== 'string') return;
+      const rel = normalize(value);
+      if (this._validRelative(rel)) allowed.add(rel);
+    };
+    const records = catalog.records ?? [];
+    const indexRecord = (record: CatalogRecord): void => {
+      if (path.extname(typeof record.file === 'string' ? record.file : '').toLowerCase() === '.pdf') add(record.file);
+      if (path.extname(typeof record.source_record === 'string' ? record.source_record : '').toLowerCase() === '.json') {
+        add(record.source_record);
+      }
+      for (const version of Array.isArray(record.versions) ? record.versions : []) {
+        if (version && typeof version === 'object') indexRecord(version as CatalogRecord);
+      }
+    };
+    records.forEach(indexRecord);
+    const notes = new Map<string, NoteRef[]>();
+    const walk = async (dir: string, prefix: string): Promise<void> => {
+      const entries = await readdir(dir, { withFileTypes: true }).catch((error: NodeJS.ErrnoException) => {
+        if (error.code === 'ENOENT') return [];
+        throw error;
+      });
+      for (const item of entries) {
+        const rel = `${prefix}/${item.name}`;
+        if (!this._validRelative(rel) || item.isSymbolicLink()) continue;
+        if (item.isDirectory()) await walk(path.join(dir, item.name), rel);
+        else if (item.isFile() && path.extname(item.name).toLowerCase() === '.md') {
+          const id = item.name.match(/(?:^|[^A-Za-z0-9])(L\d+)(?=[^0-9]|$)/i)?.[1]?.toUpperCase();
+          if (id) {
+            const title = item.name.replace(/\.md$/i, '');
+            const list = notes.get(id) ?? [];
+            if (!notes.has(id)) notes.set(id, list);
+            list.push({ path: rel, title });
+          }
+        }
+      }
+    };
+    await walk(path.join(root, 'notes'), 'notes');
+    const papers: Paper[] = await Promise.all(records.map(async (record) => {
+      const file = normalize(record.file ?? '');
+      const parts = file.split('/');
+      const category = parts[0] === 'papers' ? parts[1] ?? '' : '';
+      const subcategory = parts.length > 3 ? parts[2] ?? '' : '';
+      const id = String(record.literature_id ?? '');
+      let titleZh = typeof record.display_title_zh === 'string' ? record.display_title_zh : '';
+      if (record.source_record && allowed.has(normalize(record.source_record))) {
+        try {
+          const sourcePath = await this._resolve(normalize(record.source_record));
+          const source = JSON.parse((await readFile(sourcePath, 'utf8')).replace(/^\uFEFF/, '')) as {
+            display_title_zh?: unknown;
+          };
+          titleZh = typeof source.display_title_zh === 'string' && source.display_title_zh
+            ? source.display_title_zh
+            : titleZh;
+        } catch { /* Missing or unsafe sidecar does not hide a catalog entry. */ }
+      }
+      const authors = Array.isArray(record.authors)
+        ? record.authors.map(String)
+        : String(record.authors ?? '').split(/[;；]/).map((s) => s.trim()).filter(Boolean);
+      return { ...record, id, file, authors, titleZh, category, subcategory, notes: notes.get(id) ?? [] };
+    }));
+    const categoryMap = new Map<string, Category>();
+    for (const paper of papers) {
+      if (!categoryMap.has(paper.category)) {
+        categoryMap.set(paper.category, { id: paper.category, name: paper.category, count: 0, children: [] });
+      }
+      const category = categoryMap.get(paper.category) as Category;
+      category.count++;
+      if (paper.subcategory) {
+        const id = `${paper.category}/${paper.subcategory}`;
+        let child = category.children.find((item) => item.id === id);
+        if (!child) {
+          child = { id, name: paper.subcategory, count: 0 };
+          category.children.push(child);
+        }
+        child.count++;
+      }
+    }
+    // 空文件夹也属于分类，需要和已归档文献一起出现在侧栏。
+    for (const folder of await this._paperFolders()) {
+      if (!categoryMap.has(folder.name)) {
+        categoryMap.set(folder.name, { id: folder.name, name: folder.name, count: 0, children: [] });
+      }
+      const category = categoryMap.get(folder.name) as Category;
+      for (const name of folder.children) {
+        const id = `${folder.name}/${name}`;
+        if (!category.children.some((child) => child.id === id)) category.children.push({ id, name, count: 0 });
+      }
+    }
+    const categories = [...categoryMap.values()].sort((a, b) => a.id.localeCompare(b.id));
+    for (const category of categories) category.children.sort((a, b) => a.id.localeCompare(b.id));
+    return { papers, allowed, categories };
+  }
+
+  async _paperFolders(): Promise<Array<{ name: string; children: string[] }>> {
+    const base = path.join(this.root, 'papers');
+    const folders: Array<{ name: string; children: string[] }> = [];
+    let entries;
+    try { entries = await readdir(base, { withFileTypes: true }); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return folders;
+      throw error;
+    }
+    for (const entry of entries) {
+      if (!entry.isDirectory() || entry.isSymbolicLink()) continue;
+      if (!this._validRelative(`papers/${entry.name}`)) continue;
+      const children: string[] = [];
+      let inner: Dirent<string>[] = [];
+      try { inner = await readdir(path.join(base, entry.name), { withFileTypes: true }); }
+      catch { inner = []; }
+      for (const child of inner) {
+        if (!child.isDirectory() || child.isSymbolicLink()) continue;
+        if (!this._validRelative(`papers/${entry.name}/${child.name}`)) continue;
+        children.push(child.name);
+      }
+      folders.push({ name: entry.name, children });
+    }
+    return folders;
+  }
+
+  _validRelative(rel: string): boolean {
+    if (!rel || /[\\\x00-\x1f:%?#]/.test(rel) || path.posix.isAbsolute(rel)) return false;
+    const parts = rel.split('/');
+    return ['papers', 'notes', 'synthesis', 'outputs'].includes(parts[0] as string) && parts.length > 1 &&
+      parts.every((p) => p && p !== '..' && p !== '.') && !denied(parts);
+  }
+
+  async _resolve(rel: string): Promise<string> {
+    if (!this._validRelative(rel)) throw statusError('不允许访问此路径', 403);
+    const root = await realpath(this.root);
+    const candidate = path.resolve(root, ...rel.split('/'));
+    const resolved = await realpath(candidate);
+    // Reject aliases too: a catalog entry must not lend access to an unindexed target.
+    const equal = process.platform === 'win32'
+      ? candidate.toLowerCase() === resolved.toLowerCase()
+      : candidate === resolved;
+    if (!inside(root, resolved) || !equal || !this._validRelative(normalize(path.relative(root, resolved)))) {
+      throw statusError('不允许符号链接或目录逃逸', 403);
+    }
+    if (!(await stat(resolved)).isFile()) throw statusError('仅允许普通文件', 403);
+    return resolved;
+  }
+
+  async _data(): Promise<LibraryData> {
+    if (!this.cache) {
+      this.cache = this._load().catch((error: unknown) => {
+        this.cache = null;
+        throw error;
+      });
+    }
+    return this.cache;
+  }
+
+  async _reading(): Promise<ReadingState> {
+    try {
+      return JSON.parse((await readFile(path.join(this.stateDir, 'reading.json'), 'utf8')).replace(/^\uFEFF/, '')) as ReadingState;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return {};
+      throw error;
+    }
+  }
+
+  async getLibrary(): Promise<LibraryPayload> {
+    const [data, reading] = await Promise.all([this._data(), this._reading()]);
+    const papers: LibraryPaper[] = data.papers.map((paper) => {
+      const entry = reading[paper.id];
+      const readStatus = typeof entry?.readStatus === 'string' && statuses.has(entry.readStatus)
+        ? entry.readStatus as ReadStatus
+        : 'unread';
+      return { ...paper, readStatus, starred: entry?.starred === true } as LibraryPaper;
+    });
+    const stats: LibraryStats = { total: papers.length, unread: 0, reading: 0, read: 0, starred: 0, withNotes: 0 };
+    for (const paper of papers) {
+      stats[paper.readStatus]++;
+      if (paper.starred) stats.starred++;
+      if (paper.notes.length) stats.withNotes++;
+    }
+    return copy({ papers, categories: data.categories, stats });
+  }
+
+  async getPaper(id: string): Promise<LibraryPaper | null> {
+    return (await this.getLibrary()).papers.find((paper) => paper.id === id) ?? null;
+  }
+
+  async updatePaper(id: string, patch: unknown): Promise<LibraryPaper | null> {
+    const fields = patch && typeof patch === 'object' ? patch as Record<string, unknown> : null;
+    const validRead = fields?.readStatus === undefined || (typeof fields.readStatus === 'string' && statuses.has(fields.readStatus));
+    const validStar = fields?.starred === undefined || typeof fields.starred === 'boolean';
+    if (!fields || Object.keys(fields).some((key) => !['readStatus', 'starred'].includes(key)) || !validRead || !validStar) {
+      throw statusError('阅读状态或收藏字段无效', 400);
+    }
+    if (!await this.getPaper(id)) throw statusError('文献不存在', 404);
+    const change = fields as PaperPatch;
+    const operation = this.writes.then(async () => {
+      const reading = await this._reading();
+      reading[id] = { readStatus: 'unread', starred: false, ...reading[id], ...change };
+      await mkdir(this.stateDir, { recursive: true });
+      const target = path.join(this.stateDir, 'reading.json');
+      const temp = `${target}.${randomUUID()}.tmp`;
+      await writeFile(temp, JSON.stringify(reading, null, 2), { mode: 0o600 });
+      await rename(temp, target);
+      return this.getPaper(id);
+    });
+    this.writes = operation.catch(() => {});
+    return operation;
+  }
+
+  async refresh(): Promise<void> { this.cache = null; }
+
+  _categoryName(value: unknown): string {
+    if (typeof value !== 'string') throw statusError('文件夹名称无效。', 400);
+    const name = value.trim().replace(/^\d+_/, '').trim().replace(/[. ]+$/, '');
+    if (!name) throw statusError('请输入文件夹名称。', 400);
+    if (name.length > 60) throw statusError('文件夹名称不能超过 60 个字符。', 400);
+    if (name.startsWith('.') || /[\\/:*?"<>|\x00-\x1f]/.test(name)) throw statusError('文件夹名称包含不允许的字符。', 400);
+    if (reservedCategory.test(name)) throw statusError('该名称不能用作文件夹。', 400);
+    return name;
+  }
+
+  async _folderNames(dir: string): Promise<string[]> {
+    let entries;
+    try { entries = await readdir(dir, { withFileTypes: true }); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
+      throw error;
+    }
+    return entries.filter((entry) => entry.isDirectory() && !entry.isSymbolicLink()).map((entry) => entry.name);
+  }
+
+  async _createTopFolder(base: string, name: string): Promise<string> {
+    const folders = await this._folderNames(base);
+    if (folders.some((folder) => categoryName(folder).toLocaleLowerCase() === name.toLocaleLowerCase())) {
+      throw statusError('同名文件夹已存在。', 409);
+    }
+    let last = 0;
+    for (const folder of folders) {
+      const match = /^(\d+)_/.exec(folder);
+      if (match) last = Math.max(last, Number(match[1]));
+    }
+    const folder = `${String(last + 1).padStart(2, '0')}_${name}`;
+    if (!this._validRelative(`papers/${folder}`)) throw statusError('该名称不能用作文件夹。', 400);
+    try { await mkdir(path.join(base, folder)); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'EEXIST') throw statusError('同名文件夹已存在。', 409);
+      throw error;
+    }
+    return folder;
+  }
+
+  async createCategory(value: unknown): Promise<{ category: string; subcategory: string }> {
+    const name = this._categoryName(value);
+    const operation = this.writes.then(async () => {
+      const base = path.join(this.root, 'papers');
+      await mkdir(base, { recursive: true });
+      const folder = await this._createTopFolder(base, name);
+      this.cache = null;
+      return { category: folder, subcategory: '' };
+    });
+    this.writes = operation.catch(() => {});
+    return operation;
+  }
+
+  async ensureCategory(value: unknown): Promise<string> {
+    const operation = this.writes.then(() => this._ensureCategory(value));
+    this.writes = operation.catch(() => {});
+    return operation;
+  }
+
+  // 导入前把用户选定的分类落到磁盘；顶层缺号时沿用新建分类的编号规则。
+  async _ensureCategory(value: unknown): Promise<string> {
+    if (typeof value !== 'string' || !value.startsWith('papers/')) throw statusError('分类目录必须位于 papers/ 内。', 400);
+    const parts = value.split('/');
+    if (parts.length < 2 || parts.length > 3 || parts.slice(1).some((part) =>
+      !part || part === '.' || part === '..' || /[\\/]/.test(part))) throw statusError('文件夹路径无效。', 400);
+    const base = path.join(this.root, 'papers');
+    await mkdir(base, { recursive: true });
+    const topName = categoryName(parts[1] as string);
+    if (!topName) throw statusError('请输入文件夹名称。', 400);
+    let folders = await this._folderNames(base);
+    let folder = folders.find((name) => categoryName(name).toLocaleLowerCase() === topName.toLocaleLowerCase());
+    if (!folder) {
+      try { folder = await this._createTopFolder(base, topName); }
+      catch (error) {
+        if ((error as { statusCode?: number }).statusCode !== 409) throw error;
+        folders = await this._folderNames(base);
+        folder = folders.find((name) => categoryName(name).toLocaleLowerCase() === topName.toLocaleLowerCase());
+        if (!folder) throw error;
+      }
+    }
+    let current = path.join(base, folder);
+    for (const part of parts.slice(2)) {
+      const next = path.join(current, part);
+      try { await mkdir(next); }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+      }
+      const info = await lstat(next).catch(() => null);
+      if (!info?.isDirectory() || info.isSymbolicLink()) throw statusError('分类路径不是普通目录。', 400);
+      current = next;
+    }
+    const rel = path.relative(this.root, current).split(path.sep).join('/');
+    if (!this._validRelative(rel)) throw statusError('分类目录无效。', 400);
+    this.cache = null;
+    return rel;
+  }
+
+  async renameCategory(category: unknown, subcategory: unknown, value: unknown): Promise<unknown> {
+    const name = this._categoryName(value);
+    const parts = subcategory ? [category, subcategory] : [category];
+    const plain = (part: unknown): part is string =>
+      typeof part === 'string' && part !== '' && part !== '.' && part !== '..' && !/[\\/]/.test(part);
+    if (parts.length > 2 || !parts.every(plain)) throw statusError('文件夹路径无效。', 400);
+    const [top, child] = parts as string[];
+    const rel = `papers/${[top, child].filter(Boolean).join('/')}`;
+    if (!this._validRelative(rel)) throw statusError('文件夹路径无效。', 400);
+    const args = ['rename-category', '--category', top as string, '--name', name];
+    if (child) args.push('--subcategory', child);
+    const result = await this.categoryCommand(args);
+    this.cache = null;
+    return result;
+  }
+
+  async safeFile(relativePath: unknown): Promise<string> {
+    if (typeof relativePath !== 'string' || !this._validRelative(relativePath)) throw statusError('不允许访问此路径', 403);
+    const ext = path.posix.extname(relativePath).toLowerCase();
+    if (!extensions.has(ext)) throw statusError('文件类型不允许', 403);
+    const { allowed } = await this._data();
+    const top = relativePath.split('/')[0] as string;
+    const indexed = allowed.has(relativePath);
+    const readableNote = ['notes', 'synthesis'].includes(top) && ['.md', '.txt'].includes(ext);
+    const readableImage = ['notes', 'synthesis', 'outputs'].includes(top) && images.has(ext);
+    if (!(indexed && ['.pdf', '.json'].includes(ext)) && !readableNote && !readableImage) {
+      throw statusError('文件未列入可访问资料', 403);
+    }
+    return this._resolve(relativePath);
+  }
+}

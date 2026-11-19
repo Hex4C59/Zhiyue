@@ -200,7 +200,7 @@ fn resolve_launch(app: &AppHandle) -> Result<Launch, String> {
             .map_err(|error| format!("无法定位项目目录：{error}"))?;
         return Ok(Launch {
             node: PathBuf::from(if cfg!(windows) { "node.exe" } else { "node" }),
-            entry: root.join("app/web/src/server.mjs"),
+            entry: root.join("build/app/web/src/server.js"),
             cwd: root,
             library: None,
         });
@@ -215,7 +215,7 @@ fn resolve_launch(app: &AppHandle) -> Result<Launch, String> {
         .join("node")
         .join(if cfg!(windows) { "node.exe" } else { "node" });
     let cwd = runtime.join("app");
-    let entry = cwd.join("web/src/server.mjs");
+    let entry = cwd.join("web/src/server.js");
     if !node.is_file() {
         return Err("缺少内置 Node 运行时，请重新安装 Zhiyue。".to_string());
     }

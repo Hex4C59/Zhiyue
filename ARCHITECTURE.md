@@ -7,19 +7,19 @@ Zhiyue 是面向个人研究者的 Windows 桌面文献工作台。用户可导�
 ## 2. 代码地图
 
 1. 本机构建后运行 [start-desktop.cmd](start-desktop.cmd)，源码调试用 `npm run desktop:dev`。Tauri 的 `main → run` 注册窗口、托盘、单实例与更新插件，再调用 `spawn_sidecar`。打包版从随包资源定位 Node，调试版从本机 PATH 查找 Node。[启动命令](package.json) · [Rust 入口](app/desktop/src-tauri/src/main.rs) · [Tauri 进程管理](app/desktop/src-tauri/src/lib.rs)
-2. `startServer` 初始化文献库，在 `127.0.0.1` 的系统分配端口上监听，通过标准输出的 `ZHIYUE_URL=` 交接地址。Tauri 收到地址后导航到 `/`，由 Node 提供 `public/index.html` 和 `/js/app.js`。启动超时或握手前进程退出会在启动页显示错误；握手后子进程意外退出也会回到启动页显示原因。[Node 入口](app/web/src/server.mjs) · [启动页](app/desktop/frontend/index.html) · [挂载页](app/web/public/index.html)
-3. `mountWorkspace` 挂载 Vue 主界面，调用 `workspace.start` 拉取文献、会话和任务，并用 `EventSource` 订阅 `GET /api/events`。[Vue 入口](app/web/frontend/main.js) · [界面状态](app/web/frontend/lib/workspace.js)
+2. `startServer` 初始化文献库，在 `127.0.0.1` 的系统分配端口上监听，通过标准输出的 `ZHIYUE_URL=` 交接地址。Tauri 收到地址后导航到 `/`，由 Node 提供 `public/index.html` 和 `/js/app.js`。启动超时或握手前进程退出会在启动页显示错误；握手后子进程意外退出也会回到启动页显示原因。[Node 入口](app/web/src/server.ts) · [启动页](app/desktop/frontend/index.html) · [挂载页](app/web/public/index.html)
+3. `mountWorkspace` 挂载 Vue 主界面，调用 `workspace.start` 拉取文献、会话和任务，并用 `EventSource` 订阅 `GET /api/events`。[Vue 入口](app/web/frontend/main.ts) · [界面状态](app/web/frontend/lib/workspace.ts)
 
 | 要改的内容 | 从这里读 |
 | --- | --- |
 | 窗口、托盘、启动、运行中故障与退出 | `run`、`resolve_launch`、`spawn_sidecar`、`watch_sidecar` 和 `stop_sidecar` 管理 Tauri 窗口与 Node 子进程：关闭窗口隐藏到托盘，握手失败或握手后崩溃在启动页显示原因，退出和更新前终止 Node 进程树，作业对象在桌面进程被强制结束时兜底。更新由 `check_updates` 处理。完整状态见“桌面进程的生命周期”。[lib.rs](app/desktop/src-tauri/src/lib.rs) · [update.rs](app/desktop/src-tauri/src/update.rs) |
-| 面板结构、表单、选择状态、样式 | `Workspace.vue` 装配各面板，`createWorkspace` 持有响应式状态并消费 HTTP/SSE。PDF 阅读器的页节点与缩放由 `createReader` 管理。[Workspace.vue](app/web/frontend/Workspace.vue) · [workspace.js](app/web/frontend/lib/workspace.js) · [reader.js](app/web/frontend/lib/reader.js) · [styles.css](app/web/public/css/styles.css) |
-| API、附件、静态资源与事件 | `createApp` 装配 `Library`、`JobManager` 和 `AssistantService`，集中注册 `/api/` 路由。`checkRequest` 校验本机请求，`emit` 向 SSE 连接推送任务和聊天事件。[server.mjs](app/web/src/server.mjs) |
-| 文献列表、分类、阅读标记、PDF 预览 | `Library.getLibrary` 将索引、分类目录、笔记与用户阅读状态组合成界面数据。`safeFile` 校验可读文件，`previewPaper` 调用 `render.py` 并缓存页图和文字层。[library.mjs](app/web/src/lib/library.mjs) · [preview.mjs](app/web/src/lib/preview.mjs) · [render.py](app/web/src/lib/render.py) |
-| 导入、下载、归档 | `JobManager` 管理排队、日志和子进程。`run.py:main` 也供独立 CLI 使用，派发批次、渠道、核验与归档操作。新增下载渠道从 `workflow.download` 和 `providers/` 入手，编号与版本规则在 `archiving.archive`。[jobs.mjs](app/web/src/lib/jobs.mjs) · [run.py](app/downloader/run.py) · [workflow.py](app/downloader/workflow.py) · [归档逻辑](app/downloader/archiving.py) · [CLI 说明](app/downloader/README.md) |
-| 助手消息、文献工具、模型与密钥 | `ChatService` 持有聊天、活动回答和草稿。`AssistantService` 注册 `dynamicTools` 并提供 Pi 设置接口。`PiClient` 在 Node 进程内加载 SDK、管理模型和会话，并把 SDK 事件转成应用事件。[chat.mjs](app/web/src/lib/chat.mjs) · [assistants.mjs](app/web/src/lib/assistants.mjs) · [pi.mjs](app/web/src/lib/pi.mjs) |
+| 面板结构、表单、选择状态、样式 | `Workspace.vue` 装配各面板，`createWorkspace` 持有响应式状态并消费 HTTP/SSE。PDF 阅读器的页节点与缩放由 `createReader` 管理。[Workspace.vue](app/web/frontend/Workspace.vue) · [workspace.ts](app/web/frontend/lib/workspace.ts) · [reader.ts](app/web/frontend/lib/reader.ts) · [styles.css](app/web/public/css/styles.css) |
+| API、附件、静态资源与事件 | `createApp` 装配 `Library`、`JobManager` 和 `AssistantService`，集中注册 `/api/` 路由。`checkRequest` 校验本机请求，`emit` 向 SSE 连接推送任务和聊天事件。[server.ts](app/web/src/server.ts) |
+| 文献列表、分类、阅读标记、PDF 预览 | `Library.getLibrary` 将索引、分类目录、笔记与用户阅读状态组合成界面数据。`safeFile` 校验可读文件，`previewPaper` 调用 `render.py` 并缓存页图和文字层。[library.ts](app/web/src/lib/library.ts) · [preview.ts](app/web/src/lib/preview.ts) · [render.py](app/web/src/lib/render.py) |
+| 导入、下载、归档 | `JobManager` 管理排队、日志和子进程。`run.py:main` 也供独立 CLI 使用，派发批次、渠道、核验与归档操作。新增下载渠道从 `workflow.download` 和 `providers/` 入手，编号与版本规则在 `archiving.archive`。[jobs.ts](app/web/src/lib/jobs.ts) · [run.py](app/downloader/run.py) · [workflow.py](app/downloader/workflow.py) · [归档逻辑](app/downloader/archiving.py) · [CLI 说明](app/downloader/README.md) |
+| 助手消息、文献工具、模型与密钥 | `ChatService` 持有聊天、活动回答和草稿。`AssistantService` 注册 `dynamicTools` 并提供 Pi 设置接口（模型、密钥、思考强度、上下文压缩）。`PiClient` 在 Node 进程内加载 SDK、管理模型和会话，并把 SDK 事件转成应用事件（正文与推理增量分开）。[chat.ts](app/web/src/lib/chat.ts) · [assistants.ts](app/web/src/lib/assistants.ts) · [pi.ts](app/web/src/lib/pi.ts) |
 
-依赖图中的箭头表示启动、调用或文件读写。应用状态随文献库存放，Pi 的全局模型与密钥配置使用本机 Pi 配置目录。[文献库布局](app/web/src/lib/paths.mjs) · [PiClient.start](app/web/src/lib/pi.mjs)
+依赖图中的箭头表示启动、调用或文件读写。应用状态随文献库存放，Pi 的全局模型与密钥配置使用本机 Pi 配置目录。[文献库布局](app/web/src/lib/paths.ts) · [PiClient.start](app/web/src/lib/pi.ts)
 
 ```mermaid
 flowchart LR
@@ -44,7 +44,7 @@ flowchart LR
 
 **启动与握手**
 
-- 安装版从 `resources/runtime/` 定位 `node.exe` 和 `web/src/server.mjs`，库路径优先取 `LITERATURE_LIBRARY`，否则取系统“文档”目录下的 `Zhiyue/library`；调试版用 PATH 中的 Node 和项目源码。`start-desktop.cmd` 会显式覆盖库路径和 Python。
+- 安装版从 `resources/runtime/` 定位 `node.exe` 和 `web/src/server.ts`，库路径优先取 `LITERATURE_LIBRARY`，否则取系统“文档”目录下的 `Zhiyue/library`；调试版用 PATH 中的 Node 和项目源码。`start-desktop.cmd` 会显式覆盖库路径和 Python。
 - Node 在 `127.0.0.1` 的系统分配端口监听，并通过标准输出写入 `ZHIYUE_URL=` 行；外壳解析后导航主窗口。
 - 30 秒（120 × 250 ms）内没有收到握手，或进程在握手前退出，外壳会终止子进程并在启动页显示错误；握手前退出时附上 stderr 最后 12 行。
 
@@ -76,40 +76,40 @@ flowchart LR
 
 ### 本地 PDF 从导入到出现在列表
 
-1. `ImportPaperDialog.submit` 校验书目表单和核对勾选，逐个调用 `workspace.uploadFile`。`POST /api/uploads` 校验扩展名、大小和 PDF 文件头，把内容写到 `.zhiyue/data/uploads/` 并在 `.zhiyue/data/uploads.json` 登记，返回上传 ID。随后 `workspace.importPdfs` 发 `POST /api/library/import`，携带上传 ID、书目信息和分类。服务端按 ID 查找已登记文件。[导入对话框](app/web/frontend/components/ImportPaperDialog.vue) · [workspace.js](app/web/frontend/lib/workspace.js) · [server.mjs](app/web/src/server.mjs)
-2. `JobManager.startLocalImports` 检查分类、上传位置和元数据，对当前批次和索引记录中的主文件做 SHA-256 查重。分类不存在时在提交任务前按编号规则创建；`import` 只接受已存在的分类目录。部分重复时跳过对应项，全部跳过时返回 409。`_enqueue` 在 `.zhiyue/data/jobs.json` 持久化任务，接口以 202 返回 `{ job, skipped }`。后台队列顺序运行 `import → 每项 attach、review --accept-identity → 整批 archive`。身份确认来自前端勾选，提交载荷没有单独的确认字段，后台按此入口传入人工身份确认参数。[jobs.mjs](app/web/src/lib/jobs.mjs) · [server.mjs](app/web/src/server.mjs) · [导入和查重测试](app/web/test/jobs.test.mjs)
+1. `ImportPaperDialog.submit` 校验书目表单和核对勾选，逐个调用 `workspace.uploadFile`。`POST /api/uploads` 校验扩展名、大小和 PDF 文件头，把内容写到 `.zhiyue/data/uploads/` 并在 `.zhiyue/data/uploads.json` 登记，返回上传 ID。随后 `workspace.importPdfs` 发 `POST /api/library/import`，携带上传 ID、书目信息和分类。服务端按 ID 查找已登记文件。[导入对话框](app/web/frontend/components/ImportPaperDialog.vue) · [workspace.ts](app/web/frontend/lib/workspace.ts) · [server.ts](app/web/src/server.ts)
+2. `JobManager.startLocalImports` 检查分类、上传位置和元数据，对当前批次和索引记录中的主文件做 SHA-256 查重。分类不存在时在提交任务前按编号规则创建；`import` 只接受已存在的分类目录。部分重复时跳过对应项，全部跳过时返回 409。`_enqueue` 在 `.zhiyue/data/jobs.json` 持久化任务，接口以 202 返回 `{ job, skipped }`。后台队列顺序运行 `import → 每项 attach、review --accept-identity → 整批 archive`。身份确认来自前端勾选，提交载荷没有单独的确认字段，后台按此入口传入人工身份确认参数。[jobs.ts](app/web/src/lib/jobs.ts) · [server.ts](app/web/src/server.ts) · [导入和查重测试](app/web/test/jobs.test.ts)
 3. `run.py:main` 按批次加锁。`workflow.ingest` 把候选放到 `.zhiyue/tmp/`，用 `validation.verify` 检查身份、解析和首末页渲染，将结果写进 `.zhiyue/batches/<批次>/下载状态.json`。`archiving.archive` 在批次锁内取库写锁，重新读取批次台账，检查身份、全页解析、首末页渲染及哈希，分配或复用 L 编号，保存原字节和同名 `.来源.json`，更新文献库 README、批次及由 `library.build` 生成的 `.zhiyue/catalog/文献索引.json` 等目录文件。分类目录缺失时停止并提示修复台账，不再自动创建。未通过项留在批次，供人工处理或续跑。归档涉及多个文件，按 PDF → 来源记录 → README → 批次台账 → 派生索引的顺序写入；事务日志的 `prepared`/`committed` 语义和恢复依据见下文“归档事务的证据与恢复”。[run.py](app/downloader/run.py) · [workflow.py](app/downloader/workflow.py) · [validation.py](app/downloader/validation.py) · [batches.py](app/downloader/batches.py) · [archiving.py](app/downloader/archiving.py) · [索引构建](app/downloader/library.py)
-4. `_enqueue` 从批次重新统计 `job.result.counts`。终态任务事件使服务侧 `Library.refresh` 清理缓存。导入对话框轮询 `GET /api/jobs/:id` 并重新读取 `GET /api/library`，通用工作区也处理 SSE 任务更新；SSE 只负责实时推送，断线后由轮询和 `GET /api/downloads` 补查已知任务，见下文“事件推送、断线恢复与停止”。以 `counts.archived` 判断归档数量，`completed` 仅表示命令流程结束。部分失败要查步骤日志与批次台账。[jobs.mjs](app/web/src/lib/jobs.mjs) · [server.mjs](app/web/src/server.mjs) · [导入对话框](app/web/frontend/components/ImportPaperDialog.vue) · [workspace.js](app/web/frontend/lib/workspace.js)
+4. `_enqueue` 从批次重新统计 `job.result.counts`。终态任务事件使服务侧 `Library.refresh` 清理缓存。导入对话框轮询 `GET /api/jobs/:id` 并重新读取 `GET /api/library`，通用工作区也处理 SSE 任务更新；SSE 只负责实时推送，断线后由轮询和 `GET /api/downloads` 补查已知任务，见下文“事件推送、断线恢复与停止”。以 `counts.archived` 判断归档数量，`completed` 仅表示命令流程结束。部分失败要查步骤日志与批次台账。[jobs.ts](app/web/src/lib/jobs.ts) · [server.ts](app/web/src/server.ts) · [导入对话框](app/web/frontend/components/ImportPaperDialog.vue) · [workspace.ts](app/web/frontend/lib/workspace.ts)
 
 ### Pi 问答从发送到保存结果
 
-1. `Composer` 提交给 `workspace.sendMessage`，无会话时先 `POST /api/chats`，再 `POST /api/chats/:id/messages`。`ChatService.send` 按 chat ID 限制同一会话的活动回答，提交时保存用户消息及占位回答到 `.zhiyue/data/pi/chats.json`，并立即启动后台处理。HTTP 202 表示消息已接收，回答由异步事件返回。[Composer.vue](app/web/frontend/components/Composer.vue) · [workspace.js](app/web/frontend/lib/workspace.js) · [server.mjs](app/web/src/server.mjs) · [chat.mjs](app/web/src/lib/chat.mjs)
-2. `ChatService.run` 新建或恢复 SDK 会话，保存关联的 `threadId`。SDK 会话文件位于 `.zhiyue/data/pi-sessions/`。`run` 用 `Library.getPaper` 读取选中文献的索引信息，用 `extractFile` 提取非图片附件的内容。图片由 `PiClient.runTurn` 读取并按模型能力附加到 `session.prompt`。需要读取论文正文时，SDK 工具经 `PiClient.callTool → ChatService.serverRequest` 进入 `read_paper_pages`，并通过 `Library.safeFile` 定位原文。模型服务会收到文献索引、附件内容及工具实际返回的正文片段；提示中还有库根、选中文献和附件的本机绝对路径。选中只是初始提示，读取工具可访问任何已索引的 L 编号。工具触发的下载直接入队并在自动核验后归档，笔记只生成草稿。[chat.mjs](app/web/src/lib/chat.mjs) · [pi.mjs](app/web/src/lib/pi.mjs) · [server.mjs](app/web/src/server.mjs) · [数据外发范围](#模型上下文与数据外发)
-3. `PiClient.runTurn` 把 SDK 消息增量和结束状态转成通知。`ChatService.notification` 在内存更新增量，经 `GET /api/events` 发送 `delta`。消息或回答完成时写入聊天记录并推送 `message`。`createWorkspace` 内的 `receive` 合并事件，`syncChat` 用 HTTP 补查状态。停止请求进入 `ChatService.interrupt`，调用 SDK 的 `abort`。若轮次仍在启动，则等 ID 返回再中断。未配置模型或生成失败时，`finish` 记录失败状态。停止只作用于本轮模型调用，已入队任务继续执行，见下文“事件推送、断线恢复与停止”。[pi.mjs](app/web/src/lib/pi.mjs) · [chat.mjs](app/web/src/lib/chat.mjs) · [workspace.js](app/web/frontend/lib/workspace.js) · [会话与停止测试](app/web/test/chat.test.mjs) · [Pi 适配测试](app/web/test/pi.test.mjs)
-4. 如果模型调用 `draft_note`，`createNoteDraft` 先把草稿存在会话并发送预览事件。用户在界面选择保存或丢弃后，客户端调用 `POST /api/note-drafts/:id`，由 `resolveNoteDraft` 处理。保存时用独占创建写入 `notes/`，同名时另加序号。工作区随后刷新相关笔记。[chat.mjs](app/web/src/lib/chat.mjs) · [server.mjs](app/web/src/server.mjs) · [草稿测试](app/web/test/chat.test.mjs)
+1. `Composer` 提交给 `workspace.sendMessage`，无会话时先 `POST /api/chats`，再 `POST /api/chats/:id/messages`。`ChatService.send` 按 chat ID 限制同一会话的活动回答，提交时保存用户消息及占位回答到 `.zhiyue/data/pi/chats.json`，并立即启动后台处理。HTTP 202 表示消息已接收，回答由异步事件返回。[Composer.vue](app/web/frontend/components/Composer.vue) · [workspace.ts](app/web/frontend/lib/workspace.ts) · [server.ts](app/web/src/server.ts) · [chat.ts](app/web/src/lib/chat.ts)
+2. `ChatService.run` 新建或恢复 SDK 会话，保存关联的 `threadId`。SDK 会话文件位于 `.zhiyue/data/pi-sessions/`。`run` 用 `Library.getPaper` 读取选中文献的索引信息，用 `extractFile` 提取非图片附件的内容。图片由 `PiClient.runTurn` 读取并按模型能力附加到 `session.prompt`。需要读取论文正文时，SDK 工具经 `PiClient.callTool → ChatService.serverRequest` 进入 `read_paper_pages`，并通过 `Library.safeFile` 定位原文。模型服务会收到文献索引、附件内容及工具实际返回的正文片段；提示中还有库根、选中文献和附件的本机绝对路径。选中只是初始提示，读取工具可访问任何已索引的 L 编号。工具触发的下载直接入队并在自动核验后归档，笔记只生成草稿。[chat.ts](app/web/src/lib/chat.ts) · [pi.ts](app/web/src/lib/pi.ts) · [server.ts](app/web/src/server.ts) · [数据外发范围](#模型上下文与数据外发)
+3. `PiClient.runTurn` 把 SDK 消息增量和结束状态转成通知。`ChatService.notification` 在内存更新增量，经 `GET /api/events` 发送 `delta`。消息或回答完成时写入聊天记录并推送 `message`。`createWorkspace` 内的 `receive` 合并事件，`syncChat` 用 HTTP 补查状态。停止请求进入 `ChatService.interrupt`，调用 SDK 的 `abort`。若轮次仍在启动，则等 ID 返回再中断。未配置模型或生成失败时，`finish` 记录失败状态。停止只作用于本轮模型调用，已入队任务继续执行，见下文“事件推送、断线恢复与停止”。[pi.ts](app/web/src/lib/pi.ts) · [chat.ts](app/web/src/lib/chat.ts) · [workspace.ts](app/web/frontend/lib/workspace.ts) · [会话与停止测试](app/web/test/chat.test.ts) · [Pi 适配测试](app/web/test/pi.test.ts)
+4. 如果模型调用 `draft_note`，`createNoteDraft` 先把草稿存在会话并发送预览事件。用户在界面选择保存或丢弃后，客户端调用 `POST /api/note-drafts/:id`，由 `resolveNoteDraft` 处理。保存时用独占创建写入 `notes/`，同名时另加序号。工作区随后刷新相关笔记。[chat.ts](app/web/src/lib/chat.ts) · [server.ts](app/web/src/server.ts) · [草稿测试](app/web/test/chat.test.ts)
 
 ### 事件推送、断线恢复与停止
 
 **推送与补查**
 
-- `GET /api/events` 是单向广播：连接建立时先发 `connected`（含待处理审批快照），之后推送 `delta`、`message`、`activity`、`approval`、`approvalResolved`、`noteDraft`、`noteDraftResolved`、`status` 和 `job`，每 20 秒写一个 keepalive 注释。流里没有事件 ID、断线重放或 `Last-Event-ID` 处理，断线期间的事件不会补发。[server.mjs](app/web/src/server.mjs) · [chat.mjs](app/web/src/lib/chat.mjs)
-- 恢复靠 HTTP 补查：`onopen` 重新 `loadStatus` 并 `syncChat` 当前会话；`onerror` 只把 `eventsOpen` 置 false，由 8 秒轮询接管（`document.hidden` 时跳过）。轮询每次拉状态，会话在断线或正在生成时补查，`state.jobs` 中仍活跃的任务逐个 `GET /api/jobs/:id`。`syncChat` 用 HTTP 结果覆盖消息状态，但保留 SSE 已收到且更长的正文，以及 HTTP 尚未返回的消息。[workspace.js](app/web/frontend/lib/workspace.js)
-- 断线期间不发新消息：`canSend` 要求 `eventsOpen`。已受理的轮次在服务端继续，回答完成写入 `.zhiyue/data/pi/chats.json`，重连或刷新后由 `syncChat` 读回最终文本；丢失的 `delta` 只影响过程显示。轮询只覆盖前端已知任务，断线期间由工具新建的任务要等 `GET /api/downloads`（启动时或进入“下载任务”）才出现。这是当前恢复范围的上界。[workspace.js](app/web/frontend/lib/workspace.js) · [server.mjs](app/web/src/server.mjs)
+- `GET /api/events` 是单向广播：连接建立时先发 `connected`（含待处理审批快照），之后推送 `delta`、`message`、`activity`、`approval`、`approvalResolved`、`noteDraft`、`noteDraftResolved`、`status` 和 `job`，每 20 秒写一个 keepalive 注释。流里没有事件 ID、断线重放或 `Last-Event-ID` 处理，断线期间的事件不会补发。[server.ts](app/web/src/server.ts) · [chat.ts](app/web/src/lib/chat.ts)
+- 恢复靠 HTTP 补查：`onopen` 重新 `loadStatus` 并 `syncChat` 当前会话；`onerror` 只把 `eventsOpen` 置 false，由 8 秒轮询接管（`document.hidden` 时跳过）。轮询每次拉状态，会话在断线或正在生成时补查，`state.jobs` 中仍活跃的任务逐个 `GET /api/jobs/:id`。`syncChat` 用 HTTP 结果覆盖消息状态，但保留 SSE 已收到且更长的正文，以及 HTTP 尚未返回的消息。[workspace.ts](app/web/frontend/lib/workspace.ts)
+- 断线期间不发新消息：`canSend` 要求 `eventsOpen`。已受理的轮次在服务端继续，回答完成写入 `.zhiyue/data/pi/chats.json`，重连或刷新后由 `syncChat` 读回最终文本；丢失的 `delta` 只影响过程显示。轮询只覆盖前端已知任务，断线期间由工具新建的任务要等 `GET /api/downloads`（启动时或进入“下载任务”）才出现。这是当前恢复范围的上界。[workspace.ts](app/web/frontend/lib/workspace.ts) · [server.ts](app/web/src/server.ts)
 
 **停止的作用范围**
 
-- `POST /api/chats/:id/interrupt` 进入 `ChatService.interrupt`：标记本轮 cancelled 并调用 SDK 的 `turn/interrupt`；轮次仍在 `turn/start` 时等 turn ID 返回后再中断；本地没有活动轮次时直接记为 `interrupted`。作用只限模型轮次，轮次结束时 `finish` 按 `turn/completed` 记录终态（中止为 `interrupted`），并拒绝该会话的待审批项。[chat.mjs](app/web/src/lib/chat.mjs) · [pi.mjs](app/web/src/lib/pi.mjs)
-- 已入队或正在运行的下载不受停止影响：`JobManager` 的顺序队列继续执行，`job` 事件继续推送，前端继续轮询。目前没有取消任务的接口，停止后仍可能出现下载、核验和归档写入；归档按事务日志提交，不因停止回退。[jobs.mjs](app/web/src/lib/jobs.mjs) · [server.mjs](app/web/src/server.mjs)
-- 只有进程退出（托盘退出以 `taskkill /T /F` 结束 Node）才中断任务：运行中和排队任务在下次启动标为 `failed`，排队任务不自动重放；流式回答在服务重启时标为 `interrupted`。后台是否仍在工作，以任务中心状态为准，不能从问答是否停止推断。[桌面进程的生命周期](#桌面进程的生命周期) · [jobs.mjs](app/web/src/lib/jobs.mjs)
+- `POST /api/chats/:id/interrupt` 进入 `ChatService.interrupt`：标记本轮 cancelled 并调用 SDK 的 `turn/interrupt`；轮次仍在 `turn/start` 时等 turn ID 返回后再中断；本地没有活动轮次时直接记为 `interrupted`。作用只限模型轮次，轮次结束时 `finish` 按 `turn/completed` 记录终态（中止为 `interrupted`），并拒绝该会话的待审批项。[chat.ts](app/web/src/lib/chat.ts) · [pi.ts](app/web/src/lib/pi.ts)
+- 已入队或正在运行的下载不受停止影响：`JobManager` 的顺序队列继续执行，`job` 事件继续推送，前端继续轮询。目前没有取消任务的接口，停止后仍可能出现下载、核验和归档写入；归档按事务日志提交，不因停止回退。[jobs.ts](app/web/src/lib/jobs.ts) · [server.ts](app/web/src/server.ts)
+- 只有进程退出（托盘退出以 `taskkill /T /F` 结束 Node）才中断任务：运行中和排队任务在下次启动标为 `failed`，排队任务不自动重放；流式回答在服务重启时标为 `interrupted`。后台是否仍在工作，以任务中心状态为准，不能从问答是否停止推断。[桌面进程的生命周期](#桌面进程的生命周期) · [jobs.ts](app/web/src/lib/jobs.ts)
 
 ## 4. 架构约束与决策
 
 | 修改时要守住的边界 | 现有保证与验证入口 |
 | --- | --- |
-| 桌面壳管理进程与窗口，Vue 通过本地 HTTP/SSE 使用业务能力 | Tauri 的 `run` 注册插件与窗口逻辑。主业务接口集中在 `createApp`，由本地服务校验 Host、Origin、跨站标记与请求类型；这些校验只排除浏览器跨源和域名重绑定，不构成登录鉴权，本机任意进程可直接调用。资料读取经 `Library.safeFile` 和真实路径检查，信任假设见下文“本机接口的信任边界”。变更文件接口时保持索引和目录边界。[Tauri 权限](app/desktop/src-tauri/capabilities/default.json) · [server.mjs](app/web/src/server.mjs) · [HTTP 测试](app/web/test/server.test.mjs) · [资料边界测试](app/web/test/library.test.mjs) |
-| 添加论文走 Python 归档，阅读标记走 Node | `archive` 在批次锁内取库写锁，保留原文和版本，编号在这里分配。`library.build` 从文献库 README 与来源记录生成索引。`Library.updatePaper` 只接受阅读状态和收藏字段，排队写入 `.zhiyue/data/reading.json`。分类改名也由 Python 文献工具在库写锁下移动目录并同步引用、批次台账和索引；Node 只做请求校验。相关迁移须按团队约定一次性切换。[archiving.py](app/downloader/archiving.py) · [categories.py](app/downloader/categories.py) · [library.mjs](app/web/src/lib/library.mjs) · [归档与并发编号测试](app/downloader/tests/test_workflow.py) · [分类事务测试](app/downloader/tests/test_categories.py) · [协作约定](AGENTS.md) |
-| 任务队列、批次台账与归档文件是三类状态 | Node 的 `JobManager` 对应用任务串行调度并持久化，Python CLI 对批次操作加锁，归档和分类结构改动共用库写锁。进程重启时，Node 端排队中和运行中的任务会被标为失败并提示查看批次后续跑。同一库的写入范围、锁顺序和恢复规则见下文“文献库写入与并发”。[jobs.mjs](app/web/src/lib/jobs.mjs) · [run.py](app/downloader/run.py) · [categories.py](app/downloader/categories.py) · [归档锁](app/downloader/archiving.py) |
-| 模型能力由文献工具清单限定，正式笔记由用户定稿 | `AssistantService` 注册 `dynamicTools`，`PiClient.createSession` 只把这六项工具交给 SDK，扩展与技能加载器返回空。新增工具在 `serverRequest` 校验输入后复用已有服务。上下文与外发范围见“模型上下文与数据外发”，各工具确认点见“文献工具的影响与确认点”：工具触发的下载在同一任务里自动归档，正式笔记仍由草稿确认端点写入。流式终态和停止时序有测试。[assistants.mjs](app/web/src/lib/assistants.mjs) · [pi.mjs](app/web/src/lib/pi.mjs) · [chat.mjs](app/web/src/lib/chat.mjs) · [会话与工具测试](app/web/test/chat.test.mjs) |
+| 桌面壳管理进程与窗口，Vue 通过本地 HTTP/SSE 使用业务能力 | Tauri 的 `run` 注册插件与窗口逻辑。主业务接口集中在 `createApp`，由本地服务校验 Host、Origin、跨站标记与请求类型；这些校验只排除浏览器跨源和域名重绑定，不构成登录鉴权，本机任意进程可直接调用。资料读取经 `Library.safeFile` 和真实路径检查，信任假设见下文“本机接口的信任边界”。变更文件接口时保持索引和目录边界。[Tauri 权限](app/desktop/src-tauri/capabilities/default.json) · [server.ts](app/web/src/server.ts) · [HTTP 测试](app/web/test/server.test.ts) · [资料边界测试](app/web/test/library.test.ts) |
+| 添加论文走 Python 归档，阅读标记走 Node | `archive` 在批次锁内取库写锁，保留原文和版本，编号在这里分配。`library.build` 从文献库 README 与来源记录生成索引。`Library.updatePaper` 只接受阅读状态和收藏字段，排队写入 `.zhiyue/data/reading.json`。分类改名也由 Python 文献工具在库写锁下移动目录并同步引用、批次台账和索引；Node 只做请求校验。相关迁移须按团队约定一次性切换。[archiving.py](app/downloader/archiving.py) · [categories.py](app/downloader/categories.py) · [library.ts](app/web/src/lib/library.ts) · [归档与并发编号测试](app/downloader/tests/test_workflow.py) · [分类事务测试](app/downloader/tests/test_categories.py) · [协作约定](AGENTS.md) |
+| 任务队列、批次台账与归档文件是三类状态 | Node 的 `JobManager` 对应用任务串行调度并持久化，Python CLI 对批次操作加锁，归档和分类结构改动共用库写锁。进程重启时，Node 端排队中和运行中的任务会被标为失败并提示查看批次后续跑。同一库的写入范围、锁顺序和恢复规则见下文“文献库写入与并发”。[jobs.ts](app/web/src/lib/jobs.ts) · [run.py](app/downloader/run.py) · [categories.py](app/downloader/categories.py) · [归档锁](app/downloader/archiving.py) |
+| 模型能力由文献工具清单限定，正式笔记由用户定稿 | `AssistantService` 注册 `dynamicTools`，`PiClient.createSession` 只把这六项工具交给 SDK，扩展与技能加载器返回空。新增工具在 `serverRequest` 校验输入后复用已有服务。上下文与外发范围见“模型上下文与数据外发”，各工具确认点见“文献工具的影响与确认点”：工具触发的下载在同一任务里自动归档，正式笔记仍由草稿确认端点写入。流式终态和停止时序有测试。[assistants.ts](app/web/src/lib/assistants.ts) · [pi.ts](app/web/src/lib/pi.ts) · [chat.ts](app/web/src/lib/chat.ts) · [会话与工具测试](app/web/test/chat.test.ts) |
 
 仓库中未找到独立 ADR。表中记录的是当前代码、测试或维护约定可确认的边界。当前由桌面 WebView 通过本机 HTTP 发起请求、以 SSE 接收异步事件；这是实现现状，不代表已确认长期保留该接口方式。保留 HTTP/SSE 的理由，以及接口是否只服务桌面 WebView 或面向其他本机客户端，仍待维护者确认。
 
@@ -128,7 +128,7 @@ flowchart LR
 
 信任集合因此是“本机、单用户、没有对抗进程”；同机其他用户和恶意进程不在防护范围内，和“两台机器或网络盘共享同一库不支持”是同一前提。能连上该端口的本机程序可以读取索引登记的原文、笔记与成果，提交导入和下载，改名分类，保存或清除模型密钥，确认笔记草稿。桌面侧 `capabilities/default.json` 只授予 `core:default`，没有启用文件、HTTP 或 shell 插件权限；响应另带 `nosniff`、`no-referrer` 与 CSP。这些都不改变“本机进程可调用”的结论。
 
-新增接口要按“任何本机进程都能调用”评估：Host、Origin 校验不构成权限判断；写入范围仍由 `Library.safeFile`、分类参数校验和各服务自身的输入校验限定。[server.mjs](app/web/src/server.mjs) · [Tauri 权限](app/desktop/src-tauri/capabilities/default.json) · [进程与握手](app/desktop/src-tauri/src/lib.rs) · [HTTP 测试](app/web/test/server.test.mjs)
+新增接口要按“任何本机进程都能调用”评估：Host、Origin 校验不构成权限判断；写入范围仍由 `Library.safeFile`、分类参数校验和各服务自身的输入校验限定。[server.ts](app/web/src/server.ts) · [Tauri 权限](app/desktop/src-tauri/capabilities/default.json) · [进程与握手](app/desktop/src-tauri/src/lib.rs) · [HTTP 测试](app/web/test/server.test.ts)
 
 ### 模型上下文与数据外发
 
@@ -145,7 +145,7 @@ flowchart LR
 
 选中文献只决定首轮提示，不限制读取范围：`read_paper_pages` 接受任何已索引的 L 编号，库内全部文献都在模型可达范围内；会话历史中出现过的页文本会随后续轮次再次发送。PDF 原件、全库索引、其他会话内容、`~/.pi/agent` 中的凭据不会被自动发送。
 
-模型服务由用户在 Pi 中配置，其网络、计费和留存策略取决于该服务商，应用不对发送内容做额外过滤或脱敏。本机另存两份记录：`.zhiyue/data/pi-sessions/` 的 SDK 会话文件按 Pi 的格式保存消息与工具结果；`.zhiyue/data/pi/chats.json` 保存用户文字、回答和笔记草稿正文，附件的记录只有 id、名称、类型和大小，不含提取文本或图片字节。[chat.mjs](app/web/src/lib/chat.mjs) · [pi.mjs](app/web/src/lib/pi.mjs) · [附件提取](app/web/src/lib/extract.py)
+模型服务由用户在 Pi 中配置，其网络、计费和留存策略取决于该服务商，应用不对发送内容做额外过滤或脱敏。本机另存两份记录：`.zhiyue/data/pi-sessions/` 的 SDK 会话文件按 Pi 的格式保存消息与工具结果；`.zhiyue/data/pi/chats.json` 保存用户文字、回答和笔记草稿正文，附件的记录只有 id、名称、类型和大小，不含提取文本或图片字节。[chat.ts](app/web/src/lib/chat.ts) · [pi.ts](app/web/src/lib/pi.ts) · [附件提取](app/web/src/lib/extract.py)
 
 ### 文献工具的影响与确认点
 
@@ -162,7 +162,7 @@ flowchart LR
 
 `requestApproval` 与 `requestUserInput` 的转发通道存在，请求会显示在右侧、默认拒绝；当前六项工具不触发这类审批，不能当作逐工具确认。网页端的其他写入入口（上传、导入、分类改名、阅读标记、模型密钥、审批）不在工具表内，调用即生效，由上面的信任边界兜底。
 
-与网页导入的差别在身份确认：导入对话框要求用户勾选已核对题名与作者，后台执行 `review --accept-identity`；模型工具发起的下载走自动核验后直接归档，没有这一勾选。[chat.mjs](app/web/src/lib/chat.mjs) · [jobs.mjs](app/web/src/lib/jobs.mjs) · [身份核验](app/downloader/validation.py) · [会话与工具测试](app/web/test/chat.test.mjs)
+与网页导入的差别在身份确认：导入对话框要求用户勾选已核对题名与作者，后台执行 `review --accept-identity`；模型工具发起的下载走自动核验后直接归档，没有这一勾选。[chat.ts](app/web/src/lib/chat.ts) · [jobs.ts](app/web/src/lib/jobs.ts) · [身份核验](app/downloader/validation.py) · [会话与工具测试](app/web/test/chat.test.ts)
 
 ### 文献库写入与并发
 
@@ -248,11 +248,11 @@ flowchart LR
 
 ## 5. 构建、部署与排障
 
-- `desktop:build` 先用 Vite 从 `frontend/main.js` 生成 `app/web/dist/app.js`，再由 `prepare-desktop.mjs` 准备 `resources/runtime/`，复制 Node、应用代码、文献库模板和 npm 运行依赖。Tauri 的 `frontendDist` 指向桌面启动页，`bundle.targets` 配置为 NSIS，发布资源随安装包交付。插入构建步骤时同时检查构建清单、启动路径和安装布局测试。[package.json](package.json) · [Vite 配置](app/web/vite.config.mjs) · [资源准备](scripts/prepare-desktop.mjs) · [Tauri 配置](app/desktop/src-tauri/tauri.conf.json)
-- 排查“打开了另一份库”时，查 `GET /api/status` 的 `root` 与 `python`。源码调试默认用项目内 `library/`，安装版正常从系统文档目录定位 `Zhiyue/library`，`LITERATURE_LIBRARY` 可覆盖。`start-desktop.cmd` 默认显式指向项目库并优先使用项目虚拟环境。安装包内置 Node 与 Pi SDK，Python、Poppler、curl 和机构登录环境由本机提供。更新检查依赖运行时的 `ZHIYUE_UPDATE_ENDPOINT`，安装行为受 Tauri 的更新签名配置约束。正式更新源及其访问、签名和安装行为需在发布环境核验。[resolve_launch](app/desktop/src-tauri/src/lib.rs) · [paths.mjs](app/web/src/lib/paths.mjs) · [本机启动脚本](scripts/start-desktop.ps1) · [更新器](app/desktop/src-tauri/src/update.rs) · [更新与签名说明](app/README.md#桌面应用)
+- `desktop:build` 先由 `npm run build:node` 把服务端、测试与脚本编译到 `build/`，再由 Vite 从 `frontend/main.ts` 生成 `app/web/dist/app.js`；`prepare-desktop.ts` 随后准备 `resources/runtime/`，复制 Node、编译后的服务端（`build/app/web/src`）、前端产物、文献库模板和 npm 运行依赖。Tauri 的 `frontendDist` 指向桌面启动页，`bundle.targets` 配置为 NSIS，发布资源随安装包交付。插入构建步骤时同时检查构建清单、启动路径和安装布局测试。[package.json](package.json) · [Vite 配置](app/web/vite.config.ts) · [资源准备](scripts/prepare-desktop.ts) · [Tauri 配置](app/desktop/src-tauri/tauri.conf.json)
+- 排查“打开了另一份库”时，查 `GET /api/status` 的 `root` 与 `python`。源码调试默认用项目内 `library/`，安装版正常从系统文档目录定位 `Zhiyue/library`，`LITERATURE_LIBRARY` 可覆盖。`start-desktop.cmd` 默认显式指向项目库并优先使用项目虚拟环境。安装包内置 Node 与 Pi SDK，Python、Poppler、curl 和机构登录环境由本机提供。更新检查依赖运行时的 `ZHIYUE_UPDATE_ENDPOINT`，安装行为受 Tauri 的更新签名配置约束。正式更新源及其访问、签名和安装行为需在发布环境核验。[resolve_launch](app/desktop/src-tauri/src/lib.rs) · [paths.ts](app/web/src/lib/paths.ts) · [本机启动脚本](scripts/start-desktop.ps1) · [更新器](app/desktop/src-tauri/src/update.rs) · [更新与签名说明](app/README.md#桌面应用)
 - 本地服务在握手后退出时，窗口会回到启动页显示退出码和最后输出，但不会自动重启；托盘退出后重新打开即可。强制结束桌面进程时 Node 由作业对象一并结束，正在运行的任务在下次启动标为中断。相关边界和手工步骤见[桌面进程验收清单](app/desktop/桌面进程验收.md)。
-- `app/web/` 是桌面界面与本地服务的源码目录。启动命令见 [package.json](package.json) · [本地服务入口](app/web/src/server.mjs) · [界面说明](app/web/README.md)
-- 从 `npm test` 的 HTTP/SSE、任务和 Vue DOM 测试定位应用行为。Python 核验和归档查 `npm run test:downloads`。`npm run test:desktop` 在已有构建产物上复制安装布局，直接启动随包 Node，覆盖空库初始化、离线归档和重启后读取。它通过 Python CLI 准备候选，再调用归档接口；由于直接启动 Node 并显式传入库路径，它不覆盖桌面壳、WebView2、握手后崩溃、强制退出和默认库路径定位，也不运行 NSIS 安装器。上述桌面行为由[桌面进程验收清单](app/desktop/桌面进程验收.md)在真实安装版上验收。WebView2、NSIS 安装操作、更新源及真实模型服务需要各自的验证。[测试命令](package.json) · [安装布局测试](app/desktop/test/first-run-import.test.mjs) · [验证说明](app/web/README.md#验证与维护)
+- `app/web/` 是桌面界面与本地服务的源码目录。启动命令见 [package.json](package.json) · [本地服务入口](app/web/src/server.ts) · [界面说明](app/web/README.md)
+- 从 `npm test` 的 HTTP/SSE、任务和 Vue DOM 测试定位应用行为。Python 核验和归档查 `npm run test:downloads`。`npm run test:desktop` 在已有构建产物上复制安装布局，直接启动随包 Node，覆盖空库初始化、离线归档和重启后读取。它通过 Python CLI 准备候选，再调用归档接口；由于直接启动 Node 并显式传入库路径，它不覆盖桌面壳、WebView2、握手后崩溃、强制退出和默认库路径定位，也不运行 NSIS 安装器。上述桌面行为由[桌面进程验收清单](app/desktop/桌面进程验收.md)在真实安装版上验收。WebView2、NSIS 安装操作、更新源及真实模型服务需要各自的验证。[测试命令](package.json) · [安装布局测试](app/desktop/test/first-run-import.test.ts) · [验证说明](app/web/README.md#验证与维护)
 
 ### 待维护者确认
 

@@ -13,7 +13,7 @@
 - **连续阅读**：PDF 页面纵向排列跨页滚动，Ctrl+滚轮缩放，透明文字层支持选择复制；可切换 Markdown 笔记或浏览器原生阅读器。
 - **批量导入**：多选文件、整个文件夹或拖放导入本机 PDF（单次最多 100 个），逐条核对书目后归档，SHA-256 查重避免重复入库。
 - **下载任务中心**：按 DOI／题名创建批次，经公开来源、Elsevier API 或机构渠道下载，自动核验 PDF 身份、解析与渲染，仅归档通过核验的条目，断点可续跑。
-- **AI 研究助手**：基于官方 Pi SDK 的流式问答，支持论文上下文、图片与文件附件、历史会话；可检索文献、读取任意已索引文献的页文本、发起下载，笔记以草稿形式经用户确认后保存。
+- **AI 研究助手**：基于官方 Pi SDK 的流式问答，支持论文上下文、图片与文件附件、历史会话；可检索文献、读取任意已索引文献的页文本、发起下载；在“模型与密钥”中可更换默认模型、填写 API 密钥并调整思考强度与上下文压缩阈值，推理内容在消息内折叠显示；笔记以草稿形式经用户确认后保存。
 - **索引与来源记录**：每篇文献分配固定 `L001` 式编号，`.来源.json` 记录下载与校验历史，README 索引与目录同步更新。
 
 ## 环境要求
@@ -23,7 +23,7 @@
 | 操作系统 | Windows 10/11（启动脚本与安装包面向 Windows） |
 | Node.js | 源码开发与构建需要 ≥ 22（推荐 24.15+），安装版内置 |
 | Python | 3.12（验证环境版本；PDF 解析、下载与文字层提取，仅浏览索引时可缺省） |
-| Poppler | `pdftoppm` 用于 PDF 页面渲染，可用 `PDFTOPPM` 指定路径 |
+| Poppler | `pdftoppm` 用于 PDF 页面渲染。优先用 `PDFTOPPM` 指定；项目内 `tools/poppler/Library/bin/pdftoppm.exe` 会被自动使用 |
 | Rust | 仅构建桌面版时需要（Tauri 2） |
 
 Python 依赖见 [app/downloader/requirements.txt](app/downloader/requirements.txt)（pypdf、pdfplumber）。运行 `npm run doctor` 可检查本机各项依赖是否就绪。
@@ -93,13 +93,16 @@ Zhiyue/
 ## 开发
 
 ```powershell
-npm ci                  # 安装依赖（含 Vue、Vite、Tauri CLI、Pi SDK）
-npm run build:web       # 修改前端组件后重新构建
+npm ci                  # 安装依赖（含 Vue、Vite、Tauri CLI、Pi SDK、TypeScript）
+npm run build           # 编译服务端与脚本到 build/，再构建前端 dist/app.js
+npm run typecheck       # 服务端 tsc 与前端 vue-tsc 类型检查
 npm test                # 本地服务与 DOM 测试（自动先构建）
 npm run test:downloads  # 下载工具测试（隔离目录与合成 PDF）
 npm run test:desktop    # 安装布局与首次启动测试（需先 desktop:build）
 npm run doctor          # 本机依赖体检
 ```
+
+服务端、测试、维护脚本与前端均为 strict TypeScript：`npm run build:node` 用 `tsc` 输出到 `build/`（不入库），前端由 Vite 直接编译 `frontend/main.ts` 与 Vue 单文件组件到 `dist/app.js`。测试与桌面版都运行编译后的 JS，源码目录不再直接启动。
 
 前端使用 Vue 3 Composition API + Vite，不引入路由或全局状态库；`dist/app.js` 随源码保存。开发约定、模块职责与桌面打包细节见 [app/README.md](app/README.md)，界面使用与测试说明见 [app/web/README.md](app/web/README.md)。
 

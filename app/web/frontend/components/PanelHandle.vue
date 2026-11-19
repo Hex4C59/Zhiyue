@@ -1,19 +1,20 @@
-<script setup>
+<script setup lang="ts">
 import { computed } from 'vue';
-const props = defineProps({ kind: { type: String, required: true } });
+
+const props = defineProps<{ kind: 'sidebar' | 'papers' | 'assistant' }>();
 const panels = {
   sidebar: ['navigation-panel', '分类栏'],
   papers: ['paper-panel', '文献列表'],
   assistant: ['assistant-panel', '助手栏'],
-};
+} as const;
 const panel = computed(() => panels[props.kind]);
 </script>
 
 <template>
   <div
     class="panel-resizer"
-    :class="{ 'panel-resizer-left': kind === 'assistant' }"
-    :data-resize-panel="kind"
+    :class="{ 'panel-resizer-left': props.kind === 'assistant' }"
+    :data-resize-panel="props.kind"
     role="separator"
     aria-orientation="vertical"
     :aria-label="`调整${panel[1]}宽度`"

@@ -1,8 +1,12 @@
-<script setup>
+<script setup lang="ts">
 import { computed, inject, ref } from 'vue';
-import { markdown } from '../lib/content.js';
-const props = defineProps({ draft: { type: Object, required: true } });
-const workspace = inject('workspace');
+import { markdown } from '../lib/content';
+import type { WorkspaceApi } from '../lib/workspace';
+
+const props = defineProps<{
+  draft: { id: string; title: string; paperId: string; path: string; content?: string };
+}>();
+const workspace = inject('workspace') as WorkspaceApi;
 const expanded = ref(true);
 const preview = computed(() => markdown(props.draft.content || ''));
 const busy = computed(() => workspace.state.noteSaving === props.draft.id);

@@ -1,18 +1,55 @@
-<script setup>
+<script setup lang="ts">
 import { computed, inject, onMounted, ref } from 'vue';
-import { json } from '../lib/content.js';
+import { json } from '../lib/content';
 import Icon from './Icon.vue';
-const workspace = inject('workspace');
-const emit = defineEmits(['close']);
-const dialog = ref(null),
-  info = ref({ defaultModel: '', providers: [] }),
-  defaultModel = ref(''),
-  providerId = ref(''),
-  key = ref(''),
-  loading = ref(true),
-  busy = ref(''),
-  error = ref('');
+import type { WorkspaceApi } from '../lib/workspace';
+
+interface ProviderInfo {
+  id: string;
+  name: string;
+  configured?: boolean;
+  source?: string | null;
+  sourceLabel?: string | null;
+  credentialType?: string | null;
+  supportsApiKey?: boolean;
+  supportsOAuth?: boolean;
+  availableModels?: number;
+}
+
+interface SettingsInfo {
+  defaultModel: string;
+  providers: ProviderInfo[];
+  thinking?: { level?: string; available?: string[] };
+  compaction?: { enabled?: boolean; reserveTokens?: number; keepRecentTokens?: number };
+}
+
+const workspace = inject('workspace') as WorkspaceApi;
+const emit = defineEmits<{ close: [] }>();
+const levelLabels: Record<string, string> = {
+  off: '关闭',
+  minimal: '极简',
+  low: '低',
+  medium: '中',
+  high: '高',
+  xhigh: '很高',
+  max: '最高',
+};
+const dialog = ref<HTMLDialogElement | null>(null);
+const info = ref<SettingsInfo>({ defaultModel: '', providers: [] });
+const defaultModel = ref('');
+const providerId = ref('');
+const key = ref('');
+const thinkingLevel = ref('');
+const compactionEnabled = ref(true);
+const reserveTokens = ref<string | number>('');
+const keepRecentTokens = ref<string | number>('');
+const loading = ref(true);
+const busy = ref('');
+const error = ref('');
 const modelOptions = computed(() => workspace.models.value);
+const thinkingOptions = computed(() =>
+  (info.value.thinking?.available || []).map((level) => ({ value: level, label: levelLabels[level] || level })),
+);
 const providers = computed(() => info.value.providers.filter((provider) => provider.supportsApiKey));
 const current = computed(() => providers.value.find((provider) => provider.id === providerId.value) || null);
 const statusText = computed(() => {
@@ -26,38 +63,42 @@ const statusText = computed(() => {
   return '尚未配置';
 });
 const canRemove = computed(() => current.value?.credentialType === 'api_key');
-const canEditKey = computed(() => current.value && current.value.credentialType !== 'oauth');
+const canEditKey = computed(() => Boolean(current.value) && current.value?.credentialType !== 'oauth');
 onMounted(() => {
   const element = dialog.value;
   if (typeof element?.showModal === 'function') element.showModal();
   else element?.setAttribute('open', '');
-  load();
+  void load();
 });
-function close() {
+function close(): void {
   if (busy.value) return;
   const element = dialog.value;
   if (typeof element?.close === 'function') element.close();
   emit('close');
 }
-function backdrop(event) {
+function backdrop(event: MouseEvent): void {
   if (event.target === dialog.value && !busy.value) close();
 }
-async function load() {
+async function load(): Promise<void> {
   loading.value = true;
   error.value = '';
   try {
-    apply(await workspace.api('/api/agents/pi/settings'));
+    apply(await workspace.api<SettingsInfo>('/api/agents/pi/settings'));
   } catch (err) {
-    error.value = err.message || '无法读取 Pi 配置。';
+    error.value = (err as Error).message || '无法读取 Pi 配置。';
   } finally {
     loading.value = false;
   }
 }
-function apply(data) {
+function apply(data: SettingsInfo): void {
   info.value = data;
   defaultModel.value = modelOptions.value.some((model) => model.id === data.defaultModel)
     ? data.defaultModel
     : '';
+  thinkingLevel.value = data.thinking?.level || '';
+  compactionEnabled.value = data.compaction?.enabled !== false;
+  reserveTokens.value = data.compaction?.reserveTokens ?? '';
+  keepRecentTokens.value = data.compaction?.keepRecentTokens ?? '';
   if (!providers.value.some((provider) => provider.id === providerId.value)) {
     const fromDefault = String(data.defaultModel || '').split('/')[0];
     providerId.value =
@@ -67,59 +108,117 @@ function apply(data) {
   }
   key.value = '';
 }
-async function saveKey() {
+async function saveKey(): Promise<void> {
   if (!current.value || busy.value) return;
   const value = key.value.trim();
-  if (!value) return (error.value = '请输入 API 密钥。');
+  if (!value) {
+    error.value = '请输入 API 密钥。';
+    return;
+  }
   const name = current.value.name;
   busy.value = 'save';
   error.value = '';
   try {
-    apply(await workspace.api('/api/agents/pi/settings/key', json('POST', {
+    apply(await workspace.api<SettingsInfo>('/api/agents/pi/settings/key', json('POST', {
       provider: current.value.id,
       key: value,
     })));
     workspace.toast(`已保存 ${name} 的 API 密钥。`);
   } catch (err) {
-    error.value = err.message || '无法保存 API 密钥。';
+    error.value = (err as Error).message || '无法保存 API 密钥。';
   } finally {
     busy.value = '';
   }
 }
-async function removeKey() {
+async function removeKey(): Promise<void> {
   if (!current.value || busy.value) return;
   const name = current.value.name;
   if (!window.confirm(`清除 ${name} 已保存的 API 密钥？`)) return;
   busy.value = 'remove';
   error.value = '';
   try {
-    apply(await workspace.api('/api/agents/pi/settings/key/remove', json('POST', {
+    apply(await workspace.api<SettingsInfo>('/api/agents/pi/settings/key/remove', json('POST', {
       provider: current.value.id,
     })));
     workspace.toast(`已清除 ${name} 的 API 密钥。`);
   } catch (err) {
-    error.value = err.message || '无法清除 API 密钥。';
+    error.value = (err as Error).message || '无法清除 API 密钥。';
   } finally {
     busy.value = '';
   }
 }
-async function saveModel() {
+async function saveModel(): Promise<void> {
   if (busy.value) return;
   busy.value = 'model';
   error.value = '';
   try {
-    apply(await workspace.api('/api/agents/pi/settings/model', json('POST', {
+    apply(await workspace.api<SettingsInfo>('/api/agents/pi/settings/model', json('POST', {
       model: defaultModel.value,
     })));
     workspace.toast('默认模型已更新。');
   } catch (err) {
-    error.value = err.message || '无法保存默认模型。';
+    error.value = (err as Error).message || '无法保存默认模型。';
     defaultModel.value = info.value.defaultModel || '';
   } finally {
     busy.value = '';
   }
 }
-async function reload() {
+function tokenValue(value: unknown): number {
+  const text = String(value ?? '').trim();
+  return /^\d+$/.test(text) ? Number(text) : NaN;
+}
+async function saveThinking(): Promise<void> {
+  if (busy.value || !thinkingLevel.value) return;
+  const level = thinkingLevel.value;
+  busy.value = 'thinking';
+  error.value = '';
+  try {
+    apply(await workspace.api<SettingsInfo>('/api/agents/pi/settings/thinking', json('POST', {
+      level,
+      ...(defaultModel.value ? { model: defaultModel.value } : {}),
+    })));
+    workspace.toast('思考强度已更新。');
+  } catch (err) {
+    error.value = (err as Error).message || '无法保存思考强度。';
+    thinkingLevel.value = info.value.thinking?.level || '';
+  } finally {
+    busy.value = '';
+  }
+}
+async function toggleCompaction(enabled: boolean): Promise<void> {
+  compactionEnabled.value = enabled;
+  await saveCompaction();
+}
+async function saveCompaction(): Promise<void> {
+  if (busy.value) return;
+  const reserve = tokenValue(reserveTokens.value);
+  const keep = tokenValue(keepRecentTokens.value);
+  if (!Number.isSafeInteger(reserve) || reserve < 1000 || reserve > 2000000) {
+    error.value = '预留 token 需为 1000 到 2000000 之间的整数。';
+    return;
+  }
+  if (!Number.isSafeInteger(keep) || keep < 1000 || keep > 2000000) {
+    error.value = '保留近期 token 需为 1000 到 2000000 之间的整数。';
+    return;
+  }
+  busy.value = 'compaction';
+  error.value = '';
+  try {
+    apply(await workspace.api<SettingsInfo>('/api/agents/pi/settings/compaction', json('POST', {
+      enabled: compactionEnabled.value,
+      reserveTokens: reserve,
+      keepRecentTokens: keep,
+    })));
+    workspace.toast('上下文压缩设置已更新。');
+  } catch (err) {
+    error.value = (err as Error).message || '无法保存上下文压缩设置。';
+    reserveTokens.value = info.value.compaction?.reserveTokens ?? '';
+    keepRecentTokens.value = info.value.compaction?.keepRecentTokens ?? '';
+  } finally {
+    busy.value = '';
+  }
+}
+async function reload(): Promise<void> {
   if (busy.value) return;
   busy.value = 'reload';
   await workspace.reconnectAgent();
@@ -179,6 +278,67 @@ async function reload() {
                   ? '用于网站新会话，也会成为终端 Pi 的默认模型。'
                   : '尚无可用模型，请先在下方配置 API 密钥或登录账号。'
               }}
+            </p>
+          </section>
+          <section class="settings-section">
+            <label class="settings-label" for="settings-thinking">思考强度</label>
+            <select
+              id="settings-thinking"
+              v-model="thinkingLevel"
+              :disabled="!thinkingOptions.length || !!busy"
+              @change="saveThinking"
+            >
+              <option v-for="option in thinkingOptions" :key="option.value" :value="option.value">
+                {{ option.label }}
+              </option>
+            </select>
+            <p class="settings-hint">
+              {{
+                thinkingOptions.length
+                  ? '对当前会话立即生效，并成为终端 Pi 的默认档位；模型不支持的档位不会出现。'
+                  : '当前模型没有可用的思考档位。'
+              }}
+            </p>
+          </section>
+          <section class="settings-section">
+            <span class="settings-label">上下文压缩</span>
+            <label class="settings-check">
+              <input
+                type="checkbox"
+                :checked="compactionEnabled"
+                :disabled="!!busy"
+                @change="toggleCompaction(($event.target as HTMLInputElement).checked)"
+              />
+              长会话自动摘要历史
+            </label>
+            <div class="settings-token-row">
+              <label class="settings-token-field">
+                <span>预留 token</span>
+                <input
+                  v-model="reserveTokens"
+                  type="number"
+                  min="1000"
+                  max="2000000"
+                  step="1000"
+                  :disabled="!!busy"
+                  @change="saveCompaction"
+                />
+              </label>
+              <label class="settings-token-field">
+                <span>保留近期 token</span>
+                <input
+                  v-model="keepRecentTokens"
+                  type="number"
+                  min="1000"
+                  max="2000000"
+                  step="1000"
+                  :disabled="!!busy"
+                  @change="saveCompaction"
+                />
+              </label>
+            </div>
+            <p class="settings-hint">
+              预留越大越早压缩；保留量决定压缩后仍原样保留的近期对话长度。修改后对当前会话生效。
             </p>
           </section>
           <section class="settings-section">

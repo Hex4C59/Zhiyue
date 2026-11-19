@@ -1,10 +1,13 @@
-<script setup>
+<script setup lang="ts">
 import { computed, inject } from 'vue';
-import { titleOf, authorText, readKey, readLabels } from '../lib/content.js';
+import { authorText, readKey, readLabels, titleOf } from '../lib/content';
 import Icon from './Icon.vue';
 import PanelHandle from './PanelHandle.vue';
-const workspace = inject('workspace'),
-  state = workspace.state;
+import type { Paper } from '../lib/types';
+import type { WorkspaceApi } from '../lib/workspace';
+
+const workspace = inject('workspace') as WorkspaceApi;
+const state = workspace.state;
 const years = computed(() =>
   [
     ...new Set(
@@ -25,7 +28,7 @@ const emptyText = computed(() =>
       ? '这个文件夹还没有文献'
       : '文献库还没有文献',
 );
-const papers = computed(() => {
+const papers = computed<Paper[]>(() => {
   const query = state.query.trim().toLocaleLowerCase();
   const result = state.papers.filter((paper) => {
     const haystack = [
@@ -162,8 +165,8 @@ const papers = computed(() => {
         <h3>{{ titleOf(paper) }}</h3>
         <div class="paper-authors" :title="authorText(paper)">{{ authorText(paper) }}</div>
         <div class="paper-bottom">
-          <span class="tag" :title="paper.subcategory || paper.venue || ''">
-            {{ (paper.subcategory || paper.venue || paper.category || '未分类').replace(/^\d+_/, '') }}</span
+          <span class="tag" :title="String(paper.subcategory || paper.venue || '')">
+            {{ String(paper.subcategory || paper.venue || paper.category || '未分类').replace(/^\d+_/, '') }}</span
           >
           <span :class="readKey(paper.readStatus)"
             ><i class="read-dot" />{{ readLabels[readKey(paper.readStatus)] }}</span

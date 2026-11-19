@@ -1,20 +1,27 @@
-<script setup>
-import { computed, inject, nextTick, onMounted, onBeforeUnmount, ref, watch } from 'vue';
+<script setup lang="ts">
+import { computed, inject, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import Icon from './Icon.vue';
-const workspace = inject('workspace'),
-  state = workspace.state;
-const open = ref(false),
-  query = ref(''),
-  trigger = ref(null),
-  search = ref(null),
-  list = ref(null);
-const options = computed(() => [{ id: '', label: '默认模型' }, ...workspace.models.value]);
+import type { WorkspaceApi } from '../lib/workspace';
+
+interface ModelOption {
+  id: string;
+  label: string;
+}
+
+const workspace = inject('workspace') as WorkspaceApi;
+const state = workspace.state;
+const open = ref(false);
+const query = ref('');
+const trigger = ref<HTMLButtonElement | null>(null);
+const search = ref<HTMLInputElement | null>(null);
+const list = ref<HTMLElement | null>(null);
+const options = computed<ModelOption[]>(() => [{ id: '', label: '默认模型' }, ...workspace.models.value]);
 const filtered = computed(() =>
   options.value.filter((model) =>
     `${model.label} ${model.id}`.toLocaleLowerCase().includes(query.value.trim().toLocaleLowerCase()),
   ),
 );
-const selected = computed(() => options.value.find((model) => model.id === state.model) || options.value[0]);
+const selected = computed(() => options.value.find((model) => model.id === state.model) || options.value[0] as ModelOption);
 const disabled = computed(
   () =>
     workspace.busy.value ||
@@ -28,37 +35,41 @@ watch(options, () => {
 watch(disabled, (value) => {
   if (value) open.value = false;
 });
-function close(focus = false) {
+function close(focus = false): void {
   open.value = false;
   if (focus) trigger.value?.focus();
 }
-async function toggle() {
-  if (open.value) return close();
+async function toggle(): Promise<void> {
+  if (open.value) {
+    close();
+    return;
+  }
   query.value = '';
   open.value = true;
   await nextTick();
   search.value?.focus();
 }
-function choose(id) {
+function choose(id: string): void {
   state.model = id;
   close();
   state.focusComposer++;
 }
-function keydown(event) {
+function keydown(event: KeyboardEvent): void {
   if (event.key === 'Escape') {
     event.preventDefault();
     close(true);
     return;
   }
-  const buttons = [...(list.value?.querySelectorAll('[role="option"]') || [])];
+  const buttons = [...(list.value?.querySelectorAll<HTMLElement>('[role="option"]') || [])];
   if (event.key === 'Enter' && event.target === search.value) {
     event.preventDefault();
-    if (filtered.value[0]) choose(filtered.value[0].id);
+    const first = filtered.value[0];
+    if (first) choose(first.id);
     return;
   }
   if (['ArrowDown', 'ArrowUp'].includes(event.key)) {
     event.preventDefault();
-    const index = buttons.indexOf(document.activeElement);
+    const index = buttons.indexOf(document.activeElement as HTMLElement);
     const next =
       index < 0
         ? event.key === 'ArrowDown'
@@ -67,13 +78,14 @@ function keydown(event) {
         : (index + (event.key === 'ArrowDown' ? 1 : -1) + buttons.length) % buttons.length;
     buttons[next]?.focus();
   }
-  if (['Home', 'End'].includes(event.key) && event.target.getAttribute('role') === 'option') {
+  if (['Home', 'End'].includes(event.key) && (event.target as HTMLElement).getAttribute('role') === 'option') {
     event.preventDefault();
     buttons[event.key === 'Home' ? 0 : buttons.length - 1]?.focus();
   }
 }
-function outside(event) {
-  if (!event.target.closest?.('#model-menu,#model-trigger')) close();
+function outside(event: Event): void {
+  const target = event.target as HTMLElement | null;
+  if (!target?.closest?.('#model-menu,#model-trigger')) close();
 }
 onMounted(() => {
   document.addEventListener('pointerdown', outside);

@@ -55,7 +55,7 @@ Python入口为`run.py`，默认以本工具所在项目为根目录，和当前
 
 本机验证环境：Python 3.12.14、pypdf 6.10.0、系统curl、已有Poppler及InstSci独立环境。启动器先使用本目录`.venv`，再使用PATH中的Python；`LITERATURE_PYTHON`可显式指定解释器。没有修改用户现有Python环境。
 
-需要独立部署时，可自行创建本目录`.venv`后按[requirements.txt](requirements.txt)安装pypdf。curl和Poppler为外部可执行程序；PDFTOPPM环境变量可以指定`pdftoppm.exe`。`doctor`会列出实际找到的路径。仅关闭渲染不能让文件通过archive的渲染要求。
+需要独立部署时，可自行创建本目录`.venv`后按[requirements.txt](requirements.txt)安装pypdf。curl和Poppler为外部可执行程序；`PDFTOPPM`环境变量可以指定`pdftoppm.exe`，项目内`tools/poppler/Library/bin/pdftoppm.exe`会作为回退路径被自动使用。`doctor`会列出实际找到的路径。仅关闭渲染不能让文件通过archive的渲染要求。
 
 ## 认证配置
 

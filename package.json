@@ -1,20 +1,25 @@
 {
   "name": "zhiyue",
   "private": true,
+  "type": "module",
   "version": "0.1.0",
   "description": "Zhiyue - local literature management, PDF reading and AI research assistant",
   "engines": {
     "node": ">=22"
   },
   "scripts": {
-    "build:web": "vite build --config app/web/vite.config.mjs",
-    "test": "npm run build:web && node --test app/web/test/*.test.mjs",
-    "test:desktop": "node --test app/desktop/test/*.test.mjs",
+    "build:node": "tsc -p tsconfig.json",
+    "build:web": "vite build --config app/web/vite.config.ts",
+    "build": "npm run build:node && npm run build:web",
+    "typecheck": "tsc -p tsconfig.json --noEmit && vue-tsc -p app/web/tsconfig.frontend.json",
+    "test": "npm run build:web && npm run build:node && node --test build/app/web/test/*.test.js",
+    "test:desktop": "npm run build:node && node --test build/app/desktop/test/*.test.js",
     "test:downloads": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/download.ps1 -RunTests",
     "doctor": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/download.ps1 doctor",
-    "desktop:dev": "npm run build:web && cd app/desktop && tauri dev",
-    "desktop:prepare": "node scripts/prepare-desktop.mjs",
-    "desktop:build": "npm run build:web && npm run desktop:prepare && node scripts/desktop-build.mjs",
+    "desktop:dev": "npm run build && cd app/desktop && tauri dev",
+    "desktop:prepare": "npm run build:node && node build/scripts/prepare-desktop.js",
+    "desktop:build": "npm run build && npm run desktop:prepare && node build/scripts/desktop-build.js",
+    "check:pi": "npm run build:node && node build/scripts/check-pi.js",
     "share": "python scripts/export_share.py"
   },
   "dependencies": {
@@ -23,8 +28,12 @@
   },
   "devDependencies": {
     "@tauri-apps/cli": "2.12.5",
+    "@types/jsdom": "^27.0.0",
+    "@types/node": "^24.19.2",
     "@vitejs/plugin-vue": "6.0.11",
     "jsdom": "31.0.1",
-    "vite": "8.3.8"
+    "typescript": "~5.9.0",
+    "vite": "8.3.8",
+    "vue-tsc": "^3.3.14"
   }
 }
