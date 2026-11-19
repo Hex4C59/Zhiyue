@@ -2,11 +2,11 @@ import { computed, markRaw, reactive } from 'vue';
 import { request } from './api';
 import { endpoint, json, titleOf } from './content';
 import type {
-  Category, Chat, ChatMessage, CommandInfo, JobRecord, ModelOption, Paper, PiAgentStatus, StatusInfo,
-  WorkspaceEvent, WorkspaceState,
+  AttachmentItem, Category, Chat, ChatMessage, CommandInfo, JobRecord, ModelOption, Paper, PiAgentStatus,
+  StatusInfo, UiState, WorkspaceEvent, WorkspaceState,
 } from './types';
 
-export type { WorkspaceState } from './types';
+export type { WorkspaceState, UiState } from './types';
 
 export const activeStatuses = ['streaming', 'pending', 'running', 'in_progress', 'inProgress', 'queued'];
 export const statusLabels: Record<string, string> = {
@@ -128,22 +128,11 @@ export function createWorkspace({
     pendingPatches: new Set(),
     refreshing: false,
     importOpen: false,
+    ui: { chatId: null, paperId: null },
+    panelWidths: {},
+    uiDirty: false,
+    uiError: '',
   }) as unknown as WorkspaceState;
-  // 浏览器存储可能被隐私设置禁用，读取失败时使用默认会话与布局。
-  const remember = (key: string, value?: string | null): void => {
-    try {
-      value == null ? localStorage.removeItem(key) : localStorage.setItem(key, value);
-    } catch {
-      /* 存储不可用不影响本轮操作。 */
-    }
-  };
-  const recalled = (key: string): string | null => {
-    try {
-      return localStorage.getItem(key);
-    } catch {
-      return null;
-    }
-  };
   const currentPaper = computed(() => state.papers.find((paper) => paper.literature_id === state.current));
   const agent = computed<PiAgentStatus>(() => state.status.agents?.pi || {});
   const models = computed<ModelOption[]>(() =>
@@ -211,6 +200,8 @@ export function createWorkspace({
 
   function selectPaper(id: string): void {
     state.current = id;
+    // 重启后恢复到上次阅读的那篇：助手靠 state.current 判断“当前打开”的是哪一篇。
+    saveUiState({ paperId: id });
     state.readerMode = 'pdf';
     state.notePath = '';
     state.pdfPage = 1;
@@ -322,6 +313,33 @@ export function createWorkspace({
   }
 
   /**
+   * 读取文献库里的界面状态（会话、当前文献、栏宽）。
+   * 本地服务每次启动会换端口，浏览器存储因此按端口隔离而不可靠；失败时保持默认值，不阻断启动。
+   */
+  async function loadUiState(): Promise<void> {
+    try {
+      const data = await api<UiState>('/api/ui');
+      state.ui = { chatId: data.chatId ?? null, paperId: data.paperId ?? null };
+      // 用户已经拖过栏宽时不再用服务端旧值覆盖，避免慢返回把刚调好的宽度弹回去。
+      if (!state.uiDirty) state.panelWidths = { ...(data.panelWidths || {}) };
+      state.uiError = '';
+    } catch (error) {
+      state.uiError = messageOf(error);
+    }
+  }
+
+  /** 保存局部界面状态；偏好写失败只记下来，不回滚也不打断阅读。 */
+  function saveUiState(patch: Partial<UiState>): void {
+    if (patch.chatId !== undefined) state.ui.chatId = patch.chatId;
+    if (patch.paperId !== undefined) state.ui.paperId = patch.paperId;
+    if (patch.panelWidths) state.panelWidths = { ...state.panelWidths, ...patch.panelWidths };
+    state.uiDirty = true;
+    api('/api/ui', json('PATCH', patch)).catch((error: unknown) => {
+      state.uiError = messageOf(error);
+    });
+  }
+
+  /**
    * 发送一条以斜杠开头的输入。
    * 本地命令由服务端直接回执，技能命令展开后作为用户回合发给模型。
    */
@@ -329,6 +347,8 @@ export function createWorkspace({
     if (!canSend.value) return false;
     state.sending = true;
     const paperIds = [...state.context];
+    // 阅读位置跟着请求一起发出：命令与普通消息共用同一套服务端上下文校验。
+    const place = { activePaperId: state.current || undefined, pdfPage: state.pdfPage };
     try {
       if (!state.chat) {
         state.creating = true;
@@ -338,14 +358,14 @@ export function createWorkspace({
             json('POST', { paperIds, title: text.slice(0, 50) || titleOf(currentPaper.value || {}) }),
           );
           state.chat = { ...chat, messages: chat.messages || [] };
-          remember('zhiyue.chat', chat.id);
+          saveUiState({ chatId: chat.id });
           state.chats.unshift(chat);
         } finally {
           state.creating = false;
         }
       }
       const chat = state.chat as Chat;
-      const body: Record<string, unknown> = { text, paperIds };
+      const body: Record<string, unknown> = { text, paperIds, ...place };
       if (state.model) body.model = state.model;
       await api(`/api/chats/${endpoint(chat.id)}/commands`, json('POST', body));
       if (state.draft.trim() === text) state.draft = '';
@@ -371,7 +391,7 @@ export function createWorkspace({
     if (state.sending) return;
     state.chatEpoch++;
     state.chat = null;
-    remember('zhiyue.chat', null);
+    saveUiState({ chatId: null });
     state.focusComposer++;
   }
 
@@ -383,7 +403,7 @@ export function createWorkspace({
       if (epoch !== state.chatEpoch || stopped) return;
       state.chat = chat;
       state.context = new Set(chat.paperIds || []);
-      remember('zhiyue.chat', chat.id);
+      saveUiState({ chatId: chat.id });
       if (agent.value.available !== true) reconnectAgent();
     } catch (error) {
       toast(messageOf(error), true);
@@ -412,6 +432,7 @@ export function createWorkspace({
     const text = state.draft.trim();
     const files = [...state.attachments];
     const paperIds = [...state.context];
+    const place = { activePaperId: state.current || undefined, pdfPage: state.pdfPage };
     state.sending = true;
     try {
       if (!state.chat) {
@@ -425,14 +446,14 @@ export function createWorkspace({
             }),
           );
           state.chat = { ...chat, messages: chat.messages || [] };
-          remember('zhiyue.chat', chat.id);
+          saveUiState({ chatId: chat.id });
           state.chats.unshift(chat);
         } finally {
           state.creating = false;
         }
       }
       const chat = state.chat as Chat;
-      const body: Record<string, unknown> = { text, paperIds, attachmentIds: files.map((file) => file.id) };
+      const body: Record<string, unknown> = { text, paperIds, attachmentIds: files.map((file) => file.id), ...place };
       if (state.model) body.model = state.model;
       await api(`/api/chats/${endpoint(chat.id)}/messages`, json('POST', body));
       if (state.draft.trim() === text) state.draft = '';
@@ -771,10 +792,15 @@ export function createWorkspace({
         receive(data);
       };
     }
-    await Promise.allSettled([loadLibrary(), loadStatus(), loadChats(), loadDownloads(), loadCommands()]);
+    await Promise.allSettled([
+      loadLibrary(), loadStatus(), loadChats(), loadDownloads(), loadCommands(), loadUiState(),
+    ]);
     if (stopped) return;
-    const saved = recalled('zhiyue.chat');
+    const saved = state.ui.chatId;
     if (saved && state.chats.some((chat) => chat.id === saved)) await openChat(saved);
+    // 恢复上次阅读的文献；编号必须仍在当前索引里，已删除的条目不能凭存储复活。
+    const paper = state.ui.paperId;
+    if (paper && !state.current && state.papers.some((item) => item.literature_id === paper)) selectPaper(paper);
     if (pollInterval) pollTimer = setInterval(poll, pollInterval);
   }
 
@@ -808,6 +834,8 @@ export function createWorkspace({
     reconnectAgent,
     loadChats,
     loadCommands,
+    loadUiState,
+    saveUiState,
     openChat,
     syncChat,
     newChat,

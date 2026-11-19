@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, provide, computed } from 'vue';
+import { onBeforeUnmount, onMounted, provide, computed, watch } from 'vue';
 import { initializePanelResizing } from './lib/layout';
+import type { PanelLayout } from './lib/layout';
 import Sidebar from './components/Sidebar.vue';
 import PaperList from './components/PaperList.vue';
 import ReaderPane from './components/ReaderPane.vue';
@@ -23,11 +24,20 @@ const panelKeys: Array<['list' | 'reader' | 'chat', string]> = [
   ['reader', '阅读'],
   ['chat', '研究助手'],
 ];
-let disposeLayout: (() => void) | undefined;
+let disposeLayout: PanelLayout | undefined;
 let lifecycle: AbortController | undefined;
 onMounted(() => {
-  disposeLayout = initializePanelResizing(document);
+  disposeLayout = initializePanelResizing(document, {
+    widths: state.panelWidths,
+    onSave: (widths) => workspace.saveUiState({ panelWidths: widths }),
+  });
   lifecycle = new window.AbortController();
+  // 界面状态可能晚于挂载到达；拿到栏宽后重算布局，不用重新挂载。
+  watch(
+    () => state.panelWidths,
+    (widths) => disposeLayout?.setWidths(widths),
+    { deep: true },
+  );
   document.addEventListener(
     'keydown',
     (event) => {
@@ -46,7 +56,7 @@ onMounted(() => {
   );
 });
 onBeforeUnmount(() => {
-  disposeLayout?.();
+  disposeLayout?.dispose();
   lifecycle?.abort();
   workspace.stop();
 });

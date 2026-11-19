@@ -190,6 +190,32 @@ fn fail_startup(window: &WebviewWindow, message: &str) {
     });
 }
 
+/// WebView 的 localStorage 按 origin（含端口）隔离，而本地服务每次启动换端口。
+/// 界面状态已改存文献库 `.zhiyue/data/ui.json`，旧端口留下的存储不会被读取，
+/// 因此在 WebView 启动前删除一次；目录名带标记，删过就不再重复尝试。
+fn purge_legacy_storage(identifier: &str) {
+    let Some(local) = std::env::var_os("LOCALAPPDATA") else {
+        return;
+    };
+    let data_dir = PathBuf::from(local).join(identifier);
+    let marker = data_dir.join("legacy-local-storage.purged");
+    if marker.exists() {
+        return;
+    }
+    let storage = data_dir.join("EBWebView").join("Default").join("Local Storage");
+    if storage.exists() {
+        match std::fs::remove_dir_all(&storage) {
+            Ok(()) => eprintln!("已清理旧端口遗留的浏览器存储：{}", storage.display()),
+            // 目录仍被占用（例如另一个实例在跑）：不写标记，下次启动再试。
+            Err(error) => {
+                eprintln!("清理旧浏览器存储失败：{error}");
+                return;
+            }
+        }
+    }
+    let _ = std::fs::write(&marker, b"1");
+}
+
 fn resolve_launch(app: &AppHandle) -> Result<Launch, String> {
     if cfg!(debug_assertions) {
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -401,6 +427,9 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
 }
 
 pub fn run() {
+    // 在 Builder.build() 创建窗口之前清理：WebView 一旦启动就会锁住这些文件。
+    let context = tauri::generate_context!();
+    purge_legacy_storage(&context.config().identifier);
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
             show_main(app);
@@ -412,6 +441,7 @@ pub fn run() {
             let window = app
                 .get_webview_window("main")
                 .ok_or("缺少主窗口配置。")?;
+            // 在窗口加载前清理，避免 WebView 已打开旧存储后目录被占用。
             hide_on_close(&window);
             build_tray(app.handle()).map_err(|error| format!("无法创建托盘菜单：{error}"))?;
             if let Err(error) = spawn_sidecar(app.handle(), &window) {
@@ -420,7 +450,7 @@ pub fn run() {
             update::schedule_startup_check(app.handle().clone());
             Ok(())
         })
-        .build(tauri::generate_context!())
+        .build(context)
         .expect("无法初始化 Zhiyue 桌面窗口");
     app.run(|app, event| {
         if let RunEvent::Exit = event {

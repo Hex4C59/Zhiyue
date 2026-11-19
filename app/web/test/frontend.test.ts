@@ -45,7 +45,6 @@ for (const key of [
   'SVGElement',
   'Node',
   'navigator',
-  'localStorage',
   'Event',
   'KeyboardEvent',
   'MouseEvent',
@@ -110,9 +109,10 @@ const input = (element: any, value: string) => {
 };
 const click = (element: any): boolean => element.dispatchEvent(new MouseEvent('click', { bubbles: true }));
 
-async function fixture(t: test.TestContext) {
-  localStorage.clear();
+// `ui` 模拟文献库里的界面状态：传入上一次写回的值即可模拟重启后读回。
+async function fixture(t: test.TestContext, { ui = {}, uiPatchError = '' }: { ui?: Json; uiPatchError?: string } = {}) {
   const calls: any[] = [];
+  const uiState: Json = { chatId: null, paperId: null, panelWidths: {}, ...ui };
   const decisions: any[] = [];
   const noteDecisions: any[] = [];
   const chats = new Map<string, any>();
@@ -195,6 +195,13 @@ async function fixture(t: test.TestContext) {
     const body = typeof options.body === 'string' ? JSON.parse(options.body) : options.body;
     calls.push({ path, method: options.method || 'GET', body });
     if (path === '/api/status') return structuredClone(status);
+    if (path === '/api/ui') {
+      if (options.method === 'PATCH') {
+        if (uiPatchError) throw new Error(uiPatchError);
+        Object.assign(uiState, structuredClone(body));
+      }
+      return structuredClone(uiState);
+    }
     if (path === '/api/library')
       return { papers: structuredClone(papers), categories: ['01_超声', '02_模型'] };
     if (path === '/api/notes/delete') {
@@ -329,6 +336,7 @@ async function fixture(t: test.TestContext) {
     chats,
     status,
     piSettings,
+    ui: uiState,
   };
 }
 
@@ -595,7 +603,8 @@ test('附件上传与删除、Pi 标题与空上下文按 Vue 状态更新', asy
   assert.equal(page.$('#agent-select'), null);
   assert.equal(page.$('#codex-login'), null);
   assert.equal(page.$('.agent-name').textContent.trim(), 'Pi Agent');
-  assert.equal(localStorage.getItem('zhiyue.agent'), null);
+  // 上传附件不应产生会话，也不该写入界面状态。
+  assert.equal(page.ui.chatId, null);
 });
 
 test('下载表单和任务日志保持用户状态，模型与正文内容不能注入 HTML', async (t) => {
@@ -670,6 +679,48 @@ test('Vue 阅读区保留 PDF 文字层与复制内容，其他面板更新不�
 });
 
 // 删除笔记只在用户确认后调接口，确认框默认拒绝不产生请求。
+test('当前阅读的文献存于服务端文件，并在重启后恢复', async (t) => {
+  const page = await fixture(t);
+  click(page.$('[data-paper="L002"]'));
+  await flush();
+  assert.equal(page.workspace.state.current, 'L002');
+  assert.equal(page.ui.paperId, 'L002');
+  page.unmount();
+  page.target.remove();
+
+  // 重新挂载并以同样的服务端状态读取，等价于重启应用：选中项与“当前打开”都要回来。
+  const restarted = await fixture(t, { ui: page.ui });
+  assert.equal(restarted.workspace.state.current, 'L002');
+  assert.ok(restarted.workspace.state.context.has('L002'));
+
+  // 索引里已不存在的编号不能凭存储复活。
+  const stale = await fixture(t, { ui: { paperId: 'L999' } });
+  assert.equal(stale.workspace.state.current, null);
+});
+
+test('栏宽从服务端读回，调整后写回服务端', async (t) => {
+  const page = await fixture(t, { ui: { panelWidths: { sidebar: 240 } } });
+  const width = () => document.documentElement.style.getPropertyValue('--sidebar-width');
+  assert.equal(width(), '240px');
+
+  // 方向键调整左栏宽度，结果应写回服务端界面状态。
+  const handle = page.$('[data-resize-panel="sidebar"]');
+  handle.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+  await flush();
+  assert.equal(page.ui.panelWidths.sidebar, 256);
+  assert.equal(width(), '256px');
+});
+
+test('界面状态接口失败不影响阅读与发消息', async (t) => {
+  // 界面状态是偏好：写失败只记错误，选中与渲染仍要正常。
+  const page = await fixture(t, { uiPatchError: '磁盘只读' });
+  click(page.$('[data-paper="L002"]'));
+  await flush();
+  assert.equal(page.workspace.state.current, 'L002');
+  assert.ok(page.$('#reader-content'));
+  assert.equal(page.workspace.state.uiError, '磁盘只读');
+});
+
 test('阅读笔记可删除，取消确认不发请求', async (t) => {
   const page = await fixture(t),
     { workspace } = page;
@@ -867,6 +918,10 @@ test('输入框唤起斜杠命令菜单，键盘与点击都能插入命令', as
 test('提交斜杠命令走命令接口并保留提示菜单可发现性', async (t) => {
   const page = await fixture(t);
   const composer = page.$('#chat-input');
+  // 选中文献与阅读位置必须跟着命令请求一起发送，否则技能回合看不到当前论文。
+  page.workspace.state.context.add('L001');
+  page.workspace.state.current = 'L001';
+  page.workspace.state.pdfPage = 3;
   input(composer, '/help');
   await flush();
   page.$('#chat-form').dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
@@ -875,6 +930,9 @@ test('提交斜杠命令走命令接口并保留提示菜单可发现性', async
   const call = page.calls.find((item) => item.path.startsWith('/api/chats/') && item.path.endsWith('/commands'));
   assert.equal(call.method, 'POST');
   assert.equal(call.body.text, '/help');
+  assert.deepEqual(call.body.paperIds, ['L001']);
+  assert.equal(call.body.activePaperId, 'L001');
+  assert.equal(call.body.pdfPage, 3);
   assert.match(page.$('#messages').textContent, /斜杠命令/);
   assert.equal(page.workspace.state.draft, '');
 });

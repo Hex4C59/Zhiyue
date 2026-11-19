@@ -187,6 +187,13 @@ export interface ModelOption {
   isDefault?: boolean;
 }
 
+/** 文献库里的界面状态；跨启动保留，不随本地服务端口变化而失效。 */
+export interface UiState {
+  chatId: string | null;
+  paperId: string | null;
+  panelWidths?: Record<string, number>;
+}
+
 export interface WorkspaceState {
   papers: Paper[];
   categories: Category[];
@@ -240,6 +247,12 @@ export interface WorkspaceState {
   /** 斜杠命令目录，来自 /api/commands；只影响输入框提示，不阻塞发送。 */
   commands: CommandInfo[];
   commandError: string;
+  /** 服务端 ui.json 里的会话与当前文献；栏宽另存于 panelWidths。 */
+  ui: { chatId: string | null; paperId: string | null };
+  panelWidths: Record<string, number>;
+  /** 用户已手动调整栏宽或会话，晚到的服务端旧值不再覆盖本地。 */
+  uiDirty: boolean;
+  uiError: string;
 }
 
 export interface WorkspaceEvent {

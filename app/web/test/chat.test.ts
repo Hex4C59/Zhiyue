@@ -340,6 +340,51 @@ test('未知命令、非斜杠输入与非命令会话的 /compact 明确报错'
   assert.equal(client.calls.some((call) => call.method === 'turn/start'), false);
 });
 
+test('技能命令携带当前选中文献与阅读位置，并写回会话记录', async (t) => {
+  const { chats, client } = await fixture(t);
+  chats.library = {
+    getPaper: async (id: string) => ({ id, title: 'emotion2vec', file: `papers/01/${id}.pdf`, pages: 14 }),
+    getLibrary: async () => ({ papers: [], categories: [], stats: {} }),
+    safeFile: async () => '',
+    refresh: async () => {},
+  } as unknown as ChatServiceOptions['library'];
+  const chat = chats.create();
+  await chats.command(chat.id, '/skill:paper-reading 看看当前这篇', {
+    paperIds: ['L028'], activePaperId: 'L028', pdfPage: 3,
+  });
+  await until(() => client.calls.some((call) => call.method === 'turn/start'));
+  const prompt = (client.calls.find((call) => call.method === 'turn/start')?.params as {
+    input: Array<{ text?: string }>;
+  }).input[0]?.text ?? '';
+  // 之前命令通道丢掉 paperIds，模型只会看到空列表。
+  assert.match(prompt, /"文献编号":"L028"/);
+  assert.match(prompt, /"当前打开":true/);
+  assert.match(prompt, /"阅读页":3/);
+  assert.match(prompt, /"页数":14/);
+  assert.match(prompt, /阅读器当前打开 L028 第 3 页/);
+  assert.match(prompt, /<skill name="paper-reading">/);
+  assert.deepEqual(chat.paperIds, ['L028']);
+});
+
+test('命令未带 paperIds 时保留选中范围，显式空数组清空且非法项被过滤', async (t) => {
+  const { chats, client } = await fixture(t);
+  const chat = chats.create({ paperIds: ['L001'] });
+  await chats.command(chat.id, '/help');
+  assert.deepEqual(chat.paperIds, ['L001']);
+  await chats.command(chat.id, '/help', { paperIds: [] });
+  assert.deepEqual(chat.paperIds, []);
+  await chats.command(chat.id, '/help', { paperIds: ['L002', 'x9', 'L003', 'L004', 'L005', 'L006', 'L007', 'L008'] });
+  assert.deepEqual(chat.paperIds, ['L002', 'L003', 'L004', 'L005', 'L006', 'L007']);
+  // 非法阅读位置按缺失处理，不报错、也不写进提示。
+  chats.authenticated = true;
+  await chats.send(chat.id, { text: '问题', paperIds: ['L002'], activePaperId: 'bad', pdfPage: 0 });
+  await until(() => client.calls.some((call) => call.method === 'turn/start'));
+  const prompt = (client.calls.find((call) => call.method === 'turn/start')?.params as {
+    input: Array<{ text?: string }>;
+  }).input[0]?.text ?? '';
+  assert.doesNotMatch(prompt, /阅读器当前打开/);
+});
+
 test('技能命令作为用户回合发送展开后的技能说明，界面保留单行指令', async (t) => {
   const { chats, client, dir } = await fixture(t);
   const chat = chats.create();

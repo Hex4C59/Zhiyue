@@ -14,9 +14,23 @@ interface DragState {
 
 const PANEL_KEYS: PanelKey[] = ['sidebar', 'papers', 'assistant'];
 
-export function initializePanelResizing(document: Document): () => void {
+export interface PanelLayoutOptions {
+  /** 从文献库读回的栏宽；缺省时按窗口宽度取默认值。 */
+  widths?: Partial<Record<PanelKey, number>>;
+  /** 用户调整栏宽时回调，由调用方决定持久化方式。 */
+  onSave?: (widths: Record<PanelKey, number>) => void;
+}
+
+export interface PanelLayout {
+  /** 写入外部读回的栏宽并重算布局；界面状态可能晚于挂载到达。 */
+  setWidths(widths: Partial<Record<PanelKey, number>>): void;
+  dispose(): void;
+}
+
+export function initializePanelResizing(document: Document, options: PanelLayoutOptions = {}): PanelLayout {
   const window = document.defaultView as Window;
-  const lifecycle = new AbortController();
+  // 用所属 window 的 AbortController：jsdom 会拒绝来自其他 realm 的 signal。
+  const lifecycle = new (window as unknown as { AbortController: typeof AbortController }).AbortController();
   const listen = (target: EventTarget, name: string, handler: (event: Event) => void): void => {
     target.addEventListener(name, handler, { signal: lifecycle.signal });
   };
@@ -25,7 +39,6 @@ export function initializePanelResizing(document: Document): () => void {
   const shell = $('.shell') as HTMLElement;
   const root = document.documentElement;
   const handles = $$('[data-resize-panel]');
-  const storageKey = 'zhiyue.panel-widths.v1';
   const limits: Record<PanelKey, [number, number]> = {
     sidebar: [140, 360], papers: [200, 600], assistant: [260, 900],
   };
@@ -37,13 +50,18 @@ export function initializePanelResizing(document: Document): () => void {
   let preferred: Partial<Record<PanelKey, number>> = {};
   let widths = {} as Record<PanelKey, number>;
   let drag: DragState | null = null;
-  try {
-    const stored = JSON.parse(window.localStorage.getItem(storageKey) || '{}') as Partial<Record<PanelKey, unknown>>;
+  function setWidths(next: Partial<Record<PanelKey, number>>): void {
     for (const key of PANEL_KEYS) {
-      const value = stored[key];
+      const value = next[key];
       if (typeof value === 'number' && Number.isFinite(value)) preferred[key] = value;
     }
-  } catch { /* 损坏的本地偏好不影响默认布局。 */ }
+    apply();
+  }
+  // 初始栏宽只填 preferred，真正套用留给文件末尾的 apply()，避免在 clamp/defaults 初始化前调用。
+  for (const key of PANEL_KEYS) {
+    const value = options.widths?.[key];
+    if (typeof value === 'number' && Number.isFinite(value)) preferred[key] = value;
+  }
   const clamp = (value: number, min: number, max: number): number => Math.min(max, Math.max(min, value));
   const defaults = (): Record<PanelKey, number> =>
     window.innerWidth >= 1700
@@ -89,9 +107,7 @@ export function initializePanelResizing(document: Document): () => void {
     }
   }
   function save(): void {
-    try {
-      window.localStorage.setItem(storageKey, JSON.stringify(preferred));
-    } catch { /* 存储不可用时只影响下次打开的默认宽度。 */ }
+    options.onSave?.({ ...widths });
   }
   function finish(cancel = false): void {
     if (!drag) return;
@@ -183,8 +199,11 @@ export function initializePanelResizing(document: Document): () => void {
   });
   listen(window, 'pagehide', () => finish());
   apply();
-  return () => {
-    finish();
-    lifecycle.abort();
+  return {
+    setWidths,
+    dispose: () => {
+      finish();
+      lifecycle.abort();
+    },
   };
 }

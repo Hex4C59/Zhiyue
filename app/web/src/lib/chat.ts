@@ -149,6 +149,54 @@ export interface ChatServiceOptions {
   client: AssistantClient;
 }
 
+/**
+ * 选中文献与阅读位置的请求载荷。
+ * 命令与普通消息共用同一套校验：`paperIds` 缺省表示保留会话原值，空数组表示清空。
+ */
+export interface PaperContext {
+  paperIds?: string[];
+  /** 阅读器当前打开的文献编号；只用于标注“这篇”，不扩大或缩小可选范围。 */
+  activePaperId?: string;
+  /** 阅读器当前物理页；缺省表示尚未打开具体页。 */
+  pdfPage?: number;
+}
+
+const MAX_CONTEXT_PAPERS = 6;
+const PAPER_ID = /^L\d+$/;
+
+/**
+ * 校验前端传来的上下文。
+ * 非法编号与非正整数的页序按缺失处理，超出上限的编号截断；不抛错，避免脏字段挡住整个回合。
+ */
+export function normalizePaperContext(input: unknown): PaperContext {
+  const fields = input && typeof input === 'object' ? input as Record<string, unknown> : {};
+  const ids = Array.isArray(fields.paperIds)
+    ? fields.paperIds.filter((id): id is string => typeof id === 'string' && PAPER_ID.test(id))
+      .slice(0, MAX_CONTEXT_PAPERS)
+    : undefined;
+  const active = typeof fields.activePaperId === 'string' && PAPER_ID.test(fields.activePaperId)
+    ? fields.activePaperId
+    : undefined;
+  const page = typeof fields.pdfPage === 'number' && Number.isSafeInteger(fields.pdfPage) && fields.pdfPage > 0
+    ? fields.pdfPage
+    : undefined;
+  return {
+    ...(ids ? { paperIds: ids } : {}),
+    ...(active ? { activePaperId: active } : {}),
+    ...(page ? { pdfPage: page } : {}),
+  };
+}
+
+/**
+ * 把显式提供的 paperIds 写回会话记录。
+ * 只有请求带 paperIds 时才覆盖，返回是否发生改动，调用方据此决定是否落盘；阅读位置属于单轮状态，不写进 chats.json。
+ */
+function applyPaperContext(chat: Chat, context: PaperContext): boolean {
+  if (!context.paperIds || context.paperIds.join(' ') === chat.paperIds.join(' ')) return false;
+  chat.paperIds = context.paperIds;
+  return true;
+}
+
 interface ActiveTurn {
   message: ChatMessage;
   turnId: string | null;
@@ -313,7 +361,7 @@ export class ChatService {
   create({ title, paperIds = [] }: { title?: string; paperIds?: string[] } = {}): Chat {
     const chat: Chat = {
       id: randomUUID(), title: String(title || '新的论文讨论').slice(0, 100),
-      paperIds: paperIds.filter((x) => /^L\d+$/.test(x)).slice(0, 6), messages: [], noteDrafts: [],
+      paperIds: normalizePaperContext({ paperIds }).paperIds ?? [], messages: [], noteDrafts: [],
       createdAt: new Date().toISOString(), threadId: null,
     };
     this.store.data.chats.push(chat);
@@ -335,9 +383,13 @@ export class ChatService {
    * 执行一条斜杠命令。
    * 本地命令直接生成回执；技能命令展开为技能说明后作为用户回合交给模型。
    */
-  async command(chatId: string, text: string): Promise<{ kind: 'local' | 'skill'; chatId: string; text: string }> {
+  async command(chatId: string, text: string, context: PaperContext = {}):
+    Promise<{ kind: 'local' | 'skill'; chatId: string; text: string }> {
     const chat = this.get(chatId);
     if (this.active.has(chatId)) throw statusError('当前回答尚未完成，请先停止或等待。', 409);
+    // 命令与普通消息同样携带选中文献；不清空、不覆盖时才保留会话原值。
+    const incoming = normalizePaperContext(context);
+    if (applyPaperContext(chat, incoming)) this.store.save();
     const parsed = parseCommand(text);
     if (!parsed) throw statusError('请以斜杠开头输入命令。');
     const command = findCommand(this.commands(), parsed.name);
@@ -364,13 +416,22 @@ export class ChatService {
       return { kind: 'local', chatId, text: outcome.result.text };
     }
     const display = parsed.args ? `/${outcome.result.command} ${parsed.args}` : `/${outcome.result.command}`;
-    await this.send(chatId, { text: display, promptOverride: outcome.result.prompt });
+    await this.send(chatId, {
+      text: display, promptOverride: outcome.result.prompt,
+      ...(incoming.paperIds ? { paperIds: incoming.paperIds } : {}),
+      ...(incoming.activePaperId ? { activePaperId: incoming.activePaperId } : {}),
+      ...(incoming.pdfPage ? { pdfPage: incoming.pdfPage } : {}),
+    });
     return { kind: 'skill', chatId, text: outcome.result.text };
   }
 
-  async send(chatId: string, { text = '', paperIds, attachments = [], model, promptOverride }: {
+  async send(chatId: string, { text = '', paperIds, activePaperId, pdfPage, attachments = [], model, promptOverride }: {
     text?: string;
     paperIds?: string[];
+    /** 阅读器当前打开的文献编号，仅用于本轮提示定位。 */
+    activePaperId?: string;
+    /** 阅读器当前物理页，仅用于本轮提示定位。 */
+    pdfPage?: number;
     attachments?: AttachmentInput[];
     model?: string;
     /** 实际发给模型的正文；技能命令用它替换界面上那行单行指令。 */
@@ -380,7 +441,8 @@ export class ChatService {
     if (this.active.has(chatId)) throw statusError('当前回答尚未完成，请先停止或等待。', 409);
     if (typeof text !== 'string' || text.length > 50000 || (!text.trim() && !attachments.length)) throw statusError('请输入问题或添加附件。');
     if (model && !/^[\w./:-]{1,100}$/.test(model)) throw statusError('模型名称不合法。');
-    if (paperIds) chat.paperIds = paperIds.filter((x) => /^L\d+$/.test(x)).slice(0, 6);
+    const incoming = normalizePaperContext({ paperIds, activePaperId, pdfPage });
+    if (applyPaperContext(chat, incoming)) this.store.save();
     const user: ChatMessage = {
       id: randomUUID(), role: 'user', text,
       attachments: attachments.map(({ id, name, mime, size }) => ({ id, name, mime, size })),
@@ -398,13 +460,14 @@ export class ChatService {
     this.active.set(chatId, active);
     this.updateMessage(chatId, user);
     this.updateMessage(chatId, assistant);
-    this.run(chat, promptOverride ?? text, attachments, model, active).catch((error: Error) => {
+    this.run(chat, promptOverride ?? text, attachments, model, active, incoming).catch((error: Error) => {
       if (this.active.get(chatId) === active) this.finish(chatId, 'failed', redact(error.message));
     });
     return { accepted: true };
   }
 
-  async run(chat: Chat, text: string, attachments: AttachmentInput[], model: string | undefined, active: ActiveTurn): Promise<void> {
+  async run(chat: Chat, text: string, attachments: AttachmentInput[], model: string | undefined, active: ActiveTurn,
+    context: PaperContext = {}): Promise<void> {
     const current = (): boolean => this.active.get(chat.id) === active && !active.cancelled;
     if (!this.client.available || !this.authenticated) await this.connect();
     if (!current()) return;
@@ -423,18 +486,32 @@ export class ChatService {
       if (!current()) return;
       this.loaded.add(chat.threadId);
     }
-    const context: Array<Record<string, unknown>> = [];
+    const selected: Array<Record<string, unknown>> = [];
     for (const id of chat.paperIds) {
       const paper = await this.library.getPaper(id);
       if (!current()) return;
       if (paper) {
-        context.push({
+        const record: Record<string, unknown> = {
           文献编号: id, 题名: paper.title, 版本: paper.version,
           原文路径: path.join(this.root, paper.file), 笔记: paper.notes,
-        });
+        };
+        // 页数让模型知道还有多少页未读，避免把局部读取当成全文。
+        if (typeof paper.pages === 'number' && Number.isSafeInteger(paper.pages) && paper.pages > 0) {
+          record.页数 = paper.pages;
+        }
+        if (context.activePaperId === id) {
+          record.当前打开 = true;
+          if (context.pdfPage) record.阅读页 = context.pdfPage;
+        }
+        selected.push(record);
       }
     }
-    let prompt = `当前选定文献（仅提供索引，不表示已经读取原文）：\n${JSON.stringify(context)}\n\n用户问题：\n${text}`;
+    // 用户说“这篇”时指向阅读器当前的文献与页；只在当前文献确实在选中范围内时提示，避免引用未提供的编号。
+    const reading = context.activePaperId && chat.paperIds.includes(context.activePaperId)
+      ? `\n\n阅读器当前打开 ${context.activePaperId}${context.pdfPage ? ` 第 ${context.pdfPage} 页` : ''}。`
+        + '用户说“这篇”时指该文献；读取原文用 read_paper_pages，先读当前页与第 1 页、末页，并说明实际阅读范围。'
+      : '';
+    let prompt = `当前选定文献（仅提供索引，不表示已经读取原文）：\n${JSON.stringify(selected)}${reading}\n\n用户问题：\n${text}`;
     const input: TurnInput[] = [];
     for (const file of attachments) {
       if (file.mime.startsWith('image/')) input.push({ type: 'localImage', path: file.path });

@@ -51,6 +51,112 @@ test('编译产物定位 app/downloader 与项目虚拟环境', () => {
   assert.equal(typeof resolvePython(), 'string');
 });
 
+test('界面状态接口读写 ui.json，并拒绝脏值', async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'literature-ui-'));
+  await fs.mkdir(path.join(root, '.zhiyue/catalog'), { recursive: true });
+  const stateDir = path.join(root, '.zhiyue/data');
+  const app = await createApp({ root, stateDir, connectPi: false });
+  await new Promise<void>((resolve) => app.server.listen(0, '127.0.0.1', () => resolve()));
+  const address = app.server.address();
+  assert.ok(address && typeof address === 'object');
+  const base = `http://127.0.0.1:${address.port}`;
+  let restarted: Awaited<ReturnType<typeof createApp>> | undefined;
+  // 先关两个服务再删目录：close() 内部还会写 jobs.json，目录提前消失会让日志写出 ENOENT。
+  t.after(async () => {
+    if (restarted) await restarted.close();
+    await app.close();
+    await fs.rm(root, { recursive: true, force: true });
+  });
+  const file = path.join(stateDir, 'ui.json');
+  const patch = (body: unknown) => fetch(base + '/api/ui', {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  });
+  type UiResponse = { chatId: string | null; paperId: string | null; panelWidths: Record<string, number> };
+  const read = async (): Promise<UiResponse> => readJson<UiResponse>(await fetch(base + '/api/ui'));
+
+  // 初始为空，不凭端口或浏览器存储推断。
+  assert.deepEqual(await read(), { chatId: null, paperId: null, panelWidths: {} });
+  let response = await patch({ chatId: 'chat-1', paperId: 'L001', panelWidths: { sidebar: 240 } });
+  assert.equal(response.status, 200);
+  assert.deepEqual(await read(), { chatId: 'chat-1', paperId: 'L001', panelWidths: { sidebar: 240 } });
+  // 部分更新保留未提供的字段，与 reading.json 的 PATCH 语义一致。
+  response = await patch({ panelWidths: { papers: 300 } });
+  assert.equal(response.status, 200);
+  assert.deepEqual(await read(), {
+    chatId: 'chat-1', paperId: 'L001', panelWidths: { sidebar: 240, papers: 300 },
+  });
+  const saved = JSON.parse(await fs.readFile(file, 'utf8')) as Record<string, unknown>;
+  assert.equal(saved.paperId, 'L001');
+
+  // 非法编号、超长会话号、越界栏宽与未知字段一律 400，且不改变文件。
+  for (const body of [
+    { paperId: 'X1' }, { chatId: 'ch at' }, { panelWidths: { sidebar: 50 } },
+    { panelWidths: { wrong: 200 } }, { unknown: 1 }, {},
+  ]) {
+    response = await patch(body);
+    assert.equal(response.status, 400, JSON.stringify(body));
+  }
+  assert.deepEqual(await read(), {
+    chatId: 'chat-1', paperId: 'L001', panelWidths: { sidebar: 240, papers: 300 },
+  });
+
+  // 清空也是合法请求：null 表示不恢复任何会话或文献。
+  response = await patch({ chatId: null, paperId: null });
+  assert.equal(response.status, 200);
+  assert.equal((await read()).paperId, null);
+
+  // 重建服务（等价于重启）后仍能读回，证明它落在文献库里而不是浏览器 origin 里。
+  await app.close();
+  restarted = await createApp({ root, stateDir, connectPi: false });
+  await new Promise<void>((resolve) => restarted.server.listen(0, '127.0.0.1', () => resolve()));
+  const again = restarted.server.address();
+  assert.ok(again && typeof again === 'object');
+  const reread = await readJson<{ panelWidths: Record<string, number> }>(
+    await fetch(`http://127.0.0.1:${again.port}/api/ui`),
+  );
+  assert.deepEqual(reread.panelWidths, { sidebar: 240, papers: 300 });
+});
+
+test('两个实例交错写 ui.json 不丢字段', async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'literature-ui-race-'));
+  await fs.mkdir(path.join(root, '.zhiyue/catalog'), { recursive: true });
+  const stateDir = path.join(root, '.zhiyue/data');
+  const first = await createApp({ root, stateDir, connectPi: false });
+  const second = await createApp({ root, stateDir, connectPi: false });
+  await Promise.all([first, second].map((app) => new Promise<void>((resolve) => {
+    app.server.listen(0, '127.0.0.1', () => resolve());
+  })));
+  t.after(async () => {
+    await second.close();
+    await first.close();
+    await fs.rm(root, { recursive: true, force: true });
+  });
+  const port = (app: typeof first): number => {
+    const address = app.server.address();
+    assert.ok(address && typeof address === 'object');
+    return address.port;
+  };
+  const patch = (app: typeof first, body: unknown) => fetch(`http://127.0.0.1:${port(app)}/api/ui`, {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  });
+
+  // 每个实例只改自己的字段：后写的一方必须先重读磁盘，否则会把对方的写入覆盖掉。
+  assert.equal((await patch(first, { paperId: 'L028' })).status, 200);
+  assert.equal((await patch(second, { panelWidths: { sidebar: 240 } })).status, 200);
+  assert.equal((await patch(first, { chatId: 'chat-1' })).status, 200);
+  const saved = JSON.parse(await fs.readFile(path.join(stateDir, 'ui.json'), 'utf8')) as {
+    chatId: string | null; paperId: string | null; panelWidths: Record<string, number>;
+  };
+  assert.equal(saved.paperId, 'L028');
+  assert.equal(saved.chatId, 'chat-1');
+  assert.equal(saved.panelWidths.sidebar, 240);
+  // 两个实例的 GET 都按磁盘最新值回答。
+  for (const app of [first, second]) {
+    const data = await readJson<{ paperId: string | null }>(await fetch(`http://127.0.0.1:${port(app)}/api/ui`));
+    assert.equal(data.paperId, 'L028');
+  }
+});
+
 test('本地HTTP服务提供目录、PDF范围读取和上传，拒绝跨站与越界资料', async (t) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'literature-http-'));
   await fs.mkdir(path.join(root, '.zhiyue/catalog'), { recursive: true });
@@ -115,6 +221,14 @@ test('本地HTTP服务提供目录、PDF范围读取和上传，拒绝跨站与�
   });
   assert.equal(response.status, 201);
   const chat = await readJson<ChatResponse>(response);
+  // 命令通道必须带上选中文献：早前该路由只取 text，技能回合因而看到空列表。
+  response = await fetch(`${base}/api/chats/${chat.id}/commands`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text: '/skills', paperIds: ['L001', 'x9', 'L002'], activePaperId: 'L001', pdfPage: 2 }),
+  });
+  assert.equal(response.status, 202);
+  // 非法编号被过滤，会话记录记下服务端实际接受的范围。
+  assert.deepEqual(app.chats.get(chat.id).paperIds, ['L001', 'L002']);
   // 路由只读取笔记草案的标识、题名与正文，其余字段按服务端类型补齐。
   app.chats.get(chat.id).noteDrafts.push({
     id: 'draft-1', paperId: 'L001', title: '测试笔记', content: '## 要点\n\n内容', createdAt: new Date().toISOString(),

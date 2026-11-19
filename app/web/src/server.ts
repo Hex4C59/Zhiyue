@@ -14,9 +14,11 @@ import type { JobEvent, JobRecord, SkippedImport } from './lib/jobs.js';
 import { resolvePython, runCli } from './lib/python.js';
 import { AssistantService } from './lib/assistants.js';
 import type { ChatEvent, ChatMessage, ChatStatusSnapshot } from './lib/chat.js';
+import { normalizePaperContext } from './lib/chat.js';
 import { THINKING_LEVELS } from './lib/pi.js';
 import type { ThinkingLevel } from './lib/pi.js';
 import { previewPaper } from './lib/preview.js';
+import { UiStateStore } from './lib/uiState.js';
 import { libraryPaths, resolveLibraryRoot, ensureLibrary } from './lib/paths.js';
 import { appPaths } from './lib/appPaths.js';
 import { httpStatus, errorMessage, statusError } from './lib/errors.js';
@@ -59,6 +61,7 @@ export interface App {
   library: Library;
   jobs: JobManager;
   chats: AssistantService;
+  ui: UiStateStore;
   emit: (event: ChatEvent) => void;
   close(): Promise<void>;
 }
@@ -209,6 +212,7 @@ export async function createApp({
     piClient,
   });
   const uploads = new Store<UploadStore>(path.join(stateDir, 'uploads.json'), { files: [] });
+  const ui = new UiStateStore(path.join(stateDir, 'ui.json'));
   const validUploads = (ids: unknown): UploadRecord[] => {
     if (!Array.isArray(ids) || ids.length > 8) throw error('每次最多附加8个文件。');
     return ids.map((id) => {
@@ -261,6 +265,9 @@ export async function createApp({
       if (method === 'GET' && route === '/api/status') {
         return json(res, { ...chats.snapshot(), python, node: process.version, root });
       }
+      // 界面状态存文献库而不是浏览器存储：本地服务每次启动会换端口，origin 也会随之变化。
+      if (method === 'GET' && route === '/api/ui') return json(res, ui.read());
+      if (method === 'PATCH' && route === '/api/ui') return json(res, ui.update(await readJson(req)));
       if (method === 'POST' && route === '/api/agents/pi/connect') return json(res, await chats.connect());
       if (method === 'GET' && route === '/api/agents/pi/settings') return json(res, await chats.settings());
       if (method === 'POST' && route === '/api/agents/pi/skills/reload') return json(res, await chats.reloadSkills());
@@ -306,20 +313,30 @@ export async function createApp({
         }));
       }
       if (method === 'GET' && route === '/api/chats') return json(res, chats.list());
-      if (method === 'POST' && route === '/api/chats') return json(res, chats.create(await readJson(req) as { title?: string; paperIds?: string[] }), 201);
+      if (method === 'POST' && route === '/api/chats') {
+        const data = await readJson(req);
+        const { paperIds } = normalizePaperContext(data);
+        return json(res, chats.create({
+          title: typeof data.title === 'string' ? data.title : undefined,
+          ...(paperIds ? { paperIds } : {}),
+        }), 201);
+      }
       const chatMatch = /^\/api\/chats\/([\w-]+)(?:\/(messages|interrupt|commands))?$/.exec(route);
       if (chatMatch) {
         const [, id, action] = chatMatch as unknown as [string, string, string | undefined];
         if (method === 'GET' && !action) return json(res, chats.get(id));
         if (method === 'POST' && action === 'commands') {
-          const { text } = await readJson(req);
-          if (typeof text !== 'string' || !text.trim() || text.length > 50000) throw error('请输入以斜杠开头的命令。');
-          return json(res, await chats.command(id, text), 202);
+          const data = await readJson(req);
+          const label = typeof data.text === 'string' && data.text.trim() ? data.text : '';
+          if (!label || label.length > 50000) throw error('请输入以斜杠开头的命令。');
+          // 前端在命令请求里一并带来选中文献；丢了它，技能回合就只能看到空列表。
+          return json(res, await chats.command(id, label, normalizePaperContext(data)), 202);
         }
         if (method === 'POST' && action === 'messages') {
           const data = await readJson(req);
           const result = await chats.send(id, {
             ...data as { text?: string; model?: string },
+            ...normalizePaperContext(data),
             attachments: validUploads(data.attachmentIds || []).map((file) => ({ ...file })),
           });
           return json(res, result, 202);
@@ -460,7 +477,7 @@ export async function createApp({
   server.headersTimeout = 15000;
   let closing: Promise<void> | undefined;
   return {
-    server, library, jobs, chats, emit,
+    server, library, jobs, chats, ui, emit,
     close: () => closing ??= (async () => {
       await chats.client.close();
       for (const res of connections) res.end();
