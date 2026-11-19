@@ -2,6 +2,7 @@
 
 ## 未发布
 
+- 删除失效的分享导出脚本：`scripts/export_share.py` 仍引用 TypeScript 迁移前的 `.mjs` 路径，运行即报“源文件不安全或缺失”，且它本身从未入库。同时移除 `package.json` 的 `share` 命令、`app/README.md` 与 `tools/README.md` 中的相关入口，`.gitignore` 去掉对应条目。
 - 前端构建产物不入库：`app/web/dist/` 加入 `.gitignore` 并移出版本控制，Vue 许可证副本改由 `npm run build:web` 从 `node_modules/vue/LICENSE` 生成；`startServer` 在产物缺失时给出明确提示。
 - 全部 JavaScript 源码迁移到 strict TypeScript：服务端、测试、维护脚本经 `tsc` 输出到 `build/`（不入库）；前端 lib 与 14 个 Vue 组件改用 TS 和 `vue-tsc`，Vite 直接编译 `frontend/main.ts`。新增 `npm run typecheck`，`npm test` 会先构建服务端与前端。Tauri 开发与安装版的服务端入口改为 `app/web/src/server.js`（发布包内由 `build/app/web/src` 复制）。
 - 助手设置新增思考强度与上下文压缩：按默认模型的能力列出 `off`–`max` 档位，保存到 Pi 全局设置并同步当前会话；自动摘要开关与预留、保留近期 token 写入 `~/.pi/agent/settings.json`。模型返回的推理内容以折叠块随消息显示。

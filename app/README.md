@@ -45,13 +45,12 @@ npm run test:desktop
 npm run doctor
 npm run build:node
 npm run build:web
-npm run share -- --name new-name
 npm run desktop:dev
 npm run desktop:prepare
 npm run desktop:build
 ```
 
-分享时可提供构建生成的 NSIS 安装包。也可用 `npm run share -- --name new-name` 导出可构建的桌面源码和空文献库。源码分享包省略本机导出脚本和 share 命令。
+分享时可提供构建生成的 NSIS 安装包。
 
 下载工具默认将 `library` 作为 `--root`，可显式指定其他工作区。`start-desktop.cmd` 调用系统 Windows PowerShell，并仅对启动子进程设置执行策略。根目录和 `scripts/` 下的 `start-desktop.ps1` 使用 UTF-8 BOM，供 Windows PowerShell 5.1 解析中文注释和字符串。
 

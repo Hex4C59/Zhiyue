@@ -19,8 +19,7 @@
     "desktop:dev": "npm run build && cd app/desktop && tauri dev",
     "desktop:prepare": "npm run build:node && node build/scripts/prepare-desktop.js",
     "desktop:build": "npm run build && npm run desktop:prepare && node build/scripts/desktop-build.js",
-    "check:pi": "npm run build:node && node build/scripts/check-pi.js",
-    "share": "python scripts/export_share.py"
+    "check:pi": "npm run build:node && node build/scripts/check-pi.js"
   },
   "dependencies": {
     "@earendil-works/pi-coding-agent": "1.5.2",
