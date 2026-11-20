@@ -153,3 +153,20 @@ await writeFile(
 
 console.log('桌面运行资源已准备：app/desktop/src-tauri/resources/runtime');
 console.log(`Node ${process.version}，${process.platform}/${process.arch}`);
+
+// 未打包的 Tauri 构建（target/debug 或 target/release 下的 exe）按 resource_dir() 从 exe
+// 同级目录读取 resources/runtime，而不是 src-tauri/resources/runtime。已构建过 exe 时，把新
+// 产物同步一份到 exe 旁边，让 desktop:prepare 后无需重新打包即可生效。目录被运行中的
+// 实例占用会失败，此时提示用户关闭窗口后重试（不阻断主流程）。
+const SRC_TAURI = path.join(APP, 'desktop', 'src-tauri');
+for (const profile of ['release', 'debug']) {
+  const targetRuntime = path.join(SRC_TAURI, 'target', profile, 'resources', 'runtime');
+  if (!existsSync(targetRuntime)) continue;
+  try {
+    await rm(targetRuntime, { recursive: true, force: true });
+    await cp(OUT, targetRuntime, { recursive: true });
+    console.log(`已同步到已构建的 ${profile} exe 资源目录：app/desktop/src-tauri/target/${profile}/resources/runtime`);
+  } catch (error) {
+    console.warn(`未能同步到 ${profile} exe 资源目录（可能被运行中的实例占用）：${error}`);
+  }
+}

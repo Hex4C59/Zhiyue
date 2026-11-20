@@ -355,6 +355,9 @@ pre,code,kbd,samp { font-family:var(--font-mono); }
 .markdown th { background:#f6f6f8; }
 .markdown img { max-width:100%; border-radius:3px; }
 .markdown a { border-bottom:1px solid #ced1d8; }
+.markdown .math-block { display:block; overflow-x:auto; overflow-y:hidden; margin:14px 0; text-align:center; }
+.markdown .katex { font-size:1.05em; }
+.markdown .katex-display { margin:0; }
 
 /* Downloads */
 .downloads-view { overflow:auto; padding:28px 32px; flex:1; background:#fff; }

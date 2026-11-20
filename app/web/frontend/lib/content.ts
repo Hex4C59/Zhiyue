@@ -1,3 +1,5 @@
+import { renderMath } from './math';
+
 export const esc = (value: unknown): string =>
   String(value ?? '').replace(
     /[&<>"']/g,
@@ -120,6 +122,16 @@ function inline(source: string, base = ''): string {
   };
   let input = String(source).replace(/[\u0001\u0002]/g, '');
   input = input.replace(/`([^`]+)`/g, (_match, code: string) => token(`<code>${esc(code)}</code>`));
+  // 定界符不跨已提取的代码片段，紧跟数字的美元符号不作为结束符。
+  input = input.replace(
+    /(?<!\\)\\\(([^\u0001\u0002]*?)\\\)|(?<![\\$])\$(?!\$)((?:\\[^\u0001\u0002]|[^\\$\u0001\u0002])+)\$(?![\d$])/g,
+    (match, native: string | undefined, dollar: string | undefined) => {
+      const tex = (native ?? dollar ?? '').trim();
+      return tex ? token(renderMath(tex, false)) : match;
+    },
+  );
+  // 未被公式匹配的转义美元符号还原为普通字符。
+  input = input.replace(/\\\$/g, '$');
   input = input.replace(/(!?)\[([^\]\n]*)\]\(([^\s)]+)(?:\s+"[^"]*")?\)/g,
     (_match, image: string, label: string, raw: string) => {
       const url = safeURL(raw, base);
@@ -155,11 +167,47 @@ export function markdown(source: unknown, base = ''): string {
   };
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i] as string;
-    if (/^\s*```/.test(line)) {
+    const delimiter = /^\s*(\$\$|\\\[)/.exec(line);
+    const environment = /^\s*\\begin\{((?:equation|align|alignat|gather)\*?|CD)\}/.exec(line);
+    if (delimiter || environment) {
+      let rendered = false;
+      const closing = delimiter ? (delimiter[1] === '$$' ? '$$' : '\\]') : '\\end{' + environment?.[1] + '}';
+      const parts: string[] = [];
+      for (let end = i; end < lines.length; end++) {
+        const raw = lines[end] as string;
+        const current = (end === i && delimiter ? raw.slice(delimiter[0].length) : raw).trimEnd();
+        if (end !== i && (!current.trim() || /^\s*(?:~{3,}|\x60{3,}|#{1,6}\s)/.test(current))) break;
+        if (current.endsWith(closing) && !current.slice(0, -closing.length).endsWith('\\')) {
+          parts.push(delimiter ? current.slice(0, -closing.length) : current);
+          const tex = parts.join('\n').trim();
+          if (tex) {
+            flush();
+            html += `<div class="math-block">${renderMath(tex, true)}</div>`;
+            i = end;
+            rendered = true;
+          }
+          break;
+        }
+        parts.push(current);
+      }
+      // 未闭合的公式按普通 Markdown 显示，保留流式输出中的后续正文。
+      if (rendered) continue;
+    }
+    // 代码围栏：语言标记为 math/latex/tex 时按公式渲染，其余保持代码块。
+    const fence = /^\s*(`{3,}|~{3,})\s*([\w+-]*)\s*$/.exec(line);
+    if (fence) {
       flush();
-      const code: string[] = [];
-      while (++i < lines.length && !/^\s*```/.test(lines[i] as string)) code.push(lines[i] as string);
-      html += `<pre><code>${esc(code.join('\n'))}</code></pre>`;
+      const marker = fence[1] as string;
+      const lang = (fence[2] as string).toLowerCase();
+      const isMath = lang === 'math' || lang === 'latex' || lang === 'tex';
+      const body: string[] = [];
+      const closeRe = new RegExp(`^\\s*${marker[0]}{${marker.length},}\\s*$`);
+      while (++i < lines.length && !closeRe.test(lines[i] as string)) body.push(lines[i] as string);
+      if (isMath) {
+        html += `<div class="math-block">${renderMath(body.join('\n'), true)}</div>`;
+      } else {
+        html += `<pre><code>${esc(body.join('\n'))}</code></pre>`;
+      }
       continue;
     }
     const head = /^(#{1,6})\s+(.+)$/.exec(line);

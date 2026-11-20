@@ -641,6 +641,95 @@ test('下载表单和任务日志保持用户状态，模型与正文内容不�
   assert.equal(page.$('[data-message="safe"] a'), null);
 });
 
+test('助手消息渲染行内与块级 LaTeX 公式', async (t) => {
+  const page = await fixture(t),
+    { workspace } = page;
+  workspace.state.chat = {
+    id: 'math-chat',
+    messages: [
+      {
+        id: 'math',
+        role: 'assistant',
+        text: `能量满足 $E = mc^2$，其中
+
+$$
+\\int_0^\\infty e^{-x^2} dx = \\frac{\\sqrt{\\pi}}{2}
+$$
+
+为高斯积分。`,
+        status: 'completed',
+      },
+    ],
+  };
+  await flush();
+  const body = page.$('[data-message="math"] .message-body');
+  // KaTeX 渲染结果带 katex 类名，原文不再以 $ 包围的纯文本出现。
+  assert.ok(body.querySelector('.katex'), '应渲染行内公式');
+  assert.ok(body.querySelector('.math-block .katex'), '应渲染块级公式');
+  assert.ok(body.querySelector('.katex .mord'), '行内公式应包含符号结构');
+  assert.doesNotMatch(body.textContent, /\$E = mc\^2\$/);
+  assert.doesNotMatch(body.textContent, /\\int_0/);
+});
+
+test('助手消息渲染 LaTeX 原生定界符 \\(...\\) 与 \\[...\\]（模型真实输出）', async (t) => {
+  const page = await fixture(t),
+    { workspace } = page;
+  workspace.state.chat = {
+    id: 'native-chat',
+    messages: [
+      {
+        id: 'native',
+        role: 'assistant',
+        text: `输入原始语音 \\(X\\)，教师目标 \\(Y^T\\)。总损失为：
+
+\\[
+L = L_{\\mathrm{Frm}} + \\alpha L_{\\mathrm{Utt}}
+\\]
+
+其中 \\(\\alpha\\) 控制权重。`,
+        status: 'completed',
+      },
+    ],
+  };
+  await flush();
+  const body = page.$('[data-message="native"] .message-body');
+  // 不应再出现原始定界符字面文本。
+  assert.doesNotMatch(body.textContent, /\\\(X\\\)/);
+  assert.doesNotMatch(body.textContent, /\\\[/);
+  assert.doesNotMatch(body.textContent, /\\mathrm/);
+  // 行内与块级都渲染出 katex 结构。
+  assert.ok(body.querySelector('.math-block .katex'), '应渲染 \\[...\\] 块级公式');
+  const inline = body.querySelectorAll('.katex:not(.katex-display)');
+  assert.ok(inline.length >= 3, `应渲染多个行内公式，实际 ${inline.length}`);
+});
+
+test('单行块公式剥离定界符，未闭合公式保留后续正文', async (t) => {
+  const page = await fixture(t);
+  page.workspace.state.chat = {
+    id: 'math-boundaries',
+    messages: [{
+      id: 'boundaries',
+      role: 'assistant',
+      text: [
+        '\\[x^2 + 1\\]',
+        '价格从 $5 到 $10，代码为 `$$x$$`。',
+        '$$',
+        '公式尚未输入完成',
+        '',
+        '## 后续正文',
+      ].join('\n'),
+      status: 'completed',
+    }],
+  };
+  await flush();
+  const body = page.$('[data-message="boundaries"] .message-body');
+  assert.equal(body.querySelectorAll('.math-block .katex').length, 1);
+  assert.equal(body.querySelector('.katex-error'), null);
+  assert.match(body.textContent, /价格从 \$5 到 \$10/);
+  assert.equal(body.querySelector('code')?.textContent, '$$x$$');
+  assert.equal(body.querySelector('h2')?.textContent, '后续正文');
+});
+
 test('Vue 阅读区保留 PDF 文字层与复制内容，其他面板更新不重建选中页', async (t) => {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async () =>

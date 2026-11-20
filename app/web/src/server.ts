@@ -1,3 +1,4 @@
+import { createRequire } from 'node:module';
 import http from 'node:http';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import fs from 'node:fs';
@@ -30,8 +31,18 @@ const MIME: Record<string, string> = {
   '.md': 'text/plain; charset=utf-8', '.txt': 'text/plain; charset=utf-8',
   '.json': 'application/json; charset=utf-8', '.pdf': 'application/pdf',
   '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.gif': 'image/gif',
+  '.woff': 'font/woff', '.woff2': 'font/woff2', '.ttf': 'font/ttf',
   '.csv': 'text/csv; charset=utf-8', '.tsv': 'text/tab-separated-values; charset=utf-8',
 };
+// KaTeX 随包分发，前端通过 /vendor/katex 加载其样式与字体；按 Node 解析规则定位安装目录。
+const KATEX_DIST = (() => {
+  try {
+    const manifest = createRequire(import.meta.url).resolve('katex/package.json');
+    return path.join(path.dirname(manifest), 'dist');
+  } catch {
+    return '';
+  }
+})();
 const UPLOADS = new Set(['.png', '.jpg', '.jpeg', '.webp', '.gif', '.pdf', '.txt', '.md', '.csv', '.tsv', '.json', '.docx', '.pptx', '.xlsx']);
 const error = (message: string, status = 400) => statusError(message, status);
 
@@ -457,6 +468,16 @@ export async function createApp({
       }
       if (method === 'GET' && route === '/api/health') return json(res, { ok: true });
       if ((method === 'GET' || method === 'HEAD') && !route.startsWith('/api/')) {
+        // KaTeX 样式与字体：路径形如 /vendor/katex/katex.min.css 与 /vendor/katex/fonts/...woff2。
+        if (route.startsWith('/vendor/katex/') && KATEX_DIST) {
+          const relative = route.slice('/vendor/katex/'.length);
+          // 限制在 katex dist 目录内，拒绝目录穿越。
+          const file = path.normalize(path.join(KATEX_DIST, relative));
+          if (!file.startsWith(KATEX_DIST) || !fs.existsSync(file) || fs.statSync(file).isDirectory()) {
+            throw error('页面不存在。', 404);
+          }
+          return await serveFile(req, res, file);
+        }
         const staticFiles: Record<string, string> = {
           '/': 'index.html', '/index.html': 'index.html',
           '/js/app.js': path.join(appPaths().distDir, 'app.js'),
