@@ -405,8 +405,7 @@ test('Pi 斜杠命令：本地回执不进入模型，技能命令展开后发�
   await chats.connect();
   const chat = chats.create();
 
-  const names = chats.commands().map((command) => command.name);
-  assert.deepEqual(names, ['help', 'skills', 'compact', 'skill:paper-reading']);
+  assert.equal(chats.commands().find((command) => command.name === 'skill:paper-reading')?.source, 'skill');
   const help = await chats.command(chat.id, '/help');
   assert.equal(help.kind, 'local');
   assert.match(help.text, /skill:paper-reading/);
@@ -576,10 +575,14 @@ test('HTTP 提供 Pi 状态和连接接口', async (t) => {
   assert.equal(lastMessage(app.chats, piChat.id).thinking, '先核对再回答');
   // 斜杠命令目录与执行接口：本地命令回执，未知命令 404，非命令输入 400。
   const catalog = await (await fetch(base + '/api/commands')).json() as {
-    commands: Array<{ name: string; source: string }>;
+    commands: Array<{ name: string; source: string; target?: string }>;
+    desktop: boolean;
   };
-  assert.deepEqual(catalog.commands.map((command) => command.name), ['help', 'skills', 'compact', 'skill:demo']);
+  assert.equal(catalog.desktop, false);
+  assert.equal(catalog.commands.find((command) => command.name === 'export')?.target, 'terminal');
+  assert.equal(catalog.commands.find((command) => command.name === 'model')?.target, 'workspace');
   assert.equal(catalog.commands.find((command) => command.name === 'skill:demo')?.source, 'skill');
+  assert.equal((await post('/api/commands/terminal', { text: '/changelog' })).status, 409);
   const helpReply = await post(`/api/chats/${piChat.id}/commands`, { text: '/help' });
   assert.equal(helpReply.status, 202);
   assert.equal(((await helpReply.json()) as { kind: string }).kind, 'local');

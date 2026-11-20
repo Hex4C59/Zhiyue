@@ -5,6 +5,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { ChatService } from '../src/lib/chat.js';
+import { resolvePi } from '../src/lib/pi.js';
 import type {
   AccountResult, AssistantClient, ChatEvent, ChatMessage, ChatServiceOptions,
   ClientNotification, ClientRequest, ModelListResult, ThreadResult, TurnResult,
@@ -112,6 +113,17 @@ const until = async (predicate: () => boolean): Promise<void> => {
   }
   throw new Error('condition timeout');
 };
+
+test('生成中的会话不能归档或移入回收站', async (t) => {
+  const { chats, client } = await fixture(t);
+  const chat = chats.create();
+  await chats.send(chat.id, { text: '测试' });
+  await until(() => client.calls.some(({ method }) => method === 'turn/start'));
+  assert.throws(() => chats.changeHistory(chat.id, 'archived'), { statusCode: 409 });
+  assert.throws(() => chats.changeHistory(chat.id, 'trashed'), { statusCode: 409 });
+  chats.finish(chat.id, 'completed');
+  assert.equal(chats.changeHistory(chat.id, 'archived').historyState, 'archived');
+});
 
 const lastMessage = (chat: { messages: ChatMessage[] }): ChatMessage => chat.messages.at(-1) as ChatMessage;
 
@@ -310,7 +322,13 @@ test('斜杠命令目录包含本地命令与技能命令，/help 与 /skills �
   const { chats, events } = await fixture(t);
   const chat = chats.create();
   const names = chats.commands().map((command) => command.name);
-  assert.deepEqual(names, ['help', 'skills', 'compact', 'skill:paper-reading']);
+  const catalog = await fs.readFile(path.join(path.dirname(resolvePi()), 'core', 'slash-commands.js'), 'utf8');
+  const bundledNames = [...catalog.matchAll(/\{ name: "([^"]+)"/g)].map((match) => match[1]);
+  assert.ok(bundledNames.length > 20, '应读取实际安装的 Pi 命令清单');
+  assert.equal(new Set(names).size, names.length, '命令名称不能重复');
+  for (const name of [...bundledNames, 'help', 'skills', 'mcp', 'llama', 'skill:paper-reading']) {
+    assert.ok(names.includes(name as string), '缺少命令：' + name);
+  }
   assert.equal(chats.commands().find((command) => command.name === 'compact')?.scope, 'chat');
 
   const help = await chats.command(chat.id, '/help');
@@ -328,6 +346,19 @@ test('斜杠命令目录包含本地命令与技能命令，/help 与 /skills �
   // 本地命令不进入 Pi 会话，也不消耗 user 轮次。
   assert.equal(chat.messages.length, 2);
   assert.equal(chat.threadId, null);
+});
+
+test('名称、会话信息和快捷键可在 Pi 模型未连接时执行', async (t) => {
+  const { chats, client } = await fixture(t);
+  const chat = chats.create({ paperIds: ['L001'] });
+  chats.authenticated = false;
+  client.available = false;
+  assert.match((await chats.command(chat.id, '/name 阅读记录')).text, /阅读记录/);
+  assert.equal(chats.get(chat.id).title, '阅读记录');
+  assert.match((await chats.command(chat.id, '/session')).text, /L001/);
+  assert.match((await chats.command(chat.id, '/hotkeys')).text, /Shift\+Enter/);
+  assert.equal(client.calls.length, 0);
+  await assert.rejects(chats.command(chat.id, '/share'), /斜杠命令菜单/);
 });
 
 test('未知命令、非斜杠输入与非命令会话的 /compact 明确报错', async (t) => {

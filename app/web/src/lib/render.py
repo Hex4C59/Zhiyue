@@ -75,7 +75,7 @@ def text_layer(file, page):
             'hasText': bool(lines)}
 
 
-def render(root, file, page, output):
+def render(root, file, page, output, scale, skip_text):
     downloader = os.environ.get('LITERATURE_DOWNLOADER') or Path(__file__).resolve().parents[3] / 'downloader'
     sys.path.insert(0, str(downloader))
     from validation import poppler
@@ -96,9 +96,9 @@ def render(root, file, page, output):
     temporary = prefix.with_suffix('.png')
     try:
         result = subprocess.run(
-            [executable, '-f', str(page), '-l', str(page), '-scale-to', '1600',
+            [executable, '-f', str(page), '-l', str(page), '-scale-to', str(scale),
              '-singlefile', '-png', str(file), str(prefix)],
-            shell=False, stdin=subprocess.DEVNULL, capture_output=True,
+            cwd=root, shell=False, stdin=subprocess.DEVNULL, capture_output=True,
             timeout=40, creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
         if result.returncode or not temporary.is_file():
             message = 'Poppler渲染失败：' + result.stderr.decode('utf-8', errors='replace')[-1500:]
@@ -109,12 +109,14 @@ def render(root, file, page, output):
         os.replace(temporary, output)
     finally:
         temporary.unlink(missing_ok=True)
-    try:
-        text = text_layer(file, page)
-    except Exception as exc:
-        text = {'width': 1, 'height': 1, 'lines': [], 'text': '', 'hasText': False,
-                'error': str(exc)[:500]}
-    return {'file': str(output), 'totalPages': total, 'page': page, 'textLayer': text}
+    data = {'totalPages': total, 'page': page}
+    if not skip_text:
+        try:
+            data['textLayer'] = text_layer(file, page)
+        except Exception as exc:
+            data['textLayer'] = {'width': 1, 'height': 1, 'lines': [], 'text': '', 'hasText': False,
+                                 'error': str(exc)[:500]}
+    return data
 
 
 if __name__ == '__main__':
@@ -123,9 +125,13 @@ if __name__ == '__main__':
     parser.add_argument('--file', required=True, type=Path)
     parser.add_argument('--page', required=True, type=int)
     parser.add_argument('--output', required=True, type=Path)
+    parser.add_argument('--scale-to', default=1600, type=int)
+    parser.add_argument('--skip-text', action='store_true')
     try:
         args = parser.parse_args()
-        print(json.dumps(render(args.root.resolve(), args.file.resolve(), args.page, args.output.resolve()), ensure_ascii=True))
+        data = render(
+            args.root.resolve(), args.file.resolve(), args.page, args.output.resolve(), args.scale_to, args.skip_text)
+        print(json.dumps(data, ensure_ascii=True))
     except Exception as exc:
         code = getattr(exc, 'code', 'invalid_request' if isinstance(exc, ValueError) else 'internal')
         print(json.dumps({'error': str(exc), 'code': code}, ensure_ascii=True))

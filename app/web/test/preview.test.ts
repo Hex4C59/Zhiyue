@@ -85,6 +85,22 @@ test('real Poppler preview deduplicates concurrent requests, caches pages and va
   assert.deepEqual(await previewPaper({ root, python: path.join(root, 'missing-python'), file, page: '1' }),
     results[0]);
   assert.equal((await stat(results[0].file)).mtimeMs, before);
+  const meta = path.join(path.dirname(results[0].file), 'meta.json');
+  const originalMeta = await readFile(meta, 'utf8');
+  const [large, repeated] = await Promise.all([
+    previewPaper({ root, python, file, page: 1, scale: 3200 }),
+    previewPaper({ root, python, file, page: 1, scale: '3200' }),
+  ]);
+  assert.deepEqual(large, repeated);
+  assert.equal(path.dirname(large.file), path.dirname(results[0].file));
+  assert.notEqual(large.file, results[0].file);
+  const largePng = await readFile(large.file);
+  assert.equal(Math.max(largePng.readUInt32BE(16), largePng.readUInt32BE(20)), 3200);
+  assert.deepEqual(large.textLayer, results[0].textLayer);
+  assert.equal(await readFile(meta, 'utf8'), originalMeta);
+  assert.deepEqual((await readFile(path.join(downloader, 'validation.py.calls'), 'utf8')).trim().split(/\r?\n/),
+    ['render', 'render']);
+  assert.deepEqual(await previewPaper({ root, python: path.join(root, 'missing-python'), file, scale: 3200 }), large);
   const second = await previewPaper({ root, python, file, page: 2 });
   assert.notEqual(second.file, results[0].file); assert.equal(second.page, 2);
   await assert.rejects(previewPaper({ root, python: path.join(root, 'missing-python'), file, page: 3 }),
@@ -99,7 +115,6 @@ test('real Poppler preview deduplicates concurrent requests, caches pages and va
   assert.ok((await stat(results[0].file)).size > 100);
   // Even a valid cache must not be read through a symlinked metadata file.
   const externalMeta = path.join(root, 'metadata.json');
-  const meta = path.join(path.dirname(results[0].file), 'meta.json');
   await copyFile(meta, externalMeta); await rm(meta);
   await symlink(externalMeta, meta);
   await assert.rejects(previewPaper({ root, python, file, page: 1 }), cacheRejected);
@@ -184,6 +199,9 @@ w.write(sys.argv[1])`;
   assert.equal((await fetch(base + '/api/papers/L999/text-layer?page=1')).status, 404);
   assert.equal((await fetch(base + '/api/papers/L001/text-layer?page=0')).status, 400);
   assert.equal((await fetch(base + '/api/papers/L001/text-layer?page=6')).status, 400);
+  for (const scale of ['0', '2401', '48000', '']) {
+    assert.equal((await fetch(base + `/api/papers/L001/preview?page=1&scale=${scale}`)).status, 400);
+  }
   const cached = await previewPaper({ root, python, file, page: 1 });
   const meta = path.join(path.dirname(cached.file), 'meta.json');
   const old = JSON.parse(await readFile(meta, 'utf8')) as { textLayer?: unknown };

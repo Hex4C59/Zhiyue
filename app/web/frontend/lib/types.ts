@@ -47,6 +47,8 @@ export interface ChatNoteDraft {
   content: string;
 }
 
+export type ChatHistoryState = 'active' | 'archived' | 'trashed';
+
 export interface Chat {
   id: string;
   title?: string;
@@ -55,6 +57,7 @@ export interface Chat {
   noteDrafts?: ChatNoteDraft[];
   threadId?: string | null;
   paperIds?: string[];
+  historyState?: ChatHistoryState;
 }
 
 export interface AttachmentItem {
@@ -146,7 +149,8 @@ export interface PDFPageData {
   img: HTMLImageElement;
   url: string;
   total: number;
-  textLayer: TextLayerData;
+  scale: number;
+  textLayer?: TextLayerData;
 }
 
 export interface PDFSession {
@@ -155,7 +159,8 @@ export interface PDFSession {
   root: HTMLElement;
   disposed: boolean;
   pages: Map<number, HTMLElement>;
-  urls: Map<number, string>;
+  images: Map<number, { url: string; scale: number }>;
+  failedUpgrades: Map<number, number>;
   controllers: Map<number, AbortController>;
   errors: Set<number>;
   textLayers: Map<number, { data: TextLayerData; element: HTMLElement | null }>;
@@ -166,6 +171,8 @@ export interface PDFSession {
   anchor?: { page: number; offset: number };
   observer?: IntersectionObserver;
   resizeObserver?: ResizeObserver;
+  disposeSelection?: () => void;
+  disposePixelRatioWatch?: () => void;
   onScroll?: () => void;
   onCopy?: (event: ClipboardEvent) => void;
   onUserScroll?: (event: Event) => void;
@@ -179,6 +186,7 @@ export interface CommandInfo {
   source: 'local' | 'skill';
   scope: 'composer' | 'chat';
   argumentHint?: string;
+  target?: 'workspace' | 'terminal';
 }
 
 export interface ModelOption {
@@ -224,6 +232,8 @@ export interface WorkspaceState {
   draft: string;
   focusComposer: number;
   historyOpen: boolean;
+  agentSettingsOpen: boolean;
+  focusModelPicker: number;
   jobs: Map<string, JobRecord>;
   batches: BatchRecord[];
   sending: boolean;
@@ -246,6 +256,7 @@ export interface WorkspaceState {
   importOpen: boolean;
   /** 斜杠命令目录，来自 /api/commands；只影响输入框提示，不阻塞发送。 */
   commands: CommandInfo[];
+  desktopCommands: boolean;
   commandError: string;
   /** 服务端 ui.json 里的会话与当前文献；栏宽另存于 panelWidths。 */
   ui: { chatId: string | null; paperId: string | null };

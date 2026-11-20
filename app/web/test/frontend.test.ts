@@ -110,7 +110,10 @@ const input = (element: any, value: string) => {
 const click = (element: any): boolean => element.dispatchEvent(new MouseEvent('click', { bubbles: true }));
 
 // `ui` 模拟文献库里的界面状态：传入上一次写回的值即可模拟重启后读回。
-async function fixture(t: test.TestContext, { ui = {}, uiPatchError = '' }: { ui?: Json; uiPatchError?: string } = {}) {
+async function fixture(
+  t: test.TestContext,
+  { ui = {}, uiPatchError = '', pdfTextLines }: { ui?: Json; uiPatchError?: string; pdfTextLines?: Json[] } = {},
+) {
   const calls: any[] = [];
   const uiState: Json = { chatId: null, paperId: null, panelWidths: {}, ...ui };
   const decisions: any[] = [];
@@ -239,17 +242,28 @@ async function fixture(t: test.TestContext, { ui = {}, uiPatchError = '' }: { ui
     if (path === '/api/agents/pi/skills/reload') return structuredClone(piSettings);
     if (path === '/api/commands')
       return {
+        desktop: true,
         commands: [
           { name: 'help', description: '列出可用的斜杠命令与技能。', source: 'local', scope: 'composer' },
           { name: 'compact', description: '手动压缩当前会话上下文。', source: 'local', scope: 'chat', argumentHint: '[压缩说明]' },
+          { name: 'settings', description: '打开设置。', source: 'local', scope: 'composer', target: 'workspace' },
+          { name: 'model', description: '选择模型。', source: 'local', scope: 'composer', target: 'workspace' },
+          { name: 'changelog', description: '查看更新记录。', source: 'local', scope: 'composer', target: 'terminal' },
           {
             name: 'skill:paper-reading',
             description: '判断论文是否值得精读。',
             source: 'skill',
             scope: 'composer',
           },
+          {
+            name: 'skill:paper-experiments',
+            description: '总结论文并拆解实验。',
+            source: 'skill',
+            scope: 'composer',
+          },
         ],
       };
+    if (path === '/api/commands/terminal') return { accepted: true };
     if (path.startsWith('/api/agents/')) return structuredClone(status);
     if (path === '/api/uploads')
       return {
@@ -289,7 +303,7 @@ async function fixture(t: test.TestContext, { ui = {}, uiPatchError = '' }: { ui
         height: 400,
         hasText: true,
         text: 'Selectable PDF text',
-        lines: [
+        lines: pdfTextLines ?? [
           {
             words: [
               { text: 'Selectable', x: 20, y: 30, width: 70, height: 14, rotation: 0 },
@@ -301,6 +315,10 @@ async function fixture(t: test.TestContext, { ui = {}, uiPatchError = '' }: { ui
     const chatMatch = /^\/api\/chats\/([^/]+)(?:\/(messages|interrupt))?$/.exec(path);
     if (chatMatch) {
       const chat = chats.get(chatMatch[1]);
+      if (options.method === 'DELETE' || options.method === 'PATCH') {
+        chat.historyState = options.method === 'DELETE' ? 'trashed' : body.historyState;
+        return { id: chat.id, historyState: chat.historyState };
+      }
       if (chatMatch[2] === 'messages') {
         chat.messages.push(
           { id: 'user-1', role: 'user', text: body.text, status: 'completed' },
@@ -339,6 +357,67 @@ async function fixture(t: test.TestContext, { ui = {}, uiPatchError = '' }: { ui
     ui: uiState,
   };
 }
+
+test('历史会话可归档和恢复，确认删除后才会移入回收站', async (t) => {
+  const page = await fixture(t);
+  const chat = { id: 'history-chat', title: '已有会话', paperIds: ['L001'], messages: [] };
+  page.chats.set(chat.id, chat);
+  await page.workspace.loadChats();
+  click(page.$('#chat-history-toggle'));
+  await flush();
+  click(page.$('[data-chat="history-chat"]'));
+  await flush();
+  click(page.$('[title="归档会话"]'));
+  await flush();
+  assert.equal(page.$('[data-chat="history-chat"]'), null);
+  assert.ok(page.$('.archived-chat'));
+  assert.equal(page.$('#chat-input'), null);
+  click(page.$('[data-history-view="archived"]'));
+  await flush();
+  assert.equal(page.$('.history-title').textContent, '已有会话');
+  click(page.$('.archived-chat button'));
+  await flush();
+  assert.ok(page.$('#chat-input'));
+
+  click(page.$('[data-history-view="active"]'));
+  await flush();
+  const confirm = window.confirm;
+  t.after(() => { window.confirm = confirm; });
+  window.confirm = () => false;
+  click(page.$('[title="删除会话"]'));
+  assert.equal(page.calls.some((call) => call.method === 'DELETE'), false);
+  window.confirm = () => true;
+  click(page.$('[title="删除会话"]'));
+  await flush();
+  assert.equal(page.workspace.state.chat, null);
+  assert.equal(page.ui.chatId, null);
+  assert.equal(page.$('[data-chat="history-chat"]'), null);
+  click(page.$('[data-history-view="trashed"]'));
+  await flush();
+  assert.equal(page.$('[data-chat="history-chat"]').tagName, 'DIV');
+  click(page.$('[title="恢复会话"]'));
+  await flush();
+  assert.match(page.$('.chat-history .empty').textContent, /回收站为空/);
+  click(page.$('[data-history-view="active"]'));
+  await flush();
+  assert.ok(page.$('[data-chat="history-chat"]'));
+});
+
+test('无模型时可打开命令菜单和设置，终端命令无需创建聊天', async (t) => {
+  const page = await fixture(t);
+  page.workspace.state.status.agents!.pi!.authenticated = false;
+  page.workspace.state.draft = '/';
+  await flush();
+  assert.ok(page.$('[data-command="changelog"]'));
+  page.workspace.state.draft = '/settings';
+  assert.equal(await page.workspace.submit(), true);
+  await flush();
+  assert.ok(page.$('.settings-dialog'));
+  page.workspace.state.draft = '/changelog';
+  assert.equal(await page.workspace.submit(), true);
+  assert.deepEqual(page.calls.find((call) => call.path === '/api/commands/terminal')?.body, { text: '/changelog' });
+  assert.equal(page.calls.some((call) => call.path === '/api/chats' && call.method === 'POST'), false);
+});
 
 test('Vue 3 挂载全部面板，文献筛选与收藏保留节点和未读状态', async (t) => {
   const page = await fixture(t);
@@ -467,7 +546,33 @@ test('文件夹导入按同名分类预选归档位置，手动选择不被覆�
 test('模型搜索和键盘选择驱动实际发送参数，输入与停止操作保持可用', async (t) => {
   const page = await fixture(t);
   assert.equal(page.$('#send').disabled, true);
+  page.workspace.state.status.agents.pi.models.push(
+    { id: 'alpha/luna', model: 'alpha/luna', displayName: 'GPT Luna · alpha' },
+  );
   click(page.$('#model-trigger'));
+  await flush();
+  assert.deepEqual(
+    [...page.target.querySelectorAll<HTMLElement>('[data-provider-value]')].map(node => node.dataset.providerValue),
+    ['alpha', 'test'],
+  );
+  assert.equal(page.$('[data-model-value="test/luna"]'), null);
+  input(page.$('#model-search'), 'test');
+  await flush();
+  const key = (target: HTMLElement, value: string): void => {
+    target.dispatchEvent(new KeyboardEvent('keydown', { key: value, bubbles: true, cancelable: true }));
+  };
+  key(page.$('#model-search'), 'ArrowDown');
+  assert.equal(document.activeElement, page.$('[data-provider-value="test"]'));
+  key(page.$('[data-provider-value="test"]'), 'ArrowRight');
+  await flush();
+  assert.equal(page.$('#model-search').getAttribute('aria-label'), '搜索模型');
+  assert.equal(page.$('[data-model-value="alpha/luna"]'), null);
+  assert.equal(page.$('[data-model-value="test/luna"]').textContent.trim(), 'GPT Luna');
+  key(page.$('#model-search'), 'Escape');
+  await flush();
+  assert.equal(page.$('#model-search').value, 'test');
+  assert.equal(document.activeElement, page.$('[data-provider-value="test"]'));
+  click(page.$('[data-provider-value="test"]'));
   await flush();
   input(page.$('#model-search'), 'luna');
   await flush();
@@ -477,6 +582,17 @@ test('模型搜索和键盘选择驱动实际发送参数，输入与停止操�
     .dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
   await flush();
   assert.equal(page.workspace.state.model, 'test/luna');
+  click(page.$('#model-trigger'));
+  await flush();
+  click(page.$('[data-model-value=""]'));
+  assert.equal(page.workspace.state.model, '');
+  await flush();
+  click(page.$('#model-trigger'));
+  await flush();
+  click(page.$('[data-provider-value="test"]'));
+  await flush();
+  click(page.$('[data-model-value="test/luna"]'));
+  await flush();
   input(page.$('#chat-input'), '合成测试问题');
   await flush();
   page
@@ -767,6 +883,45 @@ test('Vue 阅读区保留 PDF 文字层与复制内容，其他面板更新不�
   assert.equal(workspace.state.papers[0].readStatus, 'unread');
 });
 
+test('连续阅读拖选多行标题时，选区与复制内容只包含标题', async (t) => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(new Blob(['pdf']), {
+    headers: { 'content-type': 'image/png', 'X-PDF-Pages': '1' },
+  });
+  t.after(() => { globalThis.fetch = originalFetch; });
+  const word = (text: string, x: number, y: number, width: number) => ({ text, x, y, width, height: 14 });
+  const page = await fixture(t, { pdfTextLines: [
+    { words: [word('Journal header', 20, 15, 70)] },
+    { words: [word('REVIEW', 23, 80, 52)] },
+    { words: [word('Article', 20, 110, 50), word('title', 74, 110, 35)] },
+    { words: [word('second line', 20, 130, 64)] },
+    { words: [word('Authors', 20, 154, 52)] },
+  ] });
+  click(page.$('[data-paper="L001"]'));
+  await until(() => page.$('.pdf-text-layer span'));
+  const root = page.$('#reader-content');
+  const layer = page.$('.pdf-text-layer');
+  const visible = new window.DOMRect(100, 50, 600, 800);
+  root.getBoundingClientRect = () => visible;
+  layer.getBoundingClientRect = () => visible;
+  const drag = (x1: number, y1: number, x2: number, y2: number): string => {
+    const emit = (target: EventTarget, type: string, clientX: number, clientY: number, buttons: number): void => {
+      target.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, clientX, clientY, buttons }));
+    };
+    emit(layer, 'mousedown', x1, y1, 1);
+    emit(document, 'mousemove', x2, y2, 1);
+    emit(document, 'mouseup', x2, y2, 0);
+    const copy = new Event('copy', { bubbles: true, cancelable: true });
+    let copied = '';
+    Object.defineProperty(copy, 'clipboardData', { value: { setData: (_type: string, data: string) => { copied = data; } } });
+    root.dispatchEvent(copy);
+    return copied;
+  };
+  assert.equal(drag(138, 282, 274, 322), 'Article title\nsecond line');
+  assert.equal(drag(274, 322, 138, 282), 'Article title\nsecond line');
+  assert.equal(drag(106, 282, 274, 322), '');
+});
+
 // 删除笔记只在用户确认后调接口，确认框默认拒绝不产生请求。
 test('当前阅读的文献存于服务端文件，并在重启后恢复', async (t) => {
   const page = await fixture(t);
@@ -849,6 +1004,59 @@ test('阅读笔记可删除，取消确认不发请求', async (t) => {
   assert.equal(workspace.state.notePath, '');
   assert.match(page.$('#reader-content').textContent, /阅读笔记尚待积累/);
   assert.match(page.$('.toast-region').textContent, /回收站/);
+});
+
+test('高像素密度下升级 PDF 页图，替换成功或失败都保留选区', async (t) => {
+  const originalFetch = globalThis.fetch;
+  const originalRatio = window.devicePixelRatio;
+  const scales: string[] = [];
+  let finishUpgrade: (response: Response) => void = () => {};
+  const png = () => new Response(new Blob(['pdf']), {
+    headers: { 'Content-Type': 'image/png', 'X-PDF-Pages': '1' },
+  });
+  Object.defineProperty(window, 'devicePixelRatio', { configurable: true, value: 2 });
+  globalThis.fetch = async (url) => {
+    const scale = new URL(String(url), 'http://localhost').searchParams.get('scale') ?? '';
+    scales.push(scale);
+    if (scale === '1600') return png();
+    if (scale === '2400') return new Promise((resolve) => { finishUpgrade = resolve; });
+    return new Response(null, { status: 500 });
+  };
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+    Object.defineProperty(window, 'devicePixelRatio', { configurable: true, value: originalRatio });
+    document.getSelection()!.removeAllRanges();
+  });
+  const page = await fixture(t);
+  click(page.$('[data-paper="L001"]'));
+  await until(() => page.$('.pdf-text-layer span'));
+  const sheet = page.$('.pdf-page-sheet') as HTMLElement;
+  sheet.getBoundingClientRect = () => {
+    const zoom = parseFloat(sheet.style.width) / 100;
+    return new window.DOMRect(0, 0, 600 * zoom, 800 * zoom);
+  };
+  const root = page.$('#reader-content');
+  const originalImage = page.$('.pdf-page-image');
+  const word = page.$('.pdf-text-layer span');
+  const range = document.createRange();
+  range.selectNodeContents(word);
+  document.getSelection()!.addRange(range);
+  root.dispatchEvent(new Event('scroll'));
+  await until(() => scales.includes('2400'));
+  assert.equal(page.$('.pdf-page-image'), originalImage);
+  finishUpgrade(png());
+  await until(() => page.$('.pdf-page-image') !== originalImage);
+  const sharpImage = page.$('.pdf-page-image');
+  assert.equal(page.$('.pdf-text-layer span'), word);
+  assert.equal(document.getSelection()!.toString(), 'Selectable ');
+  click(page.$('[data-pdf-zoom="50"]'));
+  await until(() => scales.includes('4000') && page.workspace.state.pdfSession?.running === 0);
+  root.dispatchEvent(new Event('scroll'));
+  await new Promise((resolve) => requestAnimationFrame(resolve));
+  assert.deepEqual(scales, ['1600', '2400', '4000']);
+  assert.equal(page.$('.pdf-page-image'), sharpImage);
+  assert.equal(document.getSelection()!.toString(), 'Selectable ');
+  assert.equal(page.calls.filter((call) => call.path.includes('/text-layer?')).length, 1);
 });
 
 test('连续阅读中 Ctrl+滚轮缩放 PDF 页面，普通滚轮不受影响', async (t) => {
@@ -955,8 +1163,11 @@ test('设置面板显示当前思考强度与压缩阈值，修改后提交接�
   );
   assert.equal(page.piSettings.thinking.level, 'high');
   assert.match(page.$('.settings-skills')?.textContent ?? '', /paper-reading/);
+  const beforeReload = page.calls.filter((call) => call.path === '/api/commands').length;
   click(page.target.querySelector('.settings-skills')?.parentElement?.querySelector('.text-button'));
   await until(() => page.calls.some((call) => call.path === '/api/agents/pi/skills/reload'));
+  await until(() => page.calls.filter((call) => call.path === '/api/commands').length > beforeReload &&
+    !page.$('.settings-check input').disabled);
   click(page.$('.settings-check input'));
   await until(() => page.piSettings.compaction.enabled === false);
   const last = page.calls.filter((call) => call.path === '/api/agents/pi/settings/compaction').at(-1);
@@ -972,11 +1183,13 @@ test('输入框唤起斜杠命令菜单，键盘与点击都能插入命令', as
   const menu = page.$('#command-menu');
   assert.ok(menu, '输入 / 应显示命令菜单');
   const names = [...menu.querySelectorAll('[data-command]')].map((node: any) => node.dataset.command);
-  assert.deepEqual(names, ['help', 'compact', 'skill:paper-reading']);
+  assert.deepEqual(names, [
+    'help', 'compact', 'settings', 'model', 'changelog', 'skill:paper-reading', 'skill:paper-experiments',
+  ]);
   assert.equal(menu.querySelector('[aria-selected="true"]')?.dataset.command, 'help');
 
   // 输入筛选词后上下键切换，Enter 只插入命令不提交表单。
-  input(composer, '/ski');
+  input(composer, '/skill:paper-r');
   await flush();
   assert.deepEqual(
     [...page.$('#command-menu').querySelectorAll('[data-command]')].map((node: any) => node.dataset.command),
@@ -1024,4 +1237,43 @@ test('提交斜杠命令走命令接口并保留提示菜单可发现性', async
   assert.equal(call.body.pdfPage, 3);
   assert.match(page.$('#messages').textContent, /斜杠命令/);
   assert.equal(page.workspace.state.draft, '');
+});
+
+test('当前论文的两个按钮调用对应技能，保留输入草稿并等待用户确认保存笔记', async (t) => {
+  const page = await fixture(t);
+  const actions = [...page.target.querySelectorAll<HTMLButtonElement>('.paper-actions button')];
+  const [review, summarize] = actions;
+  assert.deepEqual(actions.map((button) => button.textContent?.trim()), ['值得读吗？', '总结全文']);
+  assert.ok(actions.every((button) => button.disabled));
+
+  const { state } = page.workspace;
+  state.context.add('L001');
+  state.current = 'L002';
+  state.pdfPage = 3;
+  input(page.$('#chat-input'), '保留这条准备发送的问题');
+  await flush();
+  assert.ok(actions.every((button) => !button.disabled));
+
+  const commands = () => page.calls.filter((call) => call.path.endsWith('/commands') && call.method === 'POST');
+  review.click();
+  await until(() => commands().length === 1 && !state.sending);
+  const decision = commands()[0].body;
+  assert.match(decision.text, /^\/skill:paper-reading .*证据不足时标为待判断/);
+  assert.doesNotMatch(decision.text, /draft_note/);
+  assert.ok(state.chat.messages.length > 0);
+  assert.equal(summarize.disabled, false);
+
+  summarize.click();
+  await until(() => commands().length === 2 && !state.sending);
+  const summary = commands()[1].body;
+  assert.match(summary.text, /^\/skill:paper-experiments .*调用 draft_note/);
+  for (const command of [decision, summary]) {
+    assert.deepEqual(command.paperIds, ['L002']);
+    assert.equal(command.activePaperId, 'L002');
+    assert.equal(command.pdfPage, 3);
+  }
+  assert.equal(commands()[0].path, commands()[1].path);
+  assert.deepEqual([...state.context], ['L001']);
+  assert.equal(state.draft, '保留这条准备发送的问题');
+  assert.deepEqual(page.noteDecisions, []);
 });

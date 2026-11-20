@@ -98,6 +98,11 @@ export class AssistantService extends ChatService {
     return this.pi.settingsInfo();
   }
 
+  async reloadConfiguration(): Promise<AssistantSnapshot & ChatStatusSnapshot> {
+    await this.pi.reloadConfiguration();
+    return this.connect();
+  }
+
   /** `/compact`：把压缩请求交给已载入的 Pi 会话；未开始的会话先报错。 */
   async compactThread(
     chatId: string, instructions?: string,

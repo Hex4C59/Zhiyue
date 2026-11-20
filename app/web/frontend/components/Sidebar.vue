@@ -218,7 +218,6 @@ async function submitRename(row: CategoryRow): Promise<void> {
         </div>
       </template>
     </div>
-    <div class="sidebar-bottom"><span class="workspace-dot" /><span>本地工作区</span></div>
     <PanelHandle kind="sidebar" />
   </aside>
 </template>

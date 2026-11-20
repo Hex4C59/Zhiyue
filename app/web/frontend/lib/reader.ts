@@ -1,4 +1,7 @@
 import { markRaw } from 'vue';
+import { DEFAULT_PDF_PREVIEW_SCALE, MAX_PDF_PREVIEW_SCALE, PDF_PREVIEW_SCALES } from '../../src/lib/pdfScales.js';
+import type { PDFPreviewScale } from '../../src/lib/pdfScales.js';
+import { bindPDFSelection } from './pdfSelection';
 import { authorText, endpoint, esc, fileURL, icon, markdown, readKey, readLabels, titleOf } from './content';
 import type { Paper, PDFPageData, PDFSession, TextLayerData, WorkspaceState } from './types';
 import type { ApiFn } from './workspace';
@@ -35,6 +38,8 @@ export function createReader({
       session.disposed = true;
       session.observer?.disconnect();
       session.resizeObserver?.disconnect();
+      session.disposeSelection?.();
+      session.disposePixelRatioWatch?.();
       session.root.removeEventListener('scroll', session.onScroll as EventListener);
       document.removeEventListener('copy', session.onCopy as EventListener);
       for (const name of ['wheel', 'touchstart', 'pointerdown', 'keydown']) {
@@ -43,7 +48,7 @@ export function createReader({
       session.root.removeEventListener('wheel', session.onZoomWheel as EventListener);
       if (session.frame) cancelAnimationFrame(session.frame);
       for (const controller of session.controllers.values()) controller.abort();
-      for (const url of session.urls.values()) URL.revokeObjectURL(url);
+      for (const { url } of session.images.values()) URL.revokeObjectURL(url);
       session.queue = [];
     }
     state.pdfSession = null;
@@ -129,20 +134,25 @@ export function createReader({
   function livePDF(session: PDFSession): boolean {
     return !session.disposed && state.pdfSession === session && state.noteEpoch === session.epoch;
   }
-  async function fetchPDFPage(session: PDFSession, page: number): Promise<PDFPageData> {
+  async function fetchPDFPage(session: PDFSession, page: number, scale: PDFPreviewScale): Promise<PDFPageData> {
     const controller = new AbortController();
     session.controllers.set(page, controller);
-    const timer = setTimeout(() => controller.abort(), 45000);
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, 45000);
     let url = '';
     try {
-      const textPromise = api<TextLayerData>(
-        `/api/papers/${endpoint(session.paper.literature_id)}/text-layer?page=${page}`,
-        { signal: controller.signal },
-      ).catch((error: unknown) => ({ hasText: false, text: '', lines: [], width: 0, height: 0, error: (error as Error).message }));
-      const response = await fetch(
-        `/api/papers/${endpoint(session.paper.literature_id)}/preview?page=${page}`,
-        { signal: controller.signal },
-      );
+      const base = `/api/papers/${endpoint(session.paper.literature_id)}`;
+      const query = `?page=${page}&scale=${scale}`;
+      const options = { signal: controller.signal };
+      const textPromise = session.images.has(page) ? undefined : api<TextLayerData>(
+        `${base}/text-layer${query}`, options,
+      ).catch((error: unknown) => ({
+        hasText: false, text: '', lines: [], width: 0, height: 0, error: (error as Error).message,
+      }));
+      const response = await fetch(`${base}/preview${query}`, options);
       if (!response.ok) {
         let detail = `预览加载失败 (${response.status})`;
         if ((response.headers.get('content-type') || '').includes('json')) {
@@ -167,10 +177,11 @@ export function createReader({
       await img.decode();
       if (!livePDF(session) || controller.signal.aborted) throw new DOMException('已停止加载', 'AbortError');
       if (!Number.isSafeInteger(total) || total < page) throw new Error('PDF总页数无效。');
-      return { img, url, total, textLayer: await textPromise };
+      return { img, url, total, scale, textLayer: await textPromise };
     } catch (error) {
       controller.abort();
       if (url) URL.revokeObjectURL(url);
+      if (timedOut) throw new Error('预览请求超时，请重试。');
       throw error;
     } finally {
       clearTimeout(timer);
@@ -245,14 +256,18 @@ export function createReader({
     }
     return false;
   }
-  function mountPDFPage(session: PDFSession, page: number, { img, url, textLayer }: PDFPageData): void {
-    if (!livePDF(session)) {
+  function mountPDFPage(session: PDFSession, page: number, { img, url, scale, textLayer }: PDFPageData): void {
+    const sheet = session.pages.get(page);
+    if (!livePDF(session) || !sheet) {
       URL.revokeObjectURL(url);
       return;
     }
-    const sheet = session.pages.get(page);
-    if (!sheet) {
-      URL.revokeObjectURL(url);
+    const prior = session.images.get(page);
+    if (prior) {
+      // 更新像素密度时只换位图，保留页面尺寸、滚动位置以及文字选区。
+      sheet.querySelector('.pdf-page-image')?.replaceWith(img);
+      session.images.set(page, { url, scale });
+      URL.revokeObjectURL(prior.url);
       return;
     }
     const priorHeight = sheet.offsetHeight;
@@ -260,8 +275,8 @@ export function createReader({
     sheet.style.aspectRatio = `${img.naturalWidth} / ${img.naturalHeight}`;
     sheet.replaceChildren(img);
     sheet.dataset.loaded = 'true';
-    mountPDFTextLayer(session, page, textLayer);
-    session.urls.set(page, url);
+    if (textLayer) mountPDFTextLayer(session, page, textLayer);
+    session.images.set(page, { url, scale });
     session.errors.delete(page);
     if (above) {
       session.root.scrollTop += sheet.offsetHeight - priorHeight;
@@ -270,14 +285,26 @@ export function createReader({
     if (page === state.pdfPage) renderPDFControls();
     schedulePDFScroll(session);
   }
+  function neededPDFScale(session: PDFSession, page: number): PDFPreviewScale | undefined {
+    const sheet = session.pages.get(page);
+    if (!sheet || session.controllers.has(page) || session.errors.has(page)) return;
+    const { root } = session;
+    const visible = page === state.pdfPage || (
+      sheet.offsetTop < root.scrollTop + root.clientHeight && sheet.offsetTop + sheet.offsetHeight > root.scrollTop
+    );
+    let scale: PDFPreviewScale = DEFAULT_PDF_PREVIEW_SCALE;
+    if (visible) {
+      const { width, height } = sheet.getBoundingClientRect();
+      // 按屏幕物理像素取样，并为浏览器缩采样留出余量。
+      const pixels = Math.max(width, height) * view.devicePixelRatio * 1.5;
+      scale = PDF_PREVIEW_SCALES.find((size) => size >= pixels) ?? MAX_PDF_PREVIEW_SCALE;
+    }
+    if (session.failedUpgrades.get(page) === scale) scale = DEFAULT_PDF_PREVIEW_SCALE;
+    if ((session.images.get(page)?.scale ?? 0) >= scale) return;
+    return scale;
+  }
   function requestPDFPage(session: PDFSession, page: number, priority = false): void {
-    if (
-      !livePDF(session) ||
-      !session.pages.has(page) ||
-      session.urls.has(page) ||
-      session.controllers.has(page) ||
-      session.errors.has(page)
-    ) return;
+    if (!livePDF(session) || !neededPDFScale(session, page)) return;
     if (!session.queue.includes(page)) {
       if (priority) session.queue.unshift(page);
       else session.queue.push(page);
@@ -290,12 +317,17 @@ export function createReader({
     session.queue.sort((a, b) => Math.abs(a - state.pdfPage) - Math.abs(b - state.pdfPage));
     while (session.running < 2 && session.queue.length) {
       const page = session.queue.shift() as number;
-      if (session.urls.has(page) || session.controllers.has(page)) continue;
+      const scale = neededPDFScale(session, page);
+      if (!scale) continue;
       session.running++;
-      fetchPDFPage(session, page)
+      fetchPDFPage(session, page, scale)
         .then((data) => mountPDFPage(session, page, data))
         .catch((error: Error) => {
           if (!livePDF(session) || error.name === 'AbortError') return;
+          if (scale > DEFAULT_PDF_PREVIEW_SCALE) {
+            session.failedUpgrades.set(page, scale);
+            return;
+          }
           session.errors.add(page);
           const sheet = session.pages.get(page);
           if (sheet) {
@@ -348,14 +380,16 @@ export function createReader({
       if (sheet) session.anchor = { page: lo, offset: (session.root.scrollTop - sheet.offsetTop) / sheet.offsetHeight };
       // 预加载相邻页并释放远处的已解码图片，限制长文档的内存占用。
       for (const page of [lo, lo + 1, lo - 1]) requestPDFPage(session, page, true);
-      for (const [page, url] of session.urls) {
-        if (Math.abs(page - lo) > 3) {
+      for (const [page, { url, scale }] of session.images) {
+        const retainDistance = scale > DEFAULT_PDF_PREVIEW_SCALE ? 1 : 3;
+        if (Math.abs(page - lo) > retainDistance) {
           const target = session.pages.get(page);
-          if (!target || pdfSelectionIntersects(target)) continue;
+          if (!target || session.controllers.has(page) || pdfSelectionIntersects(target)) continue;
           target.innerHTML = `<div class="pdf-page-placeholder">第 ${page} 页</div>`;
           delete target.dataset.loaded;
           URL.revokeObjectURL(url);
-          session.urls.delete(page);
+          session.images.delete(page);
+          session.failedUpgrades.delete(page);
           session.textLayers.delete(page);
         }
       }
@@ -372,7 +406,8 @@ export function createReader({
       root,
       disposed: false,
       pages: new Map(),
-      urls: new Map(),
+      images: new Map(),
+      failedUpgrades: new Map(),
       controllers: new Map(),
       errors: new Set(),
       textLayers: new Map(),
@@ -388,7 +423,7 @@ export function createReader({
     renderPDFControls();
     root.innerHTML = `<div class="loading"><span class="busy-spinner"></span>正在加载 PDF 第 ${page} 页…</div>`;
     try {
-      const first = await fetchPDFPage(session, page);
+      const first = await fetchPDFPage(session, page, DEFAULT_PDF_PREVIEW_SCALE);
       if (!livePDF(session)) {
         URL.revokeObjectURL(first.url);
         return;
@@ -411,6 +446,7 @@ export function createReader({
         session.pages.set(n, sheet);
       }
       root.replaceChildren(viewport);
+      session.disposeSelection = bindPDFSelection(root, session.textLayers);
       root.scrollLeft = 0;
       mountPDFPage(session, page, first);
       root.scrollTop = Math.max(0, (session.pages.get(page) as HTMLElement).offsetTop - 24);
@@ -486,7 +522,15 @@ export function createReader({
         schedulePDFScroll(session);
       });
       session.resizeObserver.observe(root);
-      schedulePDFScroll(session);
+      let resolutionQuery: MediaQueryList;
+      const watchPixelRatio = () => {
+        resolutionQuery?.removeEventListener?.('change', watchPixelRatio);
+        resolutionQuery = view.matchMedia(`(resolution: ${view.devicePixelRatio}dppx)`);
+        resolutionQuery.addEventListener?.('change', watchPixelRatio);
+        schedulePDFScroll(session);
+      };
+      session.disposePixelRatioWatch = () => resolutionQuery?.removeEventListener?.('change', watchPixelRatio);
+      watchPixelRatio();
     } catch (error) {
       if (!livePDF(session)) return;
       const err = error as Error;
@@ -505,7 +549,7 @@ export function createReader({
       $('#reader-header').innerHTML = '<span class="muted">阅读</span>';
       $('#reader-toolbar').hidden = true;
       $('#reader-content').innerHTML =
-        `<div class="empty reader-empty"><span class="empty-art">${icon('book')}</span><h2>选择论文</h2><p>从左侧选择，查看原文或笔记。</p></div>`;
+        '<div class="empty reader-empty">未选择文献</div>';
       return;
     }
     const epoch = ++state.noteEpoch;

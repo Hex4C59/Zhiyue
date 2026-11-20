@@ -270,6 +270,7 @@ fn spawn_sidecar(app: &AppHandle, window: &WebviewWindow) -> Result<(), String> 
     command
         .arg(&launch.entry)
         .current_dir(&launch.cwd)
+        .env("ZHIYUE_DESKTOP", "1")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -348,6 +349,9 @@ fn spawn_sidecar(app: &AppHandle, window: &WebviewWindow) -> Result<(), String> 
                         error_tail.clone(),
                     );
                 }
+            } else if line == "ZHIYUE_QUIT" {
+                ready_app.exit(0);
+                break;
             }
         }
         if !started {

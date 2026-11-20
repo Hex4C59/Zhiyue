@@ -8,7 +8,7 @@ import { createHash } from 'node:crypto';
 import type { IncomingMessage } from 'node:http';
 import { createApp, checkRequest } from '../src/server.js';
 import { downloaderScript, resolvePython } from '../src/lib/python.js';
-import type { ChatNoteDraft } from '../src/lib/chat.js';
+import type { Chat, ChatNoteDraft } from '../src/lib/chat.js';
 
 // 服务端返回的 JSON 只在这里按用到的字段声明结构，读取后立即断言。
 interface LibraryResponse {
@@ -115,6 +115,51 @@ test('界面状态接口读写 ui.json，并拒绝脏值', async (t) => {
     await fetch(`http://127.0.0.1:${again.port}/api/ui`),
   );
   assert.deepEqual(reread.panelWidths, { sidebar: 240, papers: 300 });
+});
+
+test('会话归档和回收站状态跨重启保留，恢复后仍有原来的消息和上下文', async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'literature-chat-history-'));
+  const apps: Awaited<ReturnType<typeof createApp>>[] = [];
+  t.after(async () => {
+    for (const app of apps) await app.close();
+    await fs.rm(root, { recursive: true, force: true });
+  });
+  const launch = async () => {
+    const app = await createApp({ root, connectPi: false });
+    apps.push(app);
+    await new Promise<void>((resolve) => app.server.listen(0, '127.0.0.1', resolve));
+    const address = app.server.address();
+    assert.ok(address && typeof address === 'object');
+    const call = (route: string, method = 'GET', body?: unknown) => fetch(
+      `http://127.0.0.1:${address.port}/api/chats${route}`,
+      body === undefined ? { method } : { method, body: JSON.stringify(body), headers: { 'content-type': 'application/json' } },
+    );
+    return { app, call };
+  };
+
+  const first = await launch();
+  const chat = await readJson<Chat>(await first.call('', 'POST', { title: '原会话', paperIds: ['L001'] }));
+  const route = '/' + chat.id;
+  const reply = await first.call(route + '/commands', 'POST', { text: '/help' });
+  assert.equal(reply.status, 202);
+  assert.equal((await first.call(route, 'PATCH', { historyState: 'invalid' })).status, 400);
+  assert.equal((await first.call(route, 'PATCH', { historyState: 'archived' })).status, 200);
+  assert.equal((await readJson<Chat>(await first.call(route))).historyState, 'archived');
+  assert.equal((await first.call(route + '/commands', 'POST', { text: '/help' })).status, 409);
+  assert.equal((await first.call(route + '/messages', 'POST', { text: '继续讨论' })).status, 409);
+  assert.equal((await first.call(route, 'DELETE', {})).status, 200);
+  assert.equal((await first.call(route)).status, 404);
+  await first.app.close();
+  apps.shift();
+
+  const second = await launch();
+  const history = await readJson<Chat[]>(await second.call(''));
+  assert.equal(history[0]?.historyState, 'trashed');
+  assert.deepEqual(history[0]?.messages, []);
+  assert.equal((await second.call(route, 'PATCH', { historyState: 'active' })).status, 200);
+  const restored = await readJson<Chat>(await second.call(route));
+  assert.deepEqual(restored.paperIds, ['L001']);
+  assert.match(restored.messages[0]?.text ?? '', /斜杠命令/);
 });
 
 test('两个实例交错写 ui.json 不丢字段', async (t) => {

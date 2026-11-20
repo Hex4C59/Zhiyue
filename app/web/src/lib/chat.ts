@@ -56,7 +56,10 @@ export interface Chat {
   noteDrafts: ChatNoteDraft[];
   createdAt: string;
   threadId: string | null;
+  historyState?: ChatHistoryState;
 }
+
+export type ChatHistoryState = 'active' | 'archived' | 'trashed';
 
 export interface ChatEvent {
   type: string;
@@ -273,6 +276,7 @@ export class ChatService {
   readonly compactSession?: ChatServiceOptions['compact'];
   readonly store: Store<{ chats: Chat[] }>;
   readonly client: AssistantClient;
+  private readonly runningCommands = new Set<string>();
   loaded: Set<string>;
   active: Map<string, ActiveTurn>;
   approvals: Map<string, ApprovalRecord>;
@@ -348,14 +352,53 @@ export class ChatService {
   }
 
   list(): Array<Omit<Chat, 'noteDrafts'> & { messages: ChatMessage[] }> {
-    return this.store.data.chats.map(({ noteDrafts, ...chat }) => ({ ...chat, messages: chat.messages.slice(-1) })).reverse();
+    return this.store.data.chats.map(({ noteDrafts, ...chat }) => ({
+      ...chat,
+      messages: chat.historyState === 'trashed' ? [] : chat.messages.slice(-1),
+    })).reverse();
   }
 
   get(id: string): Chat {
     const chat = this.store.data.chats.find((item) => item.id === id);
-    if (!chat) throw statusError('会话不存在。', 404);
+    if (!chat || chat.historyState === 'trashed') throw statusError('会话不存在。', 404);
     if (!chat.noteDrafts) chat.noteDrafts = [];
     return chat;
+  }
+
+  private assertIdle(id: string): void {
+    if (this.active.has(id) || this.runningCommands.has(id)) {
+      throw statusError('当前回答或命令尚未完成，请先停止或等待。', 409);
+    }
+  }
+
+  private writableChat(id: string): Chat {
+    const chat = this.get(id);
+    if (chat.historyState === 'archived') throw statusError('请先恢复已归档的会话。', 409);
+    return chat;
+  }
+
+  terminalSession(id: string): string | null {
+    this.assertIdle(id);
+    return this.get(id).threadId;
+  }
+
+  changeHistory(id: string, historyState: ChatHistoryState): { id: string; historyState: ChatHistoryState } {
+    const chat = this.store.data.chats.find((item) => item.id === id);
+    if (!chat) throw statusError('会话不存在。', 404);
+    this.assertIdle(id);
+    const previous = chat.historyState;
+    if (previous !== historyState) {
+      // 会话记录由本地服务独占管理。归档和回收状态与正文用同一次原子替换写入。
+      chat.historyState = historyState;
+      try {
+        this.store.save();
+      } catch (error) {
+        chat.historyState = previous;
+        throw error;
+      }
+      this.emit({ type: 'chatHistory', chatId: id, historyState });
+    }
+    return { id, historyState };
   }
 
   create({ title, paperIds = [] }: { title?: string; paperIds?: string[] } = {}): Chat {
@@ -385,8 +428,8 @@ export class ChatService {
    */
   async command(chatId: string, text: string, context: PaperContext = {}):
     Promise<{ kind: 'local' | 'skill'; chatId: string; text: string }> {
-    const chat = this.get(chatId);
-    if (this.active.has(chatId)) throw statusError('当前回答尚未完成，请先停止或等待。', 409);
+    const chat = this.writableChat(chatId);
+    this.assertIdle(chatId);
     // 命令与普通消息同样携带选中文献；不清空、不覆盖时才保留会话原值。
     const incoming = normalizePaperContext(context);
     if (applyPaperContext(chat, incoming)) this.store.save();
@@ -395,16 +438,36 @@ export class ChatService {
     const command = findCommand(this.commands(), parsed.name);
     if (!command) throw statusError(`未知命令：/${parsed.name}。发送 /help 查看可用命令。`, 404);
     // /compact 依赖已有会话上下文；未开始的会话先给出行内提示。
-    if (command.scope === 'chat' && !chat.threadId) {
+    if (command.target) throw statusError('请从助手界面的斜杠命令菜单运行此命令。', 400);
+    if (command.name === 'compact' && !chat.threadId) {
       throw statusError('当前会话还没有上下文，先提问或改用其他命令。', 409);
     }
-    const outcome: CommandOutcome = await runCommand(command, parsed.args, {
-      skills: this.skills ?? emptySkills(),
-      compact: async (args) => {
-        if (!this.compactSession) throw statusError('当前助手不支持压缩上下文。', 400);
-        return this.compactSession(chatId, args || undefined);
-      },
-    });
+    this.runningCommands.add(chatId);
+    let outcome: CommandOutcome;
+    try {
+      outcome = await runCommand(command, parsed.args, {
+        skills: this.skills ?? emptySkills(),
+        compact: async (args) => {
+          if (!this.compactSession) throw statusError('当前助手不支持压缩上下文。', 400);
+          return this.compactSession(chatId, args || undefined);
+        },
+        name: (args) => {
+          if (!args) return `当前会话名称：${chat.title}`;
+          if (args.length > 100 || /[\x00-\x1f\x7f]/.test(args)) {
+            throw statusError('会话名称必须是 100 字以内的单行文本。');
+          }
+          chat.title = args;
+          return `会话名称已改为：${chat.title}`;
+        },
+        session: () => [
+          '## 会话信息', '', `名称：${chat.title}`, `编号：${chat.id}`,
+          `消息数：${chat.messages.length}`,
+          `文献：${chat.paperIds.join('、') || '未选择'}`,
+        ].join('\n'),
+      });
+    } finally {
+      this.runningCommands.delete(chatId);
+    }
     if (outcome.kind === 'local') {
       const message: ChatMessage = {
         id: randomUUID(), role: 'assistant', text: outcome.result.text,
@@ -437,8 +500,8 @@ export class ChatService {
     /** 实际发给模型的正文；技能命令用它替换界面上那行单行指令。 */
     promptOverride?: string;
   }): Promise<{ accepted: true }> {
-    const chat = this.get(chatId);
-    if (this.active.has(chatId)) throw statusError('当前回答尚未完成，请先停止或等待。', 409);
+    const chat = this.writableChat(chatId);
+    this.assertIdle(chatId);
     if (typeof text !== 'string' || text.length > 50000 || (!text.trim() && !attachments.length)) throw statusError('请输入问题或添加附件。');
     if (model && !/^[\w./:-]{1,100}$/.test(model)) throw statusError('模型名称不合法。');
     const incoming = normalizePaperContext({ paperIds, activePaperId, pdfPage });
@@ -657,6 +720,7 @@ export class ChatService {
     }
     const draft = owner?.noteDrafts.find((d) => d.id === id);
     if (!owner || !draft) throw statusError('笔记草稿不存在或已处理。', 404);
+    this.writableChat(owner.id);
     let savedPath: string | undefined;
     if (action === 'save') {
       const paper = await this.library.getPaper(draft.paperId);

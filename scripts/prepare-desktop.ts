@@ -117,6 +117,7 @@ const requiredFiles = [
   'app/web/src/server.js',
   'app/web/src/lib/extract.py',
   'app/web/src/lib/render.py',
+  'app/web/src/lib/piTerminalPrefill.js',
   'app/web/dist/app.js',
   'app/web/public/index.html',
   'app/downloader/run.py',
@@ -125,6 +126,7 @@ const requiredFiles = [
   'app/templates/skills/paper-experiments/SKILL.md',
   'app/templates/skills/paper-reading/SKILL.md',
   'node_modules/@earendil-works/pi-coding-agent/dist/index.js',
+  'node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js',
 ];
 for (const relative of requiredFiles) {
   const info = await stat(path.join(OUT, relative)).catch(() => null);

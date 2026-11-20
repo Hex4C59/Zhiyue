@@ -18,6 +18,8 @@ export const paths: Record<string, string> = {
   spark: 'M12 2l2.5 7.5L22 12l-7.5 2.5L12 22l-2.5-7.5L2 12l7.5-2.5z',
   plus: 'M12 5v14 M5 12h14',
   history: 'M4 4v6h6 M4 10a8 8 0 1 1 1 7 M12 7v5l3 2',
+  archive: 'M3 4h18v4H3z M5 8v12h14V8 M10 12h4',
+  restore: 'M3 11l4-4 4 4 M7 7v6a5 5 0 0 0 5 5h8',
   link: 'M10 13a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-2 2 M14 11a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l2-2',
   attach: 'M8 13l6-6a3 3 0 0 1 4 4l-8 8a5 5 0 0 1-7-7l9-9a7 7 0 0 1 10 10l-9 9',
   arrow: 'M12 20V4 M5 11l7-7 7 7',

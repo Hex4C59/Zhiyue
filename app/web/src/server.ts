@@ -23,6 +23,8 @@ import { UiStateStore } from './lib/uiState.js';
 import { libraryPaths, resolveLibraryRoot, ensureLibrary } from './lib/paths.js';
 import { appPaths } from './lib/appPaths.js';
 import { httpStatus, errorMessage, statusError } from './lib/errors.js';
+import { parseCommand, findCommand } from './lib/commands.js';
+import { desktopCommandsAvailable, openPiTerminal } from './lib/piTerminal.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const MIME: Record<string, string> = {
@@ -282,7 +284,33 @@ export async function createApp({
       if (method === 'POST' && route === '/api/agents/pi/connect') return json(res, await chats.connect());
       if (method === 'GET' && route === '/api/agents/pi/settings') return json(res, await chats.settings());
       if (method === 'POST' && route === '/api/agents/pi/skills/reload') return json(res, await chats.reloadSkills());
-      if (method === 'GET' && route === '/api/commands') return json(res, { commands: chats.commands() });
+      if (method === 'POST' && route === '/api/agents/pi/settings/reload') {
+        return json(res, await chats.reloadConfiguration());
+      }
+      if (method === 'GET' && route === '/api/commands') {
+        return json(res, { commands: chats.commands(), desktop: desktopCommandsAvailable() });
+      }
+      if (method === 'POST' && (route === '/api/commands/terminal' || route === '/api/commands/quit')) {
+        if (!desktopCommandsAvailable()) throw error('此命令需要在 Zhiyue 桌面版运行。', 409);
+        if (req.headers.origin !== url.origin) throw error('请从本机桌面界面执行此命令。', 403);
+        if (route.endsWith('/quit')) {
+          res.once('finish', () => console.log('ZHIYUE_QUIT'));
+          return json(res, { accepted: true }, 202);
+        }
+        const { text, chatId } = await readJson(req);
+        if (typeof text !== 'string' || /[\x00-\x1f\x7f]/.test(text)) throw error('请输入一行 Pi 命令。');
+        const parsed = parseCommand(text);
+        const command = parsed && findCommand(chats.commands(), parsed.name);
+        if (!parsed || command?.target !== 'terminal') throw error('未知的 Pi 终端命令。', 404);
+        let threadId: string | undefined;
+        if (command.scope === 'chat') {
+          if (typeof chatId !== 'string') throw error('请先打开会话。', 409);
+          threadId = chats.terminalSession(chatId) ?? undefined;
+          if (!threadId) throw error('当前会话还没有 Pi 上下文，请先与模型对话。', 409);
+        }
+        await openPiTerminal({ root, stateDir, sessionsDir: chats.pi.sessionsDir, command: text, threadId });
+        return json(res, { accepted: true }, 202);
+      }
       if (method === 'POST' && route === '/api/agents/pi/settings/key') {
         const { provider, key } = await readJson(req);
         if (typeof provider !== 'string' || !/^[A-Za-z0-9._-]{1,100}$/.test(provider)) throw error('服务商名称不合法。');
@@ -336,6 +364,12 @@ export async function createApp({
       if (chatMatch) {
         const [, id, action] = chatMatch as unknown as [string, string, string | undefined];
         if (method === 'GET' && !action) return json(res, chats.get(id));
+        if (method === 'PATCH' && !action) {
+          const { historyState } = await readJson(req);
+          if (historyState !== 'active' && historyState !== 'archived') throw error('无效的会话状态。');
+          return json(res, chats.changeHistory(id, historyState));
+        }
+        if (method === 'DELETE' && !action) return json(res, chats.changeHistory(id, 'trashed'));
         if (method === 'POST' && action === 'commands') {
           const data = await readJson(req);
           const label = typeof data.text === 'string' && data.text.trim() ? data.text : '';
@@ -371,7 +405,10 @@ export async function createApp({
         if (!entry) throw error('文献不存在。', 404);
         const pageNumber = Number(url.searchParams.get('page') || 1);
         if (!Number.isSafeInteger(pageNumber) || pageNumber < 1) throw error('请指定正整数PDF页序。');
-        const rendered = await previewPaper({ root, python, file: await library.safeFile(entry.file), page: pageNumber });
+        const rendered = await previewPaper({
+          root, python, file: await library.safeFile(entry.file), page: pageNumber,
+          scale: url.searchParams.get('scale') ?? undefined,
+        });
         if (preview[2] === 'text-layer') return json(res, { page: pageNumber, totalPages: rendered.totalPages, ...rendered.textLayer });
         res.setHeader('X-PDF-Pages', String(rendered.totalPages));
         return await serveFile(req, res, rendered.file);

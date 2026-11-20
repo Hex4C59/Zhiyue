@@ -9,14 +9,23 @@ import ApprovalCard from './ApprovalCard.vue';
 import NoteDraftCard from './NoteDraftCard.vue';
 import AgentSettingsDialog from './AgentSettingsDialog.vue';
 import type { PaperLike } from '../lib/content';
-import type { Chat } from '../lib/types';
+import type { Chat, ChatHistoryState } from '../lib/types';
 import type { WorkspaceApi } from '../lib/workspace';
 
 const workspace = inject('workspace') as WorkspaceApi;
 const state = workspace.state;
 const { agent } = workspace;
 const messages = ref<HTMLElement | null>(null);
-const settingsOpen = ref(false);
+const historyTabs = [['active', '会话'], ['archived', '已归档'], ['trashed', '回收站']] as const;
+const historyView = ref<ChatHistoryState>('active');
+const historyChats = computed(() => state.chats.filter((chat) => (chat.historyState ?? 'active') === historyView.value));
+const isArchived = computed(() => state.chat?.historyState === 'archived');
+
+function trashChat(chat: Chat): void {
+  if (window.confirm(`将「${chat.title || '新会话'}」移入会话回收站？`)) {
+    void workspace.changeChatHistory(chat.id, 'trashed');
+  }
+}
 const detecting = computed(
   () =>
     agent.value.loading === true ||
@@ -44,9 +53,27 @@ const approvals = computed(() =>
   ),
 );
 const noteDrafts = computed(() => state.chat?.noteDrafts || []);
-const presets: Array<[string, string, string]> = [
-  ['book', '概括论文', '请结合当前选中的论文，解释它的研究问题、核心贡献与证据，并给出原文定位。'],
-  ['spark', '解释方法', '请详细解释当前论文的核心方法、输入输出和关键假设，区分作者报告与补充解释。'],
+const paperActions = [
+  {
+    skill: 'paper-reading', icon: 'search', label: '值得读吗？', title: '判断当前论文是否值得精读',
+    instruction: '根据本次阅读目的和文献库偏好，快速判断当前论文值得精读、略读还是跳过。'
+      + '给出理由、原文定位和优先阅读位置，证据不足时标为待判断。只在聊天中回答，不生成笔记。',
+  },
+  {
+    skill: 'paper-experiments', icon: 'book', label: '总结全文', title: '总结当前论文并生成笔记草稿',
+    instruction: '按当前论文的类型总结全文，重点讲清方法或论证、关键证据、结果及直接相关工作。'
+      + '算法论文要展开模型、实验设置和结果可比性。注明阅读范围和原文定位，并调用 draft_note 生成完整笔记草稿。',
+  },
+] as const;
+const skillLoaded = (name: string): boolean =>
+  state.commands.some((command) => command.source === 'skill' && command.name === `skill:${name}`);
+function paperActionTitle(action: (typeof paperActions)[number]): string {
+  if (!workspace.currentPaper.value) return '请先打开一篇论文';
+  if (!skillLoaded(action.skill)) return '技能尚未加载，请在设置中重新扫描技能';
+  return action.title;
+}
+const promptTemplates: Array<[string, string, string]> = [
+  ['search', '解释方法', '请详细解释当前论文的核心方法、输入输出和关键假设，区分作者报告与补充解释。'],
   ['link', '比较论文', '请比较选中论文的研究任务、数据、评价条件和局限；不可比的指标请明确指出。'],
   ['download', '查找与下载', '请帮我检索并下载相关论文，先核对来源与版本，按项目约定归档并更新索引。'],
 ];
@@ -97,7 +124,7 @@ function historyDate(chat: Chat): string {
           class="icon-button"
           title="模型与密钥"
           aria-label="模型与密钥"
-          @click="settingsOpen = true"
+          @click="state.agentSettingsOpen = true"
         >
           <Icon name="settings" />
         </button>
@@ -124,26 +151,63 @@ function historyDate(chat: Chat): string {
       </div>
     </div>
     <div v-if="state.historyOpen" id="chat-history" class="chat-history">
-      <button
-        v-for="chat in state.chats"
-        :key="chat.id"
-        class="history-item"
-        :class="{ active: state.chat?.id === chat.id }"
-        :data-chat="chat.id"
-        @click="workspace.openChat(chat.id)"
-      >
-        {{ chat.title || '新会话' }}
-        <small
-          >{{ historyDate(chat) }}
-          {{ (chat.paperIds || []).join(' · ') }}</small
+      <div class="segmented history-filters" role="group" aria-label="会话分类">
+        <button
+          v-for="[view, label] in historyTabs"
+          :key="view"
+          :class="{ active: historyView === view }"
+          :aria-pressed="historyView === view"
+          :data-history-view="view"
+          @click="historyView = view"
+        >{{ label }}</button>
+      </div>
+      <div v-for="chat in historyChats" :key="chat.id" class="history-row">
+        <component
+          :is="historyView === 'trashed' ? 'div' : 'button'"
+          class="history-item"
+          :class="{ active: state.chat?.id === chat.id }"
+          :data-chat="chat.id"
+          :title="chat.title || '新会话'"
+          @click="historyView !== 'trashed' && workspace.openChat(chat.id)"
         >
-      </button>
-      <div v-if="!state.chats.length" class="empty">暂无会话</div>
+          <span class="history-title">{{ chat.title || '新会话' }}</span>
+          <small>{{ historyDate(chat) }} {{ (chat.paperIds || []).join(' · ') }}</small>
+        </component>
+        <div class="history-actions">
+          <button
+            v-if="historyView === 'active'"
+            class="icon-button compact"
+            title="归档会话"
+            :aria-label="`归档会话：${chat.title || '新会话'}`"
+            :disabled="!workspace.canChangeChat(chat.id)"
+            @click="workspace.changeChatHistory(chat.id, 'archived')"
+          ><Icon name="archive" /></button>
+          <button
+            v-else
+            class="icon-button compact"
+            title="恢复会话"
+            :aria-label="`恢复会话：${chat.title || '新会话'}`"
+            :disabled="!workspace.canChangeChat(chat.id)"
+            @click="workspace.changeChatHistory(chat.id, 'active')"
+          ><Icon name="restore" /></button>
+          <button
+            v-if="historyView !== 'trashed'"
+            class="icon-button compact danger"
+            title="删除会话"
+            :aria-label="`删除会话：${chat.title || '新会话'}`"
+            :disabled="!workspace.canChangeChat(chat.id)"
+            @click="trashChat(chat)"
+          ><Icon name="trash" /></button>
+        </div>
+      </div>
+      <div v-if="!historyChats.length" class="empty">
+        {{ { active: '暂无会话', archived: '暂无归档会话', trashed: '回收站为空' }[historyView] }}
+      </div>
     </div>
     <div v-if="banner" id="auth-banner" class="auth-banner">
       <span>{{ state.statusError || agent.error || 'Pi 尚未配置模型或密钥。' }}</span>
       <span class="auth-banner-actions">
-        <button id="open-agent-settings" @click="settingsOpen = true">配置模型与密钥</button>
+        <button id="open-agent-settings" @click="state.agentSettingsOpen = true">配置模型与密钥</button>
         <button id="retry-status" @click="workspace.reconnectAgent">重新检测</button>
       </span>
     </div>
@@ -171,30 +235,44 @@ function historyDate(chat: Chat): string {
         <Icon name="close" />
       </button>
     </div>
+    <div v-if="!isArchived" class="paper-actions" role="group" aria-label="当前论文操作">
+      <button
+        v-for="action in paperActions"
+        :key="action.skill"
+        type="button"
+        class="button subtle"
+        :title="paperActionTitle(action)"
+        :disabled="!workspace.canRunPaperSkill.value || !skillLoaded(action.skill)"
+        @click="workspace.runPaperSkill(action.skill, action.instruction)"
+      ><Icon :name="action.icon" />{{ action.label }}</button>
+    </div>
     <div id="messages" ref="messages" class="messages" role="log" aria-label="对话消息" aria-live="off">
       <ChatMessage v-for="message in state.chat?.messages || []" :key="message.id" :message="message" />
-      <div v-if="!state.chat?.messages?.length" class="chat-empty">
-        <h2>从一个问题开始</h2>
-        <div class="presets">
-          <button
-            v-for="[image, label, prompt] in presets"
-            :key="label"
-            class="preset"
-            :data-prompt="prompt"
-            @click="workspace.setDraft(prompt)"
-          >
-            <Icon :name="image" />{{ label }}
-          </button>
-        </div>
-      </div>
+      <section v-if="!isArchived && !state.chat?.messages?.length" class="prompt-shortcuts" aria-label="提问模板">
+        <h2>提问模板</h2>
+        <button
+          v-for="[image, label, prompt] in promptTemplates"
+          :key="label"
+          class="prompt-shortcut"
+          @click="workspace.setDraft(prompt)"
+        >
+          <Icon :name="image" />{{ label }}
+        </button>
+      </section>
     </div>
-    <div v-if="noteDrafts.length" id="note-drafts" class="note-drafts" aria-live="polite">
+    <div v-if="!isArchived && noteDrafts.length" id="note-drafts" class="note-drafts" aria-live="polite">
       <NoteDraftCard v-for="draft in noteDrafts" :key="draft.id" :draft="draft" />
     </div>
     <div id="approvals" class="approvals" aria-live="polite">
       <ApprovalCard v-for="approval in approvals" :key="approval.id" :approval="approval" />
     </div>
-    <Composer />
-    <AgentSettingsDialog v-if="settingsOpen" @close="settingsOpen = false" />
+    <div v-if="isArchived && state.chat" class="archived-chat">
+      <button
+        :disabled="!workspace.canChangeChat(state.chat.id)"
+        @click="workspace.changeChatHistory(state.chat.id, 'active')"
+      ><Icon name="restore" />恢复会话</button>
+    </div>
+    <Composer v-else />
+    <AgentSettingsDialog v-if="state.agentSettingsOpen" @close="state.agentSettingsOpen = false" />
   </aside>
 </template>

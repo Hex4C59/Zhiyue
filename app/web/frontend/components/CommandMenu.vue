@@ -94,10 +94,7 @@ defineExpose({ keydown });</script>
 
 <template>
   <div v-if="open" id="command-menu" class="command-menu" role="listbox" aria-label="斜杠命令">
-    <div class="command-menu-head">
-      <span>斜杠命令</span>
-      <span class="command-menu-hint">↑↓ 选择 · Enter 插入 · Esc 清空</span>
-    </div>
+    <div class="command-menu-head">斜杠命令</div>
     <div ref="list" class="command-list">
       <button
         v-for="(command, index) in matches"
@@ -113,7 +110,7 @@ defineExpose({ keydown });</script>
         @click="choose(command)"
       >
         <span class="command-name">{{ label(command) }}</span>
-        <span class="command-source">{{ command.source === 'skill' ? '技能' : '本地' }}</span>
+        <span class="command-source">{{ command.target === 'terminal' ? 'Pi 终端' : command.source === 'skill' ? '技能' : '本地' }}</span>
         <span class="command-desc">{{ command.description }}</span>
       </button>
     </div>

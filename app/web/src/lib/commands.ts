@@ -4,6 +4,7 @@ import type { SkillInfo, SkillRuntime } from './skills.js';
 // 斜杠命令来源：本地命令由服务端直接执行，技能命令展开为技能说明后作为用户回合发送。
 export type CommandSource = 'local' | 'skill';
 export type CommandScope = 'composer' | 'chat';
+export type CommandTarget = 'workspace' | 'terminal';
 
 export interface CommandInfo {
   name: string;
@@ -12,6 +13,7 @@ export interface CommandInfo {
   /** 需要已有会话才能执行的命令标为 chat。 */
   scope: CommandScope;
   argumentHint?: string;
+  target?: CommandTarget;
 }
 
 export interface ParsedCommand {
@@ -39,10 +41,55 @@ const LOCAL: CommandInfo[] = [
     name: 'compact', description: '手动压缩当前会话上下文。', source: 'local', scope: 'chat',
     argumentHint: '[压缩说明]',
   },
+  { name: 'name', description: '查看或修改会话名称。', source: 'local', scope: 'chat', argumentHint: '[名称]' },
+  { name: 'session', description: '查看会话信息。', source: 'local', scope: 'chat' },
+  { name: 'hotkeys', description: '查看工作区键盘快捷键。', source: 'local', scope: 'composer' },
+];
+
+type PiCommand = [name: string, description: string, argumentHint?: string, scope?: CommandScope];
+
+const WORKSPACE: PiCommand[] = [
+  ['settings', '打开模型与密钥设置。'],
+  ['model', '打开模型选择器，或按名称为本次工作区选中模型。', '[服务商/模型]'],
+  ['thinking', '打开推理设置，或设置推理强度。', '[强度]'],
+  ['new', '开始新会话。'],
+  ['resume', '打开历史会话，或按编号切换。', '[会话编号]'],
+  ['copy', '复制最后一条助手消息。', undefined, 'chat'],
+  ['reload', '重新检测模型和文献库技能。'],
+  ['quit', '退出 Zhiyue 桌面应用。'],
+];
+
+const TERMINAL: PiCommand[] = [
+  ['scoped-models', '设置 Pi 终端循环切换的模型。'],
+  ['tree', '浏览和切换 Pi 会话树的分支。', undefined, 'chat'],
+  ['fork', '从较早的消息创建 Pi 会话分支。', undefined, 'chat'],
+  ['clone', '在 Pi 终端复制当前会话。', undefined, 'chat'],
+  ['export', '从 Pi 导出 HTML 或 JSONL。', '[路径]', 'chat'],
+  ['import', '导入 JSONL 到 Pi 终端。', '<路径>'],
+  ['share', '在 Pi 终端审核和分享会话。', undefined, 'chat'],
+  ['bug', '在 Pi 终端准备问题报告。', '[说明]'],
+  ['trust', '在 Pi 终端管理项目的信任状态。'],
+  ['login', '在 Pi 终端登录模型服务商。', '[服务商]'],
+  ['logout', '在 Pi 终端移除服务商认证。'],
+  ['changelog', '查看随包 Pi 的更新记录。'],
+  ['mcp', '在 Pi 终端管理已配置的 MCP 服务。'],
+  ['llama', '在 Pi 终端管理 llama.cpp 模型。'],
+];
+
+function withTarget(target: CommandTarget, entries: PiCommand[]): CommandInfo[] {
+  return entries.map(([name, description, argumentHint, scope = 'composer']) => ({
+    name, description, argumentHint, scope, source: 'local', target,
+  }));
+}
+
+const PI_LOCAL = [
+  ...LOCAL,
+  ...withTarget('workspace', WORKSPACE),
+  ...withTarget('terminal', TERMINAL),
 ];
 
 export function localCommands(): CommandInfo[] {
-  return LOCAL.map((command) => ({ ...command }));
+  return PI_LOCAL.map((command) => ({ ...command }));
 }
 
 export function skillCommandName(name: string): string {
@@ -93,6 +140,8 @@ export interface CommandContext {
   skills: SkillRuntime;
   /** 手动压缩当前会话上下文。 */
   compact(args: string): Promise<{ tokensBefore: number; estimatedTokensAfter?: number }>;
+  name(args: string): string;
+  session(): string;
 }
 
 export type CommandOutcome =
@@ -126,6 +175,18 @@ export async function runCommand(
   if (command.name === 'skills') {
     return { kind: 'local', result: { kind: 'local', command: 'skills', text: skillsText(context.skills) } };
   }
+  if (command.name === 'hotkeys') {
+    const text = [
+      '## 工作区快捷键', '', '- Enter 发送，Shift+Enter 换行。',
+      '- 斜杠菜单使用上下键选择，Enter 或 Tab 插入，Esc 关闭。',
+      '- 连续阅读时用 Ctrl+滚轮缩放 PDF 页面。',
+    ].join('\n');
+    return { kind: 'local', result: { kind: 'local', command: command.name, text } };
+  }
+  if (command.name === 'name' || command.name === 'session') {
+    const text = command.name === 'name' ? context.name(args) : context.session();
+    return { kind: 'local', result: { kind: 'local', command: command.name, text } };
+  }
   if (command.name === 'compact') {
     const result = await context.compact(args);
     const before = Number.isFinite(result.tokensBefore) ? result.tokensBefore : 0;
@@ -150,7 +211,8 @@ function helpText(skills: SkillRuntime): string {
     '',
     ...localCommands().map((command) => {
       const hint = command.argumentHint ? ` ${command.argumentHint}` : '';
-      return `- \`/${command.name}\`${hint}：${command.description}`;
+      const terminal = command.target === 'terminal' ? '（Pi 终端）' : '';
+      return `- \`/${command.name}\`${hint}${terminal} ${command.description}`;
     }),
   ];
   const items = skills.list();

@@ -2,7 +2,7 @@ import { computed, markRaw, reactive } from 'vue';
 import { request } from './api';
 import { endpoint, json, titleOf } from './content';
 import type {
-  AttachmentItem, Category, Chat, ChatMessage, CommandInfo, JobRecord, ModelOption, Paper, PiAgentStatus,
+  AttachmentItem, Category, Chat, ChatHistoryState, ChatMessage, CommandInfo, JobRecord, ModelOption, Paper, PiAgentStatus,
   StatusInfo, UiState, WorkspaceEvent, WorkspaceState,
 } from './types';
 
@@ -107,11 +107,14 @@ export function createWorkspace({
     draft: '',
     focusComposer: 0,
     historyOpen: false,
+    agentSettingsOpen: false,
+    focusModelPicker: 0,
     jobs: new Map(),
     batches: [],
     sending: false,
     noteSaving: '',
     commands: [],
+    desktopCommands: false,
     commandError: '',
     creating: false,
     chatEpoch: 0,
@@ -152,17 +155,22 @@ export function createWorkspace({
     () => state.chat?.messages?.some((message) => activeStatuses.includes(message.status)) || false,
   );
   const busy = computed(() => state.sending || generating.value);
-  const canSend = computed(
-    () =>
-      !state.statusError &&
-      !busy.value &&
-      !state.creating &&
-      !!(state.draft.trim() || state.attachments.length) &&
-      state.attachments.every((file) => file.status === 'ready') &&
-      agent.value.available === true &&
-      agent.value.authenticated === true &&
-      state.eventsOpen,
+  const pendingChatChanges = reactive(new Set<string>());
+  let historyVersion = 0;
+  const modelReady = computed(
+    () => !state.statusError && agent.value.available === true && agent.value.authenticated === true && state.eventsOpen,
   );
+  const canStartTurn = computed(() =>
+    !busy.value && !state.creating && state.chat?.historyState !== 'archived' &&
+    !pendingChatChanges.has(state.chat?.id ?? ''),
+  );
+  const canRunPaperSkill = computed(() => canStartTurn.value && modelReady.value && !!currentPaper.value);
+  const canSend = computed(() => {
+    if (!canStartTurn.value) return false;
+    if (state.draft.trimStart().startsWith('/')) return true;
+    return modelReady.value && !!(state.draft.trim() || state.attachments.length) &&
+      state.attachments.every((file) => file.status === 'ready');
+  });
   let source: EventSource | undefined;
   let polling = false;
   let pollTimer: ReturnType<typeof setInterval> | undefined;
@@ -294,8 +302,13 @@ export function createWorkspace({
   }
 
   async function loadChats(): Promise<void> {
+    const version = ++historyVersion;
     try {
-      state.chats = await api<Chat[]>('/api/chats');
+      const chats = await api<Chat[]>('/api/chats');
+      if (version !== historyVersion || stopped) return;
+      state.chats = chats;
+      const current = chats.find((chat) => chat.id === state.chat?.id);
+      if (current?.historyState) applyChatHistory(current.id, current.historyState);
     } catch (error) {
       toast(messageOf(error), true);
     }
@@ -303,8 +316,9 @@ export function createWorkspace({
 
   async function loadCommands(): Promise<void> {
     try {
-      const data = await api<{ commands?: CommandInfo[] }>('/api/commands');
+      const data = await api<{ commands?: CommandInfo[]; desktop?: boolean }>('/api/commands');
       state.commands = Array.isArray(data.commands) ? data.commands : [];
+      state.desktopCommands = data.desktop === true;
       state.commandError = '';
     } catch (error) {
       // 命令目录只用于输入提示；拉取失败时仍可直接发消息。
@@ -339,14 +353,97 @@ export function createWorkspace({
     });
   }
 
-  /**
-   * 发送一条以斜杠开头的输入。
-   * 本地命令由服务端直接回执，技能命令展开后作为用户回合发给模型。
-   */
-  async function runCommand(text: string): Promise<boolean> {
-    if (!canSend.value) return false;
+  async function runWorkspaceCommand(name: string, args: string): Promise<void> {
+    switch (name) {
+      case 'settings':
+        state.agentSettingsOpen = true;
+        return;
+      case 'model': {
+        if (!args) {
+          if (models.value.length) state.focusModelPicker++;
+          else state.agentSettingsOpen = true;
+          return;
+        }
+        const target = models.value.find(({ id }) => id === args);
+        const matches = models.value.filter(({ id }) => id.split('/').slice(1).join('/') === args);
+        const option = target ?? (matches.length === 1 ? matches[0] : undefined);
+        if (!option) throw new Error('模型不可用或名称不唯一，请使用完整的服务商/模型名称。');
+        state.model = option.id;
+        toast(`已选择模型：${option.label}`);
+        return;
+      }
+      case 'thinking':
+        if (!args) {
+          state.agentSettingsOpen = true;
+          return;
+        }
+        await api('/api/agents/pi/settings/thinking', json('POST', { level: args, ...(state.model && { model: state.model }) }));
+        toast('已更新推理强度');
+        return;
+      case 'new':
+        newChat();
+        return;
+      case 'resume':
+        state.historyOpen = true;
+        await loadChats();
+        if (args) {
+          const chat = state.chats.find(({ id, historyState }) => id === args && historyState !== 'trashed');
+          if (!chat) throw new Error('找不到可打开的会话。');
+          await openChat(chat.id);
+        }
+        return;
+      case 'copy': {
+        const message = state.chat?.messages?.slice().reverse().find(({ role, text }) =>
+          role === 'assistant' && text?.trim(),
+        );
+        if (!message?.text) throw new Error('当前会话还没有可复制的助手消息。');
+        await navigator.clipboard.writeText(message.text);
+        toast('已复制最后一条助手消息');
+        return;
+      }
+      case 'reload':
+        await api('/api/agents/pi/settings/reload', json('POST', {}));
+        await Promise.all([loadStatus(), loadCommands()]);
+        toast('已重新加载模型和文献库技能');
+        return;
+      case 'quit':
+        if (!state.desktopCommands) throw new Error('此命令需要在 Zhiyue 桌面版运行。');
+        await api('/api/commands/quit', json('POST', {}));
+        return;
+      default:
+        throw new Error(`无法执行界面命令 /${name}。`);
+    }
+  }
+
+  /** 界面操作直接执行，Pi 终端命令交给随包 CLI。服务端回执与技能仍走会话接口。 */
+  async function runCommand(text: string, paperIds = [...state.context]): Promise<boolean> {
+    if (!canStartTurn.value) return false;
+    const [, name = '', rawArgs = ''] = /^\/([^\s/]+)(?:\s+([\s\S]*))?$/.exec(text) ?? [];
+    const command = state.commands.find((item) => item.name === name);
+    if (command?.target) {
+      try {
+        if (command.target === 'workspace') {
+          await runWorkspaceCommand(name, rawArgs.trim());
+        } else {
+          if (!state.desktopCommands) throw new Error('此命令需要在 Zhiyue 桌面版运行。');
+          await api('/api/commands/terminal', json('POST', { text, chatId: state.chat?.id }));
+        }
+        if (state.draft.trim() === text) state.draft = '';
+        return true;
+      } catch (error) {
+        toast(`命令未执行：${messageOf(error)}`, true);
+        return false;
+      }
+    }
+    if (command?.source === 'skill' && !modelReady.value) {
+      toast('请先连接可用模型，再执行技能命令。', true);
+      return false;
+    }
+    if (command?.scope === 'chat' && !state.chat) {
+      toast('请先打开会话。', true);
+      return false;
+    }
     state.sending = true;
-    const paperIds = [...state.context];
     // 阅读位置跟着请求一起发出：命令与普通消息共用同一套服务端上下文校验。
     const place = { activePaperId: state.current || undefined, pdfPage: state.pdfPage };
     try {
@@ -380,6 +477,12 @@ export function createWorkspace({
     }
   }
 
+  function runPaperSkill(name: string, instruction: string): Promise<boolean> | false {
+    const paper = currentPaper.value;
+    if (!paper || !canRunPaperSkill.value) return false;
+    return runCommand(`/skill:${name} ${instruction}`, [paper.literature_id]);
+  }
+
   /** 输入框提交入口：以斜杠开头走命令通道，其余按普通消息发送。 */
   async function submit(): Promise<boolean> {
     const text = state.draft.trim();
@@ -395,12 +498,54 @@ export function createWorkspace({
     state.focusComposer++;
   }
 
+  function applyChatHistory(id: string, historyState: ChatHistoryState): void {
+    historyVersion++;
+    const summary = state.chats.find((chat) => chat.id === id);
+    if (summary) summary.historyState = historyState;
+    if (state.chat?.id !== id) return;
+    if (historyState === 'trashed') {
+      state.chatEpoch++;
+      state.chat = null;
+      saveUiState({ chatId: null });
+    } else {
+      state.chat.historyState = historyState;
+    }
+  }
+
+  function canChangeChat(id: string): boolean {
+    if (pendingChatChanges.has(id)) return false;
+    if (id === state.chat?.id) return !busy.value && !state.noteSaving;
+    const summary = state.chats.find((chat) => chat.id === id);
+    return !summary?.messages?.some((message) => activeStatuses.includes(message.status));
+  }
+
+  async function changeChatHistory(id: string, historyState: ChatHistoryState): Promise<void> {
+    if (!canChangeChat(id)) return;
+    pendingChatChanges.add(id);
+    try {
+      const result = await api<{ historyState: ChatHistoryState }>(
+        `/api/chats/${endpoint(id)}`,
+        historyState === 'trashed' ? json('DELETE', {}) : json('PATCH', { historyState }),
+      );
+      applyChatHistory(id, result.historyState);
+      toast({ active: '已恢复会话', archived: '已归档会话', trashed: '已移入会话回收站' }[historyState]);
+    } catch (error) {
+      toast(messageOf(error), true);
+      void loadChats();
+    } finally {
+      pendingChatChanges.delete(id);
+    }
+  }
+
   async function openChat(id: string): Promise<void> {
-    if (state.sending) return;
+    if (state.sending || pendingChatChanges.has(id)) return;
     const epoch = ++state.chatEpoch;
     try {
       const chat = await api<Chat>(`/api/chats/${endpoint(id)}`);
-      if (epoch !== state.chatEpoch || stopped) return;
+      if (epoch !== state.chatEpoch || stopped || pendingChatChanges.has(id)) return;
+      const summary = state.chats.find((item) => item.id === id);
+      if (summary?.historyState === 'trashed') return;
+      if (summary?.historyState) chat.historyState = summary.historyState;
       state.chat = chat;
       state.context = new Set(chat.paperIds || []);
       saveUiState({ chatId: chat.id });
@@ -413,7 +558,9 @@ export function createWorkspace({
   async function syncChat(id: string): Promise<void> {
     const epoch = state.chatEpoch;
     const chat = await api<ChatResponse>(`/api/chats/${endpoint(id)}`);
-    if (epoch !== state.chatEpoch || state.chat?.id !== id || stopped) return;
+    if (epoch !== state.chatEpoch || state.chat?.id !== id || stopped || pendingChatChanges.has(id)) return;
+    const summary = state.chats.find((item) => item.id === id);
+    if (summary?.historyState) chat.historyState = summary.historyState;
     const existing = new Map((state.chat.messages || []).map((message) => [message.id, message]));
     // 补查 HTTP 状态时保留已经通过 SSE 收到的较长正文，并更新最终状态。
     chat.messages = (chat.messages || []).map((message) => {
@@ -428,7 +575,9 @@ export function createWorkspace({
   }
 
   async function sendMessage(): Promise<boolean> {
-    if (!canSend.value || !state.chat && !state.draft.trim() && !state.attachments.length) return false;
+    if (!canSend.value || !modelReady.value || !state.chat && !state.draft.trim() && !state.attachments.length) {
+      return false;
+    }
     const text = state.draft.trim();
     const files = [...state.attachments];
     const paperIds = [...state.context];
@@ -672,6 +821,12 @@ export function createWorkspace({
   function receive(data: WorkspaceEvent): void {
     if (stopped) return;
     const chat = state.chat;
+    const history = data.historyState;
+    if (data.type === 'chatHistory' && typeof data.chatId === 'string' &&
+      (history === 'active' || history === 'archived' || history === 'trashed')) {
+      applyChatHistory(data.chatId, history);
+      void loadChats();
+    }
     if (data.type === 'connected' && Array.isArray(data.approvals)) {
       state.approvals.clear();
       for (const approval of data.approvals as Array<{ id: string }>) {
@@ -693,8 +848,11 @@ export function createWorkspace({
     if (data.type === 'noteDraftResolved' && data.chatId === chat?.id) {
       chat!.noteDrafts = (chat!.noteDrafts || []).filter((item) => item.id !== data.id);
     }
-    if (data.type === 'message' && data.chatId === chat?.id && (data.message as { id?: string } | undefined)?.id) {
-      upsertMessage(data.message as Partial<ChatMessage> & { id: string });
+    if (data.type === 'message' && (data.message as ChatMessage | undefined)?.id) {
+      const message = data.message as ChatMessage;
+      const summary = state.chats.find((item) => item.id === data.chatId);
+      if (summary && summary !== chat) summary.messages = [message];
+      if (data.chatId === chat?.id) upsertMessage(message);
     }
     if (data.type === 'delta' && data.chatId === chat?.id) {
       let message = chat!.messages?.find((item) => item.id === data.messageId);
@@ -752,6 +910,7 @@ export function createWorkspace({
       const work: Array<Promise<unknown>> = [loadStatus()];
       const chat = state.chat;
       if (chat && (!state.eventsOpen || busy.value)) work.push(syncChat(chat.id));
+      if (state.historyOpen && !state.eventsOpen) work.push(loadChats());
       for (const job of state.jobs.values()) {
         if (activeJob(job)) {
           work.push(
@@ -774,9 +933,12 @@ export function createWorkspace({
   async function start(): Promise<void> {
     if (EventSourceImpl) {
       source = new EventSourceImpl('/api/events');
+      let connectedBefore = false;
       source.onopen = () => {
         state.eventsOpen = true;
         loadStatus();
+        if (connectedBefore) void loadChats();
+        connectedBefore = true;
         if (state.chat) syncChat(state.chat.id).catch(() => {});
       };
       source.onerror = () => {
@@ -797,7 +959,9 @@ export function createWorkspace({
     ]);
     if (stopped) return;
     const saved = state.ui.chatId;
-    if (saved && state.chats.some((chat) => chat.id === saved)) await openChat(saved);
+    if (saved && state.chats.some((chat) => chat.id === saved && chat.historyState !== 'trashed')) {
+      await openChat(saved);
+    }
     // 恢复上次阅读的文献；编号必须仍在当前索引里，已删除的条目不能凭存储复活。
     const paper = state.ui.paperId;
     if (paper && !state.current && state.papers.some((item) => item.literature_id === paper)) selectPaper(paper);
@@ -820,6 +984,7 @@ export function createWorkspace({
     busy,
     generating,
     canSend,
+    canRunPaperSkill,
     toast,
     setView,
     setPanel,
@@ -833,6 +998,8 @@ export function createWorkspace({
     loadStatus,
     reconnectAgent,
     loadChats,
+    canChangeChat,
+    changeChatHistory,
     loadCommands,
     loadUiState,
     saveUiState,
@@ -841,6 +1008,7 @@ export function createWorkspace({
     newChat,
     sendMessage,
     runCommand,
+    runPaperSkill,
     submit,
     interrupt,
     uploadFile,

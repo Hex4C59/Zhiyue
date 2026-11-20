@@ -5,6 +5,8 @@ import path from 'node:path';
 import { libraryPaths } from './paths.js';
 import { appPaths } from './appPaths.js';
 import { statusError } from './errors.js';
+import { DEFAULT_PDF_PREVIEW_SCALE, PDF_PREVIEW_SCALES } from './pdfScales.js';
+import type { PDFPreviewScale } from './pdfScales.js';
 
 export interface TextWord {
   text: string;
@@ -30,7 +32,7 @@ export interface TextLayer {
 interface RenderResult {
   page: number;
   totalPages: number;
-  textLayer: TextLayer;
+  textLayer?: TextLayer;
   error?: string;
   code?: string;
 }
@@ -42,7 +44,6 @@ interface CacheMeta {
   source: string;
   size: number;
   mtimeMs: number;
-  scale: number;
   textLayer: TextLayer;
 }
 
@@ -119,21 +120,31 @@ async function limited<T>(work: () => Promise<T>): Promise<T> {
   }
 }
 
-async function isPng(file: string): Promise<boolean> {
+async function isPng(file: string, scale: number): Promise<boolean> {
   let handle;
   try {
     handle = await open(file, 'r');
     const header = Buffer.alloc(24);
     const { bytesRead } = await handle.read(header, 0, 24, 0);
+    const width = header.readUInt32BE(16);
+    const height = header.readUInt32BE(20);
     return bytesRead === 24 && header.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])) &&
-      header.toString('ascii', 12, 16) === 'IHDR' && header.readUInt32BE(16) > 0 && header.readUInt32BE(20) > 0;
+      header.toString('ascii', 12, 16) === 'IHDR' && width > 0 && height > 0 &&
+      Math.abs(Math.max(width, height) - scale) <= 1;
   } catch { return false; }
   finally { await handle?.close(); }
 }
 
-function render(python: string, root: string, source: string, page: number, output: string): Promise<RenderResult> {
+function render(
+  python: string, root: string, source: string, page: number, output: string,
+  scale: PDFPreviewScale, reuseText: boolean,
+): Promise<RenderResult> {
   return new Promise<RenderResult>((resolve, reject) => {
-    const proc = spawn(python, [script(), '--root', root, '--file', source, '--page', String(page), '--output', output], {
+    const args = [
+      script(), '--root', root, '--file', source, '--page', String(page), '--output', output, '--scale-to', String(scale),
+    ];
+    if (reuseText) args.push('--skip-text');
+    const proc = spawn(python, args, {
       cwd: root, shell: false, windowsHide: true, detached: process.platform !== 'win32',
       env: { ...process.env, PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8', PYTHONDONTWRITEBYTECODE: '1' },
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -179,62 +190,75 @@ function render(python: string, root: string, source: string, page: number, outp
   });
 }
 
-// file must already have passed Library.safeFile. This module never modifies it.
-export async function previewPaper({ root, python, file, page: requestedPage = 1 }: {
+// file 必须先经过 Library.safeFile 校验，预览只写派生缓存。
+export async function previewPaper({
+  root, python, file, page: requestedPage = 1, scale: requestedScale = DEFAULT_PDF_PREVIEW_SCALE,
+}: {
   root: string;
   python: string;
   file: string;
   page?: number | string;
+  scale?: number | string;
 }): Promise<PreviewResult> {
-  let page = requestedPage;
   try {
-    if (typeof page === 'string' && /^[1-9]\d*$/.test(page)) page = Number(page);
+    const page = typeof requestedPage === 'string' && /^[1-9]\d*$/.test(requestedPage)
+      ? Number(requestedPage)
+      : requestedPage;
     if (typeof page !== 'number' || !Number.isSafeInteger(page) || page < 1) throw statusError('PDF页序必须是大于零的整数。');
+    const scale = PDF_PREVIEW_SCALES.find((value) => value === requestedScale || String(value) === requestedScale);
+    if (!scale) throw statusError('不支持的 PDF 预览分辨率。');
     const [base, source] = await Promise.all([realpath(root), realpath(file)]);
     if (!inside(base, source) || path.extname(source).toLowerCase() !== '.pdf') throw statusError('只允许预览项目内已验证的PDF。');
     const info = await stat(source);
     if (!info.isFile()) throw statusError('PDF文件不存在。');
     const key = createHash('sha256').update(JSON.stringify([source, info.size, info.mtimeMs, page])).digest('hex');
     const directory = path.join(libraryPaths(base).pdfPreview, key);
-    const png = path.join(directory, 'page.png');
+    const png = path.join(directory, scale === DEFAULT_PDF_PREVIEW_SCALE ? 'page.png' : `page-${scale}.png`);
     const metaFile = path.join(directory, 'meta.json');
     await validateCachePath(base, directory);
-    const existing = inflight.get(directory);
+    const existing = inflight.get(png);
     if (existing) return await existing;
     const work = limited(async (): Promise<PreviewResult> => {
-      // Check again after waiting for a render slot, before reading even an existing cache.
+      // 等到渲染名额后，再校验目录和即将读取的缓存。
       await validateCachePath(base, directory);
       await validateCachePath(base, metaFile, true);
       await validateCachePath(base, png, true);
+      let cached: CacheMeta | undefined;
       try {
         const meta = JSON.parse(await readFile(metaFile, 'utf8')) as CacheMeta;
         if (meta.page === page && Number.isSafeInteger(meta.totalPages) && meta.totalPages >= page &&
-          meta.key === key && validTextLayer(meta.textLayer) && await isPng(png)) {
-          return { file: png, totalPages: meta.totalPages, page, textLayer: meta.textLayer };
+          meta.key === key && validTextLayer(meta.textLayer)) {
+          cached = meta;
         }
-      } catch { /* Incomplete caches are rendered again. */ }
+      } catch { /* 元数据不完整时重新生成。 */ }
+      if (cached && await isPng(png, scale)) {
+        return { file: png, totalPages: cached.totalPages, page, textLayer: cached.textLayer };
+      }
       await validateCachePath(base, directory);
       await mkdir(directory, { recursive: true });
       await validateCachePath(base, directory);
-      const data = await render(python, base, source, page as number, png);
-      const invalid = data.page !== page || !Number.isSafeInteger(data.totalPages) || data.totalPages < (page as number) ||
-        !validTextLayer(data.textLayer) || !await isPng(png);
+      const data = await render(python, base, source, page, png, scale, !!cached);
+      const textLayer = cached?.textLayer ?? data.textLayer;
+      const invalid = data.page !== page || !Number.isSafeInteger(data.totalPages) || data.totalPages < page ||
+        !validTextLayer(textLayer) || !await isPng(png, scale);
       if (invalid) throw statusError('PDF预览输出无效。', 500);
       const after = await stat(source);
       const changed = after.size !== info.size || after.mtimeMs !== info.mtimeMs;
       if (changed) throw statusError('渲染过程中PDF已变化，请重新请求。', 409);
-      const meta: CacheMeta = {
-        key, page: page as number, totalPages: data.totalPages, source, size: info.size,
-        mtimeMs: info.mtimeMs, scale: 1600, textLayer: data.textLayer,
-      };
-      const temp = `${metaFile}.${randomUUID()}.tmp`;
-      await writeFile(temp, JSON.stringify(meta, null, 2));
-      await rename(temp, metaFile);
-      return { file: png, totalPages: data.totalPages, page: page as number, textLayer: data.textLayer };
+      if (!cached) {
+        const meta: CacheMeta = {
+          key, page, totalPages: data.totalPages, source, size: info.size,
+          mtimeMs: info.mtimeMs, textLayer,
+        };
+        const temp = `${metaFile}.${randomUUID()}.tmp`;
+        await writeFile(temp, JSON.stringify(meta, null, 2));
+        await rename(temp, metaFile);
+      }
+      return { file: png, totalPages: data.totalPages, page, textLayer };
     });
-    inflight.set(directory, work);
+    inflight.set(png, work);
     try { return await work; }
-    finally { inflight.delete(directory); }
+    finally { inflight.delete(png); }
   } catch (e) {
     if (e && typeof e === 'object' && 'statusCode' in e) throw e;
     const statusCode = (e as NodeJS.ErrnoException).code === 'ENOENT' ? 404 : 500;

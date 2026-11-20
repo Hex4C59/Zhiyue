@@ -459,6 +459,13 @@ export class PiClient extends EventEmitter implements AssistantClient {
     this.skills.reload();
   }
 
+  async reloadConfiguration(): Promise<void> {
+    await this.start();
+    await this.settingsManager.reload();
+    this.settings = this.settingsManager.getGlobalSettings();
+    this.refreshSkills();
+  }
+
   /** 供 read_skill 工具调用：只读取技能目录内的 Markdown/文本。 */
   async readSkill(name: unknown, file?: unknown): Promise<{ name: string; file: string; text: string }> {
     return this.skills.read(name, file);

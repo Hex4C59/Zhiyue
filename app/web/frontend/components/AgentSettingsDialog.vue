@@ -229,6 +229,7 @@ async function reloadSkills(): Promise<void> {
   error.value = '';
   try {
     apply(await workspace.api<SettingsInfo>('/api/agents/pi/skills/reload', json('POST', {})));
+    await workspace.loadCommands();
     workspace.toast(`已加载 ${info.value.skills?.count ?? 0} 个技能。`);
   } catch (err) {
     error.value = (err as Error).message || '无法扫描技能。';
