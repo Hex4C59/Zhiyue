@@ -1277,3 +1277,36 @@ test('当前论文的两个按钮调用对应技能，保留输入草稿并等�
   assert.equal(state.draft, '保留这条准备发送的问题');
   assert.deepEqual(page.noteDecisions, []);
 });
+
+test('空白阅读笔记页的两个按钮执行当前论文技能并切到助手面板', async (t) => {
+  const page = await fixture(t);
+  const { state } = page.workspace;
+  click(page.$('[data-paper="L002"]'));
+  await flush();
+  click(page.$('[data-reader-mode="note"]'));
+  await flush();
+
+  const actions = () => [...page.target.querySelectorAll<HTMLButtonElement>('#reader-content .paper-actions button')];
+  assert.deepEqual(actions().map((button) => button.textContent?.trim()), ['值得读吗？', '总结全文']);
+  assert.equal(page.$('#ask-note'), null);
+
+  const commands = () => page.calls.filter((call) => call.path.endsWith('/commands') && call.method === 'POST');
+  for (const [index, skill] of ['paper-reading', 'paper-experiments'].entries()) {
+    page.workspace.setPanel('reader');
+    await flush();
+    actions()[index].click();
+    await until(() => commands().length === index + 1 && !state.sending);
+    const { body } = commands()[index];
+    assert.ok(body.text.startsWith(`/skill:${skill} `));
+    assert.equal(body.activePaperId, 'L002');
+    assert.deepEqual(body.paperIds, ['L002']);
+    assert.equal(state.panel, 'chat');
+  }
+
+  click(page.$('[data-reader-mode="pdf"]'));
+  await flush();
+  assert.equal(actions().length, 0);
+  click(page.$('[data-reader-mode="note"]'));
+  await flush();
+  assert.equal(actions().length, 2);
+});

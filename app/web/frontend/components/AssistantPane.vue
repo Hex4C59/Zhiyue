@@ -8,6 +8,7 @@ import ChatMessage from './ChatMessage.vue';
 import ApprovalCard from './ApprovalCard.vue';
 import NoteDraftCard from './NoteDraftCard.vue';
 import AgentSettingsDialog from './AgentSettingsDialog.vue';
+import PaperActions from './PaperActions.vue';
 import type { PaperLike } from '../lib/content';
 import type { Chat, ChatHistoryState } from '../lib/types';
 import type { WorkspaceApi } from '../lib/workspace';
@@ -53,25 +54,6 @@ const approvals = computed(() =>
   ),
 );
 const noteDrafts = computed(() => state.chat?.noteDrafts || []);
-const paperActions = [
-  {
-    skill: 'paper-reading', icon: 'search', label: '值得读吗？', title: '判断当前论文是否值得精读',
-    instruction: '根据本次阅读目的和文献库偏好，快速判断当前论文值得精读、略读还是跳过。'
-      + '给出理由、原文定位和优先阅读位置，证据不足时标为待判断。只在聊天中回答，不生成笔记。',
-  },
-  {
-    skill: 'paper-experiments', icon: 'book', label: '总结全文', title: '总结当前论文并生成笔记草稿',
-    instruction: '按当前论文的类型总结全文，重点讲清方法或论证、关键证据、结果及直接相关工作。'
-      + '算法论文要展开模型、实验设置和结果可比性。注明阅读范围和原文定位，并调用 draft_note 生成完整笔记草稿。',
-  },
-] as const;
-const skillLoaded = (name: string): boolean =>
-  state.commands.some((command) => command.source === 'skill' && command.name === `skill:${name}`);
-function paperActionTitle(action: (typeof paperActions)[number]): string {
-  if (!workspace.currentPaper.value) return '请先打开一篇论文';
-  if (!skillLoaded(action.skill)) return '技能尚未加载，请在设置中重新扫描技能';
-  return action.title;
-}
 const promptTemplates: Array<[string, string, string]> = [
   ['search', '解释方法', '请详细解释当前论文的核心方法、输入输出和关键假设，区分作者报告与补充解释。'],
   ['link', '比较论文', '请比较选中论文的研究任务、数据、评价条件和局限；不可比的指标请明确指出。'],
@@ -235,17 +217,7 @@ function historyDate(chat: Chat): string {
         <Icon name="close" />
       </button>
     </div>
-    <div v-if="!isArchived" class="paper-actions" role="group" aria-label="当前论文操作">
-      <button
-        v-for="action in paperActions"
-        :key="action.skill"
-        type="button"
-        class="button subtle"
-        :title="paperActionTitle(action)"
-        :disabled="!workspace.canRunPaperSkill.value || !skillLoaded(action.skill)"
-        @click="workspace.runPaperSkill(action.skill, action.instruction)"
-      ><Icon :name="action.icon" />{{ action.label }}</button>
-    </div>
+    <PaperActions v-if="!isArchived" />
     <div id="messages" ref="messages" class="messages" role="log" aria-label="对话消息" aria-live="off">
       <ChatMessage v-for="message in state.chat?.messages || []" :key="message.id" :message="message" />
       <section v-if="!isArchived && !state.chat?.messages?.length" class="prompt-shortcuts" aria-label="提问模板">

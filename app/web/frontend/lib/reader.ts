@@ -12,8 +12,6 @@ export interface ReaderOptions {
   toast: (message: string, error?: boolean) => void;
   patchPaper: (id: string, update: Record<string, unknown>) => Promise<boolean>;
   deleteNote: (relativePath: string) => Promise<boolean>;
-  setPanel: (panel: 'list' | 'reader' | 'chat') => void;
-  setDraft: (text: string) => void;
   scope: HTMLElement;
 }
 
@@ -23,7 +21,7 @@ export interface ReaderController {
 }
 
 export function createReader({
-  state, api, toast, patchPaper, deleteNote, setPanel, setDraft, scope,
+  state, api, toast, patchPaper, deleteNote, scope,
 }: ReaderOptions): ReaderController {
   const $ = (selector: string): HTMLElement => scope.querySelector(selector) as HTMLElement;
   const $$ = (selector: string): HTMLElement[] => [...scope.querySelectorAll<HTMLElement>(selector)];
@@ -544,6 +542,7 @@ export function createReader({
   }
   function renderReader(): void {
     const paper = currentPaper();
+    const epoch = ++state.noteEpoch;
     if (!paper) {
       releasePreview();
       $('#reader-header').innerHTML = '<span class="muted">阅读</span>';
@@ -552,7 +551,6 @@ export function createReader({
         '<div class="empty reader-empty">未选择文献</div>';
       return;
     }
-    const epoch = ++state.noteEpoch;
     releasePreview();
     $('#reader-header').innerHTML =
       `<div class="reader-heading"><h2>${esc(titleOf(paper))}</h2><div class="reader-meta">${esc(paper.literature_id)} · ${esc(paper.year || '年份待核实')} · ${esc(paper.pages ? paper.pages + ' 页' : '页数待核实')}<br>${esc(authorText(paper))}</div></div><select id="paper-read-status" aria-label="标记阅读进度">${Object.entries(
@@ -578,10 +576,7 @@ export function createReader({
         $('#reader-content').innerHTML =
           `<iframe class="pdf-frame" title="${esc(titleOf(paper))} PDF原文" src="${esc(fileURL(paper.file))}"></iframe>`;
       } else loadPDFPreview(paper, epoch);
-    } else if (!notes.length) {
-      $('#reader-content').innerHTML =
-        '<div class="empty"><h2>阅读笔记尚待积累</h2><p>可以向研究助手提问，整理阅读笔记。</p><button id="ask-note" class="button subtle">请助手帮我精读</button></div>';
-    } else {
+    } else if (notes.length) {
       state.notePath = notes.some((note) => note.path === state.notePath) ? state.notePath : notes[0]?.path ?? '';
       $('#reader-content').innerHTML =
         '<div class="loading"><span class="busy-spinner"></span>正在读取笔记…</div>';
@@ -616,10 +611,6 @@ export function createReader({
         const page = Number(button.dataset.pdfRetry);
         state.pdfSession.errors.delete(page);
         requestPDFPage(state.pdfSession, page, true);
-      }
-      if (button.id === 'ask-note') {
-        setDraft('请精读当前论文，解释核心方法、证据和局限，给出原文定位，并整理阅读笔记。');
-        setPanel('chat');
       }
     },
     { signal: lifecycle.signal },
