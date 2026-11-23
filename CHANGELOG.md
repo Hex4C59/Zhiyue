@@ -2,6 +2,12 @@
 
 ## 未发布
 
+- 更新源内置为 GitHub Releases 的 `latest.json`，并轮换更新签名密钥；私钥和密码只保存在本机 `.tauri` 目录与 GitHub Actions Secrets，不进入仓库。
+- 新增 GitHub Actions 发布流程：推送 `v*` 标签时在 `windows-latest` 构建 NSIS 安装包、签名更新、创建 GitHub Release，并自动生成 `latest.json`。
+- 分类右键菜单新增“删除文件夹”：只允许删除空文件夹，并在库写锁下移到 `.zhiyue/trash/categories/`；非空文件夹或仍被批次台账引用的文件夹会拒绝删除。
+- 修复未配置更新源时托盘“检查更新”弹出“无法初始化更新器：Updater does not have any endpoints set.”的问题。启动静默检查现在直接跳过，托盘手动检查提示尚未配置；有 `ZHIYUE_UPDATE_ENDPOINT` 或 `plugins.updater.endpoints` 时仍按原流程检查。
+- 分类侧栏支持右键菜单：文件夹可新建子文件夹、重命名或导入 PDF 到该目录；右键空白处或“全部文献”可新建顶层文件夹。新建子文件夹沿用两位编号前缀，后端新增 `parent` 参数；分类仍只承载归档论文，不创建任意文本文件。
+- 文献助手新增五个阅读工具：`read_library_doc` 读取 README、笔记、综述与成果并支持分段；`paper_outline` 读取 PDF 内嵌书签与页数；`search_paper_text` 在单篇论文文字层中定位关键词；`render_paper_page` 将扫描页、图表或公式渲染为图片；`draft_document` 把跨论文综合或成果草稿提交到 `synthesis/` 或 `outputs/`，仍由用户确认后写入。工具桥接支持图片结果，系统提示同步改为明确可用工具，不再假设模型能直接读 README 或运行 Python/Poppler。
 - 助手回答和 Markdown 笔记支持 LaTeX 公式。KaTeX 样式和字体随安装包分发，支持 `$...$`、`$$...$$`、`\(...\)` 和 `\[...\]`。非法公式显示错误样式，未闭合的块公式保留原文和后续正文。
 - 删除失效的分享导出脚本：`scripts/export_share.py` 仍引用 TypeScript 迁移前的 `.mjs` 路径，运行即报“源文件不安全或缺失”，且它本身从未入库。同时移除 `package.json` 的 `share` 命令、`app/README.md` 与 `tools/README.md` 中的相关入口，`.gitignore` 去掉对应条目。
 - 前端构建产物不入库：`app/web/dist/` 加入 `.gitignore` 并移出版本控制，Vue 许可证副本改由 `npm run build:web` 从 `node_modules/vue/LICENSE` 生成；`startServer` 在产物缺失时给出明确提示。

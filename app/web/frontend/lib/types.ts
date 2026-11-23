@@ -39,9 +39,13 @@ export interface ChatMessage {
   error?: unknown;
 }
 
+export type ChatDraftTarget = 'notes' | 'synthesis' | 'outputs';
+
 export interface ChatNoteDraft {
   id: string;
   paperId: string;
+  paperIds?: string[];
+  target?: ChatDraftTarget;
   title: string;
   path: string;
   content: string;
@@ -254,6 +258,8 @@ export interface WorkspaceState {
   refreshing: boolean;
   importing: boolean;
   importOpen: boolean;
+  /** 打开导入对话框时的预选归档目录；空字符串表示使用默认目录。 */
+  importCategory: string;
   /** 斜杠命令目录，来自 /api/commands；只影响输入框提示，不阻塞发送。 */
   commands: CommandInfo[];
   desktopCommands: boolean;

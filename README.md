@@ -9,7 +9,7 @@
 
 ## 功能特性
 
-- **文献库浏览**：按主题分类、年份、阅读进度、收藏筛选，支持题名／作者／L 编号搜索；分类对应真实目录，可在界面新建与重命名。
+- **文献库浏览**：按主题分类、年份、阅读进度、收藏筛选，支持题名／作者／L 编号搜索；分类对应真实目录，可在界面新建顶层/子文件夹、重命名、删除空文件夹，或右键把 PDF 导入该目录。
 - **连续阅读**：PDF 页面纵向排列跨页滚动，Ctrl+滚轮缩放，透明文字层支持选择复制；可切换 Markdown 笔记或浏览器原生阅读器，笔记可删除（移入 `.zhiyue/trash/notes/` 回收站）。
 - **批量导入**：多选文件、整个文件夹或拖放导入本机 PDF（单次最多 100 个），逐条核对书目后归档，SHA-256 查重避免重复入库。
 - **下载任务中心**：按 DOI／题名创建批次，经公开来源、Elsevier API 或机构渠道下载，自动核验 PDF 身份、解析与渲染，仅归档通过核验的条目，断点可续跑。
@@ -58,7 +58,7 @@ npm run desktop:build   # 生成 NSIS 安装包
 
 安装包输出在 `app/desktop/src-tauri/target/release/bundle/`。安装版首次启动会在 `文档/Zhiyue/library` 创建默认文献库（`LITERATURE_LIBRARY` 可覆盖）；Pi SDK 随安装包分发，模型登录、Python 与 Poppler 仍使用本机环境。
 
-本机构建后可用 `.\start-desktop.cmd` 启动，它默认把文献库指向项目内 `library/`、Python 指向 `app/downloader/.venv`（`-Library`、`-Python` 可改）。代码签名、更新签名与更新源等构建变量见 [app/README.md](app/README.md)。
+本机构建后可用 `.\start-desktop.cmd` 启动，它默认把文献库指向项目内 `library/`、Python 指向 `app/downloader/.venv`（`-Library`、`-Python` 可改）。代码签名、更新签名与更新源等构建变量见 [app/README.md](app/README.md)。推送 `v*` 标签会触发 GitHub Actions 自动构建并发布更新，配置见 [GitHub Releases 自动发布](app/README.md#github-releases-自动发布)。
 
 ## 命令行文献工具
 

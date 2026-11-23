@@ -2,7 +2,7 @@
   "name": "zhiyue",
   "private": true,
   "type": "module",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Zhiyue - local literature management, PDF reading and AI research assistant",
   "engines": {
     "node": ">=22"

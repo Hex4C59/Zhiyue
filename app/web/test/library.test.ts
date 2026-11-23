@@ -90,12 +90,35 @@ test('empty folders appear as categories and new folders continue numbering', as
   data = await library.getLibrary();
   assert.equal(data.categories.find(c => c.id === '10_临床_应用')?.count, 0);
 
+  const child = await library.createCategory('实验数据', created.category);
+  assert.deepEqual(child, { category: created.category, subcategory: '01_实验数据' });
+  assert.ok((await stat(path.join(root, 'papers', created.category, '01_实验数据'))).isDirectory());
+  await assert.rejects(library.createCategory('实验数据', created.category), /同名文件夹已存在/);
+  await assert.rejects(library.createCategory('子类', '不存在'), /父文件夹不存在/);
+  await assert.rejects(library.createCategory('子类', `${created.category}/01_实验数据`), /父文件夹无效/);
   await assert.rejects(library.createCategory('临床_应用'), /同名文件夹已存在/);
   await assert.rejects(library.createCategory('08_临床_应用'), /同名文件夹已存在/);
   await assert.rejects(library.createCategory('../逃逸'), /不允许的字符/);
   await assert.rejects(library.createCategory('CON'), /不能用作文件夹/);
   await assert.rejects(library.createCategory('   '), /请输入文件夹名称/);
   await assert.rejects(library.createCategory(123), /文件夹名称无效/);
+});
+
+test('deleteCategory 只接受有效路径并委托 Python 移入回收站', async t => {
+  const { library } = await fixture(t);
+  const calls: string[][] = [];
+  library.categoryCommand = async (args) => {
+    calls.push(args);
+    return { category: '09_空目录', subcategory: '', trashed: '.zhiyue/trash/categories/x_09_空目录' };
+  };
+  assert.deepEqual(await library.deleteCategory('09_空目录', ''), {
+    category: '09_空目录', subcategory: '', trashed: '.zhiyue/trash/categories/x_09_空目录',
+  });
+  assert.deepEqual(calls[0], ['delete-category', '--category', '09_空目录']);
+  await library.deleteCategory('09_空目录', '01_子目录');
+  assert.deepEqual(calls[1], ['delete-category', '--category', '09_空目录', '--subcategory', '01_子目录']);
+  await assert.rejects(library.deleteCategory('../逃逸', ''), /文件夹路径无效/);
+  await assert.rejects(library.deleteCategory('09_空目录', '../逃逸'), /文件夹路径无效/);
 });
 
 test('import categories are created with numbering before the batch starts', async t => {
@@ -142,6 +165,25 @@ test('file allowlist denies traversal, unindexed PDFs, private outputs and activ
   for (const rel of ['../README.md', '/etc/passwd', 'C:/Windows/win.ini', 'notes/../tools/key.json', 'notes/%2e%2e/key.txt', 'notes\\assets\\image.png', 'papers/08_SER/unindexed.pdf', 'notes/script.svg', 'notes/index.html', 'notes/private.json', 'outputs/RECOLA_申请资料/secret.png', 'docs/内部/info.txt', '.git/config', 'tools/credentials.json', 'notes/.git/config', 'outputs/正常/readme.txt']) {
     await assert.rejects(library.safeFile(rel), () => true, rel);
   }
+});
+
+test('readDocument 只读 README、笔记、综述和成果，并按偏移截断', async t => {
+  const { library, put } = await fixture(t);
+  await put('README.md', '# 总索引\n第一行');
+  await put('outputs/报告.md', '## 成果\n结论');
+  const readme = await library.readDocument('README.md', 0, 5);
+  assert.equal(readme.text, '# 总索引');
+  assert.equal(readme.offset, 0);
+  assert.equal(readme.totalChars, 9);
+  assert.equal(readme.truncated, true);
+  assert.equal((await library.readDocument('notes/子目录/L001_笔记.md')).text, '# Note');
+  assert.match((await library.readDocument('outputs/报告.md')).text, /结论/);
+  assert.equal((await library.readDocument('notes/子目录/L001_笔记.md', 2, 2)).text, 'No');
+  await assert.rejects(library.readDocument('papers/08_SER/01_资源/paper.pdf'), /只允许/);
+  await assert.rejects(library.readDocument('notes/assets/image.png'), /Markdown/);
+  await assert.rejects(library.readDocument('notes/子目录/L001_笔记.md', -1), /偏移/);
+  await assert.rejects(library.readDocument('notes/子目录/L001_笔记.md', 0, 120001), /偏移/);
+  await assert.rejects(library.readDocument('synthesis/missing.md'), /不存在/);
 });
 
 test('symlink file alias cannot expose an unindexed target', async t => {

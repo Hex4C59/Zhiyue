@@ -43,7 +43,7 @@ interface MockCredential {
 }
 
 interface MockToolReply {
-  content: Array<{ type: string; text: string }>;
+  content: Array<{ type: string; text?: string; data?: string; mimeType?: string }>;
 }
 
 interface MockMemoryManager {
@@ -248,6 +248,7 @@ function fixture(t: test.TestContext): Fixture {
     },
     jobs: {},
     extract: async () => ({ text: '附件内容' }),
+    renderPage: async () => ({ data: 'cG5n', mimeType: 'image/png', totalPages: 1, page: 1 }),
   } as unknown as ConstructorParameters<typeof AssistantService>[0];
   const chats = new AssistantService(options);
   t.after(() => chats.client.close());
@@ -285,11 +286,36 @@ test('Pi 复用流式消息、附件和文献工具', async (t) => {
   assert.match(session.toolReply?.content[0]?.text ?? '', /Test paper/);
   assert.deepEqual(
     (session.options as unknown as { tools: string[] }).tools,
-    ['library_search', 'read_paper_pages', 'download_papers', 'continue_download_batch', 'get_download_status',
-      'read_skill', 'draft_note'],
+    ['library_search', 'read_library_doc', 'paper_outline', 'search_paper_text', 'read_paper_pages',
+      'render_paper_page', 'download_papers', 'continue_download_batch', 'get_download_status',
+      'read_skill', 'draft_note', 'draft_document'],
   );
   assert.equal(session.lastPrompt?.expandPromptTemplates, false);
   assert.equal(pi.pending.size, 0);
+});
+
+test('Pi 工具结果中的图片保留为 image 内容', async (t) => {
+  const { chats, pi, sdk } = fixture(t);
+  await chats.connect();
+  chats.library = {
+    getPaper: async (id: string) => ({ id, title: '测试论文', file: 'papers/01_测试/test.pdf' }),
+    getLibrary: async () => ({ papers: [], categories: [], stats: {} }),
+    safeFile: async () => '/tmp/test.pdf',
+    readDocument: async () => ({ path: '', offset: 0, totalChars: 0, text: '', truncated: false }),
+    refresh: async () => {},
+  } as unknown as ConstructorParameters<typeof AssistantService>[0]['library'];
+  const chat = chats.create();
+  await chats.send(chat.id, { text: '等待停止' });
+  await wait(() => Boolean(sdk.created[0]?.lastPrompt));
+  const tool = sdk.created[0]?.options.customTools.find((item) => item.name === 'render_paper_page');
+  assert.ok(tool);
+  const reply = await tool.execute('call-image', { paperId: 'L001', page: 1 }, new AbortController().signal);
+  assert.equal(reply.content[0]?.type, 'text');
+  assert.equal(reply.content[1]?.type, 'image');
+  assert.equal(reply.content[1]?.data, 'cG5n');
+  assert.equal(reply.content[1]?.mimeType, 'image/png');
+  assert.equal(pi.pending.size, 0);
+  chats.finish(chat.id, 'completed');
 });
 
 test('Pi 会话保存于独立目录，重建服务可恢复', async (t) => {

@@ -164,9 +164,20 @@ export async function serveFile(req: IncomingMessage, res: ServerResponse, file:
   stream.pipe(res);
 }
 
-export function extractFile(python: string, file: string, pages?: number[]): Promise<unknown> {
+export interface ExtractFileOptions {
+  pages?: number[];
+  search?: string;
+  maxHits?: number;
+  outline?: boolean;
+}
+
+export function extractFile(python: string, file: string, options: ExtractFileOptions = {}): Promise<unknown> {
   return new Promise((resolve, reject) => {
-    const args = [path.join(appPaths().sourceLibDir, 'extract.py'), file, ...(pages ? ['--pages', pages.join(',')] : [])];
+    const args = [path.join(appPaths().sourceLibDir, 'extract.py'), file];
+    if (options.pages) args.push('--pages', options.pages.join(','));
+    if (options.search !== undefined) args.push(`--search=${options.search}`);
+    if (options.maxHits !== undefined) args.push('--max-hits', String(options.maxHits));
+    if (options.outline) args.push('--outline');
     const proc = spawn(python, args, {
       shell: false, windowsHide: true, env: { ...process.env, PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8' },
     });
@@ -221,7 +232,18 @@ export async function createApp({
   const jobs = new JobManager({ root, stateDir, emit: (event: JobEvent) => emit(event), python, library });
   const chats = new AssistantService({
     root, stateDir, library, jobs, emit,
-    extract: (file, pages) => extractFile(python, file, pages),
+    extract: (file, pages) => extractFile(python, file, { pages }),
+    searchPdfText: (file, query, maxHits) => extractFile(python, file, { search: query, maxHits }),
+    pdfOutline: (file) => extractFile(python, file, { outline: true }),
+    renderPage: async (file, page) => {
+      const rendered = await previewPaper({ root, python, file, page });
+      const png = await fsp.readFile(rendered.file);
+      if (png.byteLength > 6_000_000) throw error('渲染图像过大，请改用文字读取。', 413);
+      return {
+        data: png.toString('base64'), mimeType: 'image/png',
+        totalPages: rendered.totalPages, page: rendered.page,
+      };
+    },
     piClient,
   });
   const uploads = new Store<UploadStore>(path.join(stateDir, 'uploads.json'), { files: [] });
@@ -268,12 +290,16 @@ export async function createApp({
       }
       if (method === 'GET' && route === '/api/library') return json(res, await library.getLibrary());
       if (method === 'POST' && route === '/api/categories') {
-        const { name } = await readJson(req);
-        return json(res, await library.createCategory(name), 201);
+        const { name, parent } = await readJson(req) as { name?: unknown; parent?: unknown };
+        return json(res, await library.createCategory(name, parent), 201);
       }
       if (method === 'POST' && route === '/api/categories/rename') {
         const { category, subcategory, name } = await readJson(req);
         return json(res, await library.renameCategory(category, subcategory, name));
+      }
+      if (method === 'POST' && route === '/api/categories/delete') {
+        const { category, subcategory } = await readJson(req) as { category?: unknown; subcategory?: unknown };
+        return json(res, await library.deleteCategory(category, subcategory));
       }
       if (method === 'GET' && route === '/api/status') {
         return json(res, { ...chats.snapshot(), python, node: process.version, root });

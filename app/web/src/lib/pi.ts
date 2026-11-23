@@ -113,7 +113,7 @@ interface CustomTool {
   description: string;
   parameters: unknown;
   execute(callId: string, args: Record<string, unknown>, signal: AbortSignal): Promise<{
-    content: Array<{ type: 'text'; text: string }>;
+    content: Array<{ type: 'text'; text: string } | { type: 'image'; data: string; mimeType: string }>;
     details: Record<string, unknown>;
   }>;
 }
@@ -203,7 +203,7 @@ export interface PiSdk {
 
 interface ToolReply {
   success: boolean;
-  contentItems?: Array<{ type: string; text: string }>;
+  contentItems?: Array<{ type: 'inputText'; text: string } | { type: 'inputImage'; data: string; mimeType: string }>;
 }
 
 interface Turn {
@@ -636,8 +636,17 @@ export class PiClient extends EventEmitter implements AssistantClient {
       parameters: tool.inputSchema,
       execute: async (_callId, args, signal) => {
         const reply = await this.callTool(id, tool.name, args, signal);
-        if (!reply.success) throw new Error(reply.contentItems?.map((c) => c.text).join('\n') || '文献工具执行失败。');
-        return { content: (reply.contentItems ?? []).map((c) => ({ type: 'text' as const, text: c.text })), details: {} };
+        const items = reply.contentItems ?? [];
+        if (!reply.success) {
+          throw new Error(items.map((item) => item.type === 'inputText' ? item.text : '').filter(Boolean).join('\n')
+            || '文献工具执行失败。');
+        }
+        return {
+          content: items.map((item) => item.type === 'inputImage'
+            ? { type: 'image' as const, data: item.data, mimeType: item.mimeType }
+            : { type: 'text' as const, text: item.text }),
+          details: {},
+        };
       },
     }));
     // 每个会话持有设置快照，思考强度与压缩阈值的改动通过 applyOverrides 同步。

@@ -207,6 +207,22 @@ async function fixture(
     }
     if (path === '/api/library')
       return { papers: structuredClone(papers), categories: ['01_超声', '02_模型'] };
+    if (path === '/api/categories' && options.method === 'POST') {
+      return body.parent
+        ? { category: body.parent, subcategory: `01_${body.name}` }
+        : { category: `03_${body.name}`, subcategory: '' };
+    }
+    if (path === '/api/categories/rename' && options.method === 'POST') {
+      return body.subcategory
+        ? { category: body.category, subcategory: `01_${body.name}` }
+        : { category: `01_${body.name}`, subcategory: '' };
+    }
+    if (path === '/api/categories/delete' && options.method === 'POST') {
+      return {
+        category: body.category, subcategory: body.subcategory ?? '',
+        trashed: '.zhiyue/trash/categories/x_测试',
+      };
+    }
     if (path === '/api/notes/delete') {
       const paper = papers.find((item) => item.notes.some((note) => note.path === body.path))!;
       if (!paper) throw new Error('笔记不存在。');
@@ -697,6 +713,25 @@ test('笔记草稿先预览，保存或丢弃都由用户点击触发', async (t
   click(page.$('[data-note-discard="d2"]'));
   await until(() => !page.$('[data-note-draft="d2"]'));
   assert.deepEqual(page.noteDecisions[1], { id: 'd2', body: { action: 'discard' } });
+  workspace.receive({
+    type: 'noteDraft',
+    chatId: 'draft-chat',
+    draft: {
+      id: 'd3',
+      paperId: '',
+      target: 'synthesis',
+      paperIds: ['L001', 'L002'],
+      title: '跨论文综合',
+      path: 'synthesis/跨论文综合.md',
+      content: '## 综合结论',
+    },
+  });
+  await flush();
+  assert.match(page.$('[data-note-draft="d3"]').textContent, /综合文稿/);
+  assert.match(page.$('[data-note-save="d3"]').textContent, /保存为文稿/);
+  click(page.$('[data-note-discard="d3"]'));
+  await until(() => !page.$('[data-note-draft="d3"]'));
+  assert.deepEqual(page.noteDecisions[2], { id: 'd3', body: { action: 'discard' } });
 });
 
 test('附件上传与删除、Pi 标题与空上下文按 Vue 状态更新', async (t) => {
@@ -721,6 +756,120 @@ test('附件上传与删除、Pi 标题与空上下文按 Vue 状态更新', asy
   assert.equal(page.$('.agent-name').textContent.trim(), 'Pi Agent');
   // 上传附件不应产生会话，也不该写入界面状态。
   assert.equal(page.ui.chatId, null);
+});
+
+test('右键文件夹可新建子文件夹、重命名并导入 PDF', async (t) => {
+  const page = await fixture(t);
+  const { workspace } = page;
+  workspace.state.categories = [{ id: '01_超声', name: '01_超声', count: 1, children: [] }];
+  await flush();
+  const open = (): void => {
+    page.$('[data-category="01_超声"]').dispatchEvent(new window.MouseEvent('contextmenu', {
+      bubbles: true, cancelable: true, clientX: 80, clientY: 100,
+    }));
+  };
+  await flush();
+  open();
+  await flush();
+  const menu = document.querySelector('.category-menu');
+  assert.ok(menu);
+  assert.match(menu.textContent ?? '', /新建子文件夹/);
+  click([...menu.querySelectorAll('button')].find((item) => /新建子文件夹/.test(item.textContent ?? '')));
+  await flush();
+  const childInput = page.$('.category-editor.category-child input');
+  assert.ok(childInput);
+  input(childInput, '实验数据');
+  childInput.closest('form').dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+  await until(() => workspace.state.subcategory === '01_实验数据');
+  assert.ok(page.calls.some((call) => call.path === '/api/categories' && call.body.parent === '01_超声'));
+  assert.deepEqual(
+    page.calls.find((call) => call.path === '/api/categories' && call.body.parent === '01_超声')?.body,
+    { name: '实验数据', parent: '01_超声' },
+  );
+  assert.equal(workspace.state.category, '01_超声');
+  assert.equal(workspace.state.subcategory, '01_实验数据');
+
+  workspace.state.categories = [{ id: '01_超声', name: '01_超声', count: 1, children: [] }];
+  await flush();
+  open();
+  await flush();
+  const importMenu = document.querySelector('.category-menu');
+  assert.ok(importMenu);
+  click([...importMenu.querySelectorAll('button')].find((item) => /导入 PDF/.test(item.textContent ?? '')));
+  await flush();
+  assert.equal(workspace.state.importOpen, true);
+  assert.equal(workspace.state.importCategory, 'papers/01_超声');
+  assert.equal(page.$('.import-fields select')?.value, 'papers/01_超声');
+  workspace.state.importOpen = false;
+  workspace.state.importCategory = '';
+  await flush();
+  open();
+  await flush();
+  const renameMenu = document.querySelector('.category-menu');
+  assert.ok(renameMenu);
+  click([...renameMenu.querySelectorAll('button')].find((item) => /重命名/.test(item.textContent ?? '')));
+  await flush();
+  const renameInput = page.$('.category-editor:not(.category-child) input');
+  assert.ok(renameInput);
+  input(renameInput, '超声新名');
+  renameInput.closest('form').dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+  await until(() => workspace.state.category === '01_超声新名');
+  assert.ok(page.calls.some((call) => call.path === '/api/categories/rename'));
+  assert.deepEqual(
+    page.calls.find((call) => call.path === '/api/categories/rename')?.body,
+    { category: '01_超声', subcategory: '', name: '超声新名' },
+  );
+  workspace.state.categories = [];
+  workspace.state.category = '';
+  await flush();
+  page.$('[data-category=""]').dispatchEvent(new window.MouseEvent('contextmenu', {
+    bubbles: true, cancelable: true, clientX: 60, clientY: 90,
+  }));
+  await flush();
+  const allMenu = document.querySelector('.category-menu');
+  assert.ok(allMenu);
+  assert.match(allMenu.textContent ?? '', /汇总视图，不能重命名/);
+  assert.doesNotMatch(allMenu.textContent ?? '', /重命名文件夹|重新命名|新建子文件夹/);
+});
+
+test('右键空文件夹移入回收站，非空文件夹禁用删除', async (t) => {
+  const page = await fixture(t);
+  const { workspace } = page;
+  const confirm = window.confirm;
+  t.after(() => { window.confirm = confirm; });
+  window.confirm = () => true;
+  workspace.state.categories = [{ id: '09_测试', name: '09_测试', count: 0, children: [] }];
+  workspace.state.category = '09_测试';
+  await flush();
+  const open = (): void => {
+    page.$('[data-category="09_测试"]').dispatchEvent(new window.MouseEvent('contextmenu', {
+      bubbles: true, cancelable: true, clientX: 80, clientY: 100,
+    }));
+  };
+  open();
+  await flush();
+  const menu = document.querySelector('.category-menu');
+  assert.ok(menu);
+  const remove = [...menu.querySelectorAll('button')].find((item) => /删除文件夹/.test(item.textContent ?? ''));
+  assert.ok(remove);
+  assert.equal(remove.disabled, false);
+  click(remove);
+  await until(() => page.calls.some((call) => call.path === '/api/categories/delete'));
+  assert.deepEqual(
+    page.calls.find((call) => call.path === '/api/categories/delete')?.body,
+    { category: '09_测试' },
+  );
+  await until(() => workspace.state.category === '');
+  workspace.state.categories = [{ id: '09_测试', name: '09_测试', count: 2, children: [] }];
+  await flush();
+  open();
+  await flush();
+  const busyMenu = document.querySelector('.category-menu');
+  assert.ok(busyMenu);
+  const busyRemove = [...busyMenu.querySelectorAll('button')]
+    .find((item) => /删除文件夹/.test(item.textContent ?? ''));
+  assert.ok(busyRemove);
+  assert.equal(busyRemove.disabled, true);
 });
 
 test('下载表单和任务日志保持用户状态，模型与正文内容不能注入 HTML', async (t) => {

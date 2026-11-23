@@ -71,9 +71,35 @@ npm run desktop:build
 - `ZHIYUE_SIGN_THUMBPRINT`：代码签名证书指纹，设置后对可执行文件和安装包做 Authenticode 签名；可选 `ZHIYUE_SIGN_TIMESTAMP_URL` 加 RFC 3161 时间戳。自签名证书仅供本机验证，分发给他人需换成受信任 CA 签发的证书。
 - `TAURI_SIGNING_PRIVATE_KEY`：更新包签名私钥（Tauri 官方变量），设置后为安装包生成同名 `.sig` 更新签名。公钥固定在 `tauri.conf.json` 的 `plugins.updater.pubkey`，应用只接受用对应私钥签名、且签名内版本号与 `latest.json` 一致的更新包。
 
-应用启动后静默检查一次更新，失败不打扰用户；托盘“检查更新”会显示检查和安装结果。更新源通过运行环境变量 `ZHIYUE_UPDATE_ENDPOINT` 指定为 `latest.json` 地址，未设置时提示尚未配置。`latest.json` 中 `windows-x86_64` 平台的 `signature` 填 `.sig` 文件内容，`url` 指向安装包；正式发布的更新源必须使用 HTTPS，发布构建会拒绝 HTTP 地址。
+应用启动后静默检查一次更新，失败不打扰用户；未配置更新源时启动检查直接跳过，托盘“检查更新”提示尚未配置。更新源优先取运行环境变量 `ZHIYUE_UPDATE_ENDPOINT` 的 `latest.json` 地址，其次取 `tauri.conf.json` 的 `plugins.updater.endpoints`。`latest.json` 中 `windows-x86_64` 平台的 `signature` 填 `.sig` 文件内容，`url` 指向安装包；正式发布的更新源必须使用 HTTPS，发布构建会拒绝 HTTP 地址。
 
-文献库由随包本地服务在首次启动时创建：默认在 `文档/Zhiyue/library`（`LITERATURE_LIBRARY` 可覆盖）建立 `papers/`、`notes/`、`synthesis/`、`outputs/` 和隐藏的 `.zhiyue/`（索引、批次、数据、缓存、临时文件），从随包模板复制 `README.md` 与 `.zhiyue/AGENTS.md`，并写入记录数为 0 的 `文献索引.json`。已有文件不覆盖；导入前在 `papers/` 下创建所选分类，归档只向已存在的分类写入并更新索引。侧栏“分类”旁的加号可新建文件夹，文件夹行悬停或聚焦时出现的铅笔按钮可重命名；两者操作 `papers/` 下的编号目录，重命名还会同步更新 README、笔记、成果、来源记录、批次台账和索引中的路径。文献页的“导入 PDF”支持多选、选择文件夹或拖放批量导入本机 PDF（单次最多 100 个），逐条预填并编辑题名、作者、年份和 DOI，复用下载工具的导入、逐条核验与整批归档流程；PDF 内容按 SHA-256 查重，重复文件跳过并给出已有编号；文件夹导入按文件夹名预选同名分类，没有同名分类时在提交前按编号规则新建。
+### GitHub Releases 自动发布
+
+仓库包含 [`.github/workflows/release.yml`](../.github/workflows/release.yml)。推送形如 `v0.1.1` 的标签后，工作流会在 `windows-latest` 上构建 NSIS 安装包、生成更新签名、创建 GitHub Release，并上传安装包、`.sig` 和自动生成的 `latest.json`。
+
+首次使用前在 GitHub 仓库的 **Settings → Secrets and variables → Actions** 配置：
+
+- `TAURI_SIGNING_PRIVATE_KEY`：更新签名私钥内容（必需）。
+- `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`：私钥密码（私钥有密码时必需）。
+- `ZHIYUE_SIGN_THUMBPRINT`：Windows Authenticode 证书指纹（可选）。
+- `ZHIYUE_SIGN_TIMESTAMP_URL`：代码签名时间戳地址（可选）。
+
+发布前把 `app/desktop/src-tauri/tauri.conf.json` 和 `package.json` 的版本改成同一版本，提交后打标签：
+
+```powershell
+git tag v0.1.1
+git push origin v0.1.1
+```
+
+工作流会校验标签与 `tauri.conf.json` 版本一致。Release 必须保持为正式发布（不要勾选 Draft 或 Pre-release），`latest.json` 才会通过下面的固定地址访问：
+
+```text
+https://github.com/Hex4C59/Zhiyue/releases/latest/download/latest.json
+```
+
+将该地址写入 `ZHIYUE_UPDATE_ENDPOINT`，或写进 `plugins.updater.endpoints` 后重新构建基础安装包。仓库必须保持公开；私有仓库的 Release 资产需要登录，当前更新器不会携带 GitHub Token。若更换了签名私钥，必须先发布一个带新 `pubkey` 的完整安装包，旧安装版无法验证新私钥签出的更新。
+
+文献库由随包本地服务在首次启动时创建：默认在 `文档/Zhiyue/library`（`LITERATURE_LIBRARY` 可覆盖）建立 `papers/`、`notes/`、`synthesis/`、`outputs/` 和隐藏的 `.zhiyue/`（索引、批次、数据、缓存、临时文件），从随包模板复制 `README.md` 与 `.zhiyue/AGENTS.md`，并写入记录数为 0 的 `文献索引.json`。已有文件不覆盖；导入前在 `papers/` 下创建所选分类，归档只向已存在的分类写入并更新索引。侧栏“分类”旁的加号可新建顶层文件夹；右键文件夹可新建子文件夹、重命名、把 PDF 导入该目录或删除空文件夹（移到 `.zhiyue/trash/categories/`），文件夹行悬停或聚焦时出现的铅笔按钮仍可重命名。这些操作 `papers/` 下的编号目录，重命名还会同步更新 README、笔记、成果、来源记录、批次台账和索引中的路径；分类只承载归档论文，不支持在分类里创建任意文本文件。文献页的“导入 PDF”支持多选、选择文件夹或拖放批量导入本机 PDF（单次最多 100 个），逐条预填并编辑题名、作者、年份和 DOI，复用下载工具的导入、逐条核验与整批归档流程；PDF 内容按 SHA-256 查重，重复文件跳过并给出已有编号；文件夹导入按文件夹名预选同名分类，没有同名分类时在提交前按编号规则新建。
 
 `npm run test:desktop` 验证安装后的首次启动与导入流程，运行前需先有 `npm run desktop:build` 的产物。测试在系统临时目录复制一份安装布局（可执行文件和 `resources/`），用随包 Node 从新位置启动服务，检查文献库骨架、模板和空索引，再通过下载器的 `import`、`attach` 和服务器归档任务离线导入一篇合成 PDF，核对编号、来源记录、README 索引和网站接口。它不运行 NSIS 安装器，也不启动 Tauri 窗口，因此不覆盖注册表、快捷方式和 WebView 界面；缺少打包产物时跳过，缺少 pypdf 或 Poppler 时只验证首次启动并注明跳过导入阶段。测试使用 `LITERATURE_PYTHON` 或 `app/downloader/.venv`；Poppler 依次取 `PDFTOPPM`、PATH 和项目内 `tools/poppler`。测试直接启动随包 Node 并显式传入 `LITERATURE_LIBRARY`，因此不覆盖桌面壳、WebView2、默认库路径定位、握手后崩溃和强制退出；这些在真实安装版上按 [桌面进程验收清单](desktop/桌面进程验收.md) 验收。
 

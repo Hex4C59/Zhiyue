@@ -354,7 +354,7 @@ export class Library {
     return entries.filter((entry) => entry.isDirectory() && !entry.isSymbolicLink()).map((entry) => entry.name);
   }
 
-  async _createTopFolder(base: string, name: string): Promise<string> {
+  async _createFolder(base: string, name: string, relativePrefix: string): Promise<string> {
     const folders = await this._folderNames(base);
     if (folders.some((folder) => categoryName(folder).toLocaleLowerCase() === name.toLocaleLowerCase())) {
       throw statusError('同名文件夹已存在。', 409);
@@ -365,7 +365,7 @@ export class Library {
       if (match) last = Math.max(last, Number(match[1]));
     }
     const folder = `${String(last + 1).padStart(2, '0')}_${name}`;
-    if (!this._validRelative(`papers/${folder}`)) throw statusError('该名称不能用作文件夹。', 400);
+    if (!this._validRelative(`${relativePrefix}/${folder}`)) throw statusError('该名称不能用作文件夹。', 400);
     try { await mkdir(path.join(base, folder)); }
     catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'EEXIST') throw statusError('同名文件夹已存在。', 409);
@@ -374,11 +374,28 @@ export class Library {
     return folder;
   }
 
-  async createCategory(value: unknown): Promise<{ category: string; subcategory: string }> {
+  async _createTopFolder(base: string, name: string): Promise<string> {
+    return this._createFolder(base, name, 'papers');
+  }
+
+  async createCategory(value: unknown, parent?: unknown): Promise<{ category: string; subcategory: string }> {
     const name = this._categoryName(value);
+    const parentName = parent === undefined || parent === null ? '' : parent;
+    if (parentName !== '' && (typeof parentName !== 'string' || !parentName || parentName.includes('/'))) {
+      throw statusError('父文件夹无效。', 400);
+    }
     const operation = this.writes.then(async () => {
       const base = path.join(this.root, 'papers');
       await mkdir(base, { recursive: true });
+      if (parentName) {
+        if (!this._validRelative(`papers/${parentName}`)) throw statusError('父文件夹无效。', 400);
+        const parentDir = path.join(base, parentName);
+        const info = await lstat(parentDir).catch(() => null);
+        if (!info?.isDirectory() || info.isSymbolicLink()) throw statusError('父文件夹不存在。', 404);
+        const folder = await this._createFolder(parentDir, name, `papers/${parentName}`);
+        this.cache = null;
+        return { category: parentName, subcategory: folder };
+      }
       const folder = await this._createTopFolder(base, name);
       this.cache = null;
       return { category: folder, subcategory: '' };
@@ -447,6 +464,21 @@ export class Library {
     return result;
   }
 
+  async deleteCategory(category: unknown, subcategory: unknown): Promise<unknown> {
+    const parts = subcategory ? [category, subcategory] : [category];
+    const plain = (part: unknown): part is string =>
+      typeof part === 'string' && part !== '' && part !== '.' && part !== '..' && !/[\/]/.test(part);
+    if (parts.length > 2 || !parts.every(plain)) throw statusError('文件夹路径无效。', 400);
+    const [top, child] = parts as string[];
+    const rel = `papers/${[top, child].filter(Boolean).join('/')}`;
+    if (!this._validRelative(rel)) throw statusError('文件夹路径无效。', 400);
+    const args = ['delete-category', '--category', top as string];
+    if (child) args.push('--subcategory', child);
+    const result = await this.categoryCommand(args);
+    this.cache = null;
+    return result;
+  }
+
   /**
    * 删除一篇阅读笔记：只接受 notes/ 下的 Markdown/文本，移动到 `.zhiyue/trash/notes/` 而不是直接抹掉，
    * 以便误删后可手动找回。返回回收站内的相对路径与新的文献索引数据。
@@ -474,6 +506,54 @@ export class Library {
     });
     this.writes = operation.catch(() => {});
     return operation;
+  }
+
+  async readDocument(relativePath: unknown, offset: unknown = 0, limit: unknown = 60000): Promise<{
+    path: string; offset: number; totalChars: number; text: string; truncated: boolean;
+  }> {
+    if (typeof relativePath !== 'string') throw statusError('请指定文档路径。', 400);
+    const rel = normalize(relativePath);
+    const start = typeof offset === 'number' && Number.isSafeInteger(offset) && offset >= 0 ? offset : null;
+    const count = typeof limit === 'number' && Number.isSafeInteger(limit) && limit > 0 && limit <= 120000
+      ? limit : null;
+    if (start === null || count === null) throw statusError('文档读取偏移或长度无效。', 400);
+    if (rel !== 'README.md' && !['notes/', 'synthesis/', 'outputs/'].some((prefix) => rel.startsWith(prefix))) {
+      throw statusError('只允许读取 README、笔记、综述和成果文档。', 403);
+    }
+    if (!['.md', '.txt'].includes(path.posix.extname(rel).toLowerCase())) {
+      throw statusError('文档读取只支持 Markdown 或文本文件。', 403);
+    }
+    const file = rel === 'README.md'
+      ? await this._rootFile('README.md').catch((error: unknown) => {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') throw statusError('文档不存在。', 404);
+        throw error;
+      })
+      : await this._resolve(rel).catch((error: unknown) => {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') throw statusError('文档不存在。', 404);
+        throw error;
+      });
+    const info = await stat(file);
+    if (!info.isFile()) throw statusError('文档不存在。', 404);
+    if (info.size > 3_000_000) throw statusError('文档过大，请改用检索或分段读取。', 413);
+    const text = (await readFile(file, 'utf8')).replace(/^\uFEFF/, '');
+    const slice = text.slice(start, start + count);
+    return {
+      path: rel, offset: start, totalChars: text.length, text: slice,
+      truncated: start + slice.length < text.length,
+    };
+  }
+
+  async _rootFile(name: string): Promise<string> {
+    const root = await realpath(this.root);
+    const candidate = path.join(root, name);
+    const info = await lstat(candidate);
+    if (info.isSymbolicLink() || !info.isFile()) throw statusError('不允许访问此文件。', 403);
+    const resolved = await realpath(candidate);
+    const equal = process.platform === 'win32'
+      ? candidate.toLowerCase() === resolved.toLowerCase()
+      : candidate === resolved;
+    if (!inside(root, resolved) || !equal) throw statusError('不允许符号链接或目录逃逸。', 403);
+    return resolved;
   }
 
   async safeFile(relativePath: unknown): Promise<string> {

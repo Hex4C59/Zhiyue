@@ -89,6 +89,28 @@ class CategoryTests(unittest.TestCase):
     self.assertEqual(raised.exception.exit_code,code)
   self.assertFalse((self.root/'papers/不存在').exists())
 
+ def test_delete_empty_folder_moves_to_trash_and_rejects_non_empty(self):
+  (self.root/'papers/09_空目录').mkdir()
+  result=categories.delete(self.root,'09_空目录','')
+  self.assertEqual(result['category'],'09_空目录')
+  self.assertFalse((self.root/'papers/09_空目录').exists())
+  self.assertTrue((self.root/result['trashed']).is_dir())
+  with self.assertRaises(CliError) as raised:categories.delete(self.root,'08_SER','')
+  self.assertEqual(raised.exception.exit_code,4)
+  self.assertTrue((self.root/'papers/08_SER').is_dir())
+
+ def test_delete_empty_child_keeps_parent_and_rejects_batch_reference(self):
+  (self.root/'papers/09_父目录/01_子目录').mkdir(parents=True)
+  result=categories.delete(self.root,'09_父目录','01_子目录')
+  self.assertEqual(result['subcategory'],'01_子目录')
+  self.assertTrue((self.root/'papers/09_父目录').is_dir())
+  self.assertFalse((self.root/'papers/09_父目录/01_子目录').exists())
+  (self.root/'papers/09_批次目录').mkdir()
+  save(self.root/'.zhiyue/batches/b2/下载状态.json',{'schema_version':1,'batch_id':'b2','category':'papers/09_批次目录','entries':[]})
+  with self.assertRaises(CliError) as raised:categories.delete(self.root,'09_批次目录','')
+  self.assertEqual(raised.exception.exit_code,4)
+  self.assertTrue((self.root/'papers/09_批次目录').is_dir())
+
  def test_rename_waits_for_the_library_lock(self):
   lock_path=meta(self.root)/'library.write.lock'
   code="import sys,time;sys.path.insert(0,sys.argv[1]);from common import lock\nwith lock(sys.argv[2],timeout=5):\n print('ready',flush=True);time.sleep(8)"

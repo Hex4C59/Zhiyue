@@ -18,6 +18,8 @@ interface LibraryResponse {
 
 interface CategoryResponse {
   category: string;
+  subcategory?: string;
+  trashed?: string;
 }
 
 interface UploadResponse {
@@ -213,9 +215,19 @@ test('本地HTTP服务提供目录、PDF范围读取和上传，拒绝跨站与�
     }],
   }));
   // 分类改名由归档工具完成；测试只验证 HTTP 路由和参数传递。
-  const categoryCli = async (args: string[]): Promise<{ category: string; subcategory: string }> => {
-    if (args[0] !== 'rename-category') throw new Error('unexpected category command');
+  const categoryCli = async (args: string[]): Promise<{
+    category: string; subcategory: string; trashed?: string;
+  }> => {
+    if (args[0] !== 'rename-category' && args[0] !== 'delete-category') {
+      throw new Error('unexpected category command');
+    }
     const category = args[args.indexOf('--category') + 1];
+    const subcategory = args.includes('--subcategory') ? args[args.indexOf('--subcategory') + 1] : '';
+    const target = path.join(root, 'papers', category, ...(subcategory ? [subcategory] : []));
+    if (args[0] === 'delete-category') {
+      await fs.rmdir(target);
+      return { category, subcategory, trashed: '.zhiyue/trash/categories/x_空目录' };
+    }
     const name = args[args.indexOf('--name') + 1];
     const folder = `${category.match(/^\d+_/)?.[0] ?? ''}${name}`;
     await fs.rename(path.join(root, 'papers', category), path.join(root, 'papers', folder));
@@ -251,6 +263,20 @@ test('本地HTTP服务提供目录、PDF范围读取和上传，拒绝跨站与�
   assert.equal(response.status, 200); assert.equal((await readJson<CategoryResponse>(response)).category, '01_改名分类');
   const libraryAfterRename = await readJson<LibraryResponse>(await fetch(base + '/api/library'));
   assert.ok(libraryAfterRename.categories.some((category) => category.id === '01_改名分类'));
+  response = await postCategory('/api/categories', { name: '子分类', parent: '01_改名分类' });
+  assert.equal(response.status, 201);
+  const childCategory = await readJson<CategoryResponse>(response);
+  assert.equal(childCategory.category, '01_改名分类');
+  assert.equal(childCategory.subcategory, '01_子分类');
+  assert.ok((await fs.stat(path.join(root, 'papers/01_改名分类/01_子分类'))).isDirectory());
+  response = await postCategory('/api/categories', { name: '子分类2', parent: '不存在' });
+  assert.equal(response.status, 404);
+  response = await postCategory('/api/categories/delete', {
+    category: '01_改名分类', subcategory: '01_子分类',
+  });
+  assert.equal(response.status, 200);
+  assert.equal((await readJson<CategoryResponse>(response)).trashed, '.zhiyue/trash/categories/x_空目录');
+  await assert.rejects(fs.stat(path.join(root, 'papers/01_改名分类/01_子分类')), /ENOENT/);
   response = await fetch(base + '/api/file?path=' + encodeURIComponent('papers/论文.pdf'),
     { headers: { Range: 'bytes=0-3' } });
   assert.equal(response.status, 206); assert.equal(await response.text(), '%PDF');

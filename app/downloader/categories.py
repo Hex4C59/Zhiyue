@@ -218,6 +218,45 @@ def _rebuild_catalog(root):
           'document_type','file','source_record','pages','sha256']
   atomic_text(meta(root)/'catalog/文献总目录.csv',csv_text(result['records'],fields),True)
 
+def _batch_references(root,relative):
+ """Return batch ids whose category is this folder, a child, or a parent."""
+ base=meta(root)/'batches'
+ if not base.is_dir():return []
+ refs=[]
+ for path in sorted(base.glob('*/下载状态.json')):
+  try:state=json.loads(path.read_text('utf-8-sig'))
+  except (OSError,json.JSONDecodeError,UnicodeDecodeError):continue
+  value=state.get('category') if isinstance(state,dict) else None
+  if not isinstance(value,str):continue
+  if value==relative or value.startswith(relative+'/') or relative.startswith(value+'/'):
+   refs.append(path.parent.name)
+ return refs
+
+def delete(root,category,subcategory,timeout=RENAME_TIMEOUT):
+ """Move an empty category directory to .zhiyue/trash/categories under the write lock."""
+ root=Path(root).resolve()
+ top=plain_component(category)
+ sub=plain_component(subcategory) if subcategory else ''
+ with library_lock(root,timeout):
+  parts=[top]+([sub] if sub else [])
+  relative='papers/'+'/'.join(parts)
+  target=require_category(root,relative)
+  if any(target.iterdir()):
+   raise CliError('文件夹不是空的，请先移出文献或子文件夹。',4)
+  batches=_batch_references(root,relative)
+  if batches:
+   raise CliError('批次仍引用此文件夹：'+'、'.join(batches)+'。请先处理该批次。',4)
+  trash=meta(root)/'trash/categories'
+  trash.mkdir(parents=True,exist_ok=True)
+  stamp=datetime.datetime.now().strftime('%Y%m%dT%H%M%S')
+  destination=trash/f'{stamp}_{uuid.uuid4().hex[:8]}_{target.name}'
+  try:os.rename(target,destination)
+  except OSError as exc:
+   if getattr(exc,'winerror',None) in (5,32,33) or exc.errno in (errno.EACCES,errno.EBUSY,errno.EPERM):
+    raise CliError('文件夹正在使用，请关闭其中的文件后重试。',4) from exc
+   raise
+  return {'category':top,'subcategory':sub,'trashed':rel(root,destination)}
+
 def _peer_conflict(parent,old_folder,new_folder):
  display=display_name(new_folder).casefold()
  for entry in parent.iterdir():

@@ -18,7 +18,7 @@ interface ClientCall {
 
 interface ToolReplyShape {
   success: boolean;
-  contentItems: Array<{ type: string; text: string }>;
+  contentItems: Array<{ type: string; text?: string; data?: string; mimeType?: string }>;
   decision?: string;
 }
 
@@ -72,6 +72,9 @@ async function fixture(t: test.TestContext): Promise<Fixture> {
       getPaper: async () => null,
       getLibrary: async () => ({ papers: [], categories: [], stats: {} }),
       safeFile: async () => '',
+      readDocument: async (relativePath: unknown, offset: unknown = 0) => ({
+        path: String(relativePath), offset: Number(offset), totalChars: 12, text: '# README\n正文', truncated: false,
+      }),
       refresh: async () => {},
     },
     jobs: {
@@ -81,6 +84,11 @@ async function fixture(t: test.TestContext): Promise<Fixture> {
     },
     emit: (event: ChatEvent) => events.push(structuredClone(event)),
     extract: async () => ({ text: '文件内容' }),
+    searchPdfText: async (_file: string, query: string) => ({ kind: 'pdf-search', query, hits: [] }),
+    pdfOutline: async () => ({ kind: 'pdf-outline', outline: [], total_pages: 3 }),
+    renderPage: async () => ({
+      data: Buffer.from('png').toString('base64'), mimeType: 'image/png', totalPages: 3, page: 1,
+    }),
     readSkill: async (name: unknown) => {
       if (name === 'missing') throw new Error('技能不存在或未加载。');
       return { name: String(name), file: 'SKILL.md', text: '# 技能正文' };
@@ -146,7 +154,7 @@ test('会话接入真实协议形状，图片以localImage输入，文件提取�
   assert.equal(turn.input[1]?.type, 'localImage');
   assert.match(turn.input[0]?.text ?? '', /文件内容/);
   assert.match(String(client.calls[0]?.params?.developerInstructions), /文献研究助手/);
-  assert.equal((client.calls[0]?.params?.dynamicTools as unknown[]).length, 7);
+  assert.equal((client.calls[0]?.params?.dynamicTools as unknown[]).length, 12);
 });
 
 test('多条agent消息流可拼接并在turn完成后持久化', async (t) => {
@@ -214,6 +222,76 @@ test('下载请求必须通过命名工具，审批只响应明确点击', async
   chats.approve(approval.approval.id, { decision: 'decline' });
   assert.equal(client.responses.at(-1)?.result.decision, 'decline');
   assert.throws(() => chats.approve(approval.approval.id, { decision: 'accept' }));
+});
+
+test('新增阅读工具通过桥接返回文档、目录、检索片段和页面图片', async (t) => {
+  const { chats, client } = await fixture(t);
+  chats.library = {
+    getPaper: async (id: string) => ({ id, title: '测试论文', file: 'papers/01_测试/test.pdf' }),
+    getLibrary: async () => ({ papers: [], categories: [], stats: {} }),
+    safeFile: async () => '/tmp/test.pdf',
+    readDocument: async (relativePath: unknown, offset: unknown = 0) => ({
+      path: String(relativePath), offset: Number(offset), totalChars: 12, text: '# README\n正文', truncated: false,
+    }),
+    refresh: async () => {},
+  } as unknown as ChatServiceOptions['library'];
+  const chat = chats.create();
+  await chats.send(chat.id, { text: '读一下' });
+  await until(() => Boolean(chat.threadId));
+  const request = (id: number, tool: string, args: Record<string, unknown>): Promise<void> => chats.serverRequest({
+    id, method: 'item/tool/call', params: { threadId: chat.threadId, tool, arguments: args },
+  } as ClientRequest);
+  await request(1, 'read_library_doc', { path: 'README.md', offset: 0, limit: 20 });
+  assert.equal(client.responses.at(-1)?.result.success, true);
+  assert.match(client.responses.at(-1)?.result.contentItems[0]?.text ?? '', /README/);
+  await request(2, 'paper_outline', { paperId: 'L001' });
+  assert.match(client.responses.at(-1)?.result.contentItems[0]?.text ?? '', /pdf-outline/);
+  await request(3, 'search_paper_text', { paperId: 'L001', query: '方法', maxHits: 3 });
+  assert.match(client.responses.at(-1)?.result.contentItems[0]?.text ?? '', /方法/);
+  await request(4, 'render_paper_page', { paperId: 'L001', page: 2 });
+  const items = client.responses.at(-1)?.result.contentItems ?? [];
+  assert.equal(items[1]?.type, 'inputImage');
+  assert.equal(items[1]?.mimeType, 'image/png');
+  assert.equal(items[1]?.data, Buffer.from('png').toString('base64'));
+  assert.match(items[0]?.text ?? '', /totalPages/);
+  await request(5, 'render_paper_page', { paperId: 'L001', page: 0 });
+  assert.equal(client.responses.at(-1)?.result.success, false);
+});
+
+test('文稿草稿保存到 synthesis，并记录关联文献', async (t) => {
+  const { chats, client, dir } = await fixture(t);
+  chats.library = {
+    getPaper: async (id: string) => ({ id, title: `论文 ${id}`, file: `papers/${id}.pdf` }),
+    getLibrary: async () => ({ papers: [], categories: [], stats: {} }),
+    safeFile: async () => '',
+    readDocument: async () => ({ path: '', offset: 0, totalChars: 0, text: '', truncated: false }),
+    refresh: async () => {},
+  } as unknown as ChatServiceOptions['library'];
+  const chat = chats.create();
+  await chats.send(chat.id, { text: '整理综合' });
+  await until(() => Boolean(chat.threadId));
+  await chats.serverRequest({
+    id: 10,
+    method: 'item/tool/call',
+    params: {
+      threadId: chat.threadId,
+      tool: 'draft_document',
+      arguments: { target: 'synthesis', title: '跨论文 比较', content: '## 结论', paperIds: ['L001', 'L002'] },
+    },
+  } as ClientRequest);
+  const reply = JSON.parse(client.responses.at(-1)?.result.contentItems[0]?.text ?? '{}') as {
+    status: string; path: string;
+  };
+  assert.equal(reply.status, 'pending_confirmation');
+  assert.equal(reply.path, 'synthesis/跨论文 比较.md');
+  const draft = chat.noteDrafts[0] as { id: string; target?: string };
+  assert.equal(draft.target, 'synthesis');
+  const saved = await chats.resolveNoteDraft(draft.id, 'save');
+  assert.equal('saved' in saved && saved.path, 'synthesis/跨论文 比较.md');
+  const text = await fs.readFile(path.join(dir, 'synthesis', '跨论文 比较.md'), 'utf8');
+  assert.match(text, /文献编号：L001、L002/);
+  assert.match(text, /## 结论/);
+  assert.equal(chat.noteDrafts.length, 0);
 });
 
 test('笔记草稿只在用户确认后写入 notes，且不覆盖同名文件', async (t) => {

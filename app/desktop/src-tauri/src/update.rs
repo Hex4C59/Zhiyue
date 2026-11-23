@@ -55,6 +55,21 @@ fn update_endpoint() -> Option<String> {
         .filter(|value| !value.trim().is_empty())
 }
 
+/// 环境变量优先；没有时读取 tauri.conf.json 的 plugins.updater.endpoints。
+/// 两者都没有时不应构造 updater，否则 Tauri 会在 build() 阶段报 EmptyEndpoints。
+fn has_update_source(app: &AppHandle) -> bool {
+    if update_endpoint().is_some() {
+        return true;
+    }
+    app.config()
+        .plugins
+        .0
+        .get("updater")
+        .and_then(|value| value.get("endpoints"))
+        .and_then(|value| value.as_array())
+        .is_some_and(|endpoints| !endpoints.is_empty())
+}
+
 enum Outcome {
     UpToDate,
     Declined,
@@ -65,6 +80,13 @@ pub(crate) fn check_updates(app: AppHandle, silent: bool) {
     if CHECKING.swap(true, Ordering::SeqCst) {
         if !silent {
             info("正在检查更新，请稍候。");
+        }
+        return;
+    }
+    if !has_update_source(&app) {
+        CHECKING.store(false, Ordering::SeqCst);
+        if !silent {
+            info("尚未配置更新源。请设置 ZHIYUE_UPDATE_ENDPOINT，或在 tauri.conf.json 的 plugins.updater.endpoints 中配置。");
         }
         return;
     }
@@ -108,7 +130,12 @@ async fn run_check(app: AppHandle) -> Result<Outcome, String> {
         .on_before_exit(move || stop_sidecar(&cleanup_app))
         .restart_after_install(true)
         .build()
-        .map_err(|error| format!("无法初始化更新器：{error}"))?;
+        .map_err(|error| match error {
+            tauri_plugin_updater::Error::EmptyEndpoints => {
+                "尚未配置更新源，请先设置 ZHIYUE_UPDATE_ENDPOINT。".to_string()
+            }
+            error => format!("无法初始化更新器：{error}"),
+        })?;
     let update = updater.check().await.map_err(|error| match error {
         tauri_plugin_updater::Error::EmptyEndpoints => {
             "尚未配置更新源，请先设置 ZHIYUE_UPDATE_ENDPOINT。".to_string()

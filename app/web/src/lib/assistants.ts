@@ -12,6 +12,9 @@ export interface AssistantServiceOptions {
   jobs: ChatServiceOptions['jobs'];
   emit: (event: ChatEvent) => unknown;
   extract: ChatServiceOptions['extract'];
+  searchPdfText?: ChatServiceOptions['searchPdfText'];
+  pdfOutline?: ChatServiceOptions['pdfOutline'];
+  renderPage?: ChatServiceOptions['renderPage'];
   piClient?: PiClient;
 }
 

@@ -1,0 +1,120 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+      ZHIYUE_SIGN_THUMBPRINT: ${{ secrets.ZHIYUE_SIGN_THUMBPRINT }}
+      ZHIYUE_SIGN_TIMESTAMP_URL: ${{ secrets.ZHIYUE_SIGN_TIMESTAMP_URL }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Read and verify version
+        shell: pwsh
+        run: |
+          $config = Get-Content app/desktop/src-tauri/tauri.conf.json -Raw | ConvertFrom-Json
+          $package = Get-Content package.json -Raw | ConvertFrom-Json
+          $version = [string]$config.version
+          if ([string]$package.version -ne $version) {
+            throw "package.json 版本 $($package.version) 与 tauri.conf.json 版本 $version 不一致。"
+          }
+          if ($env:GITHUB_REF_NAME -ne "v$version") {
+            throw "标签 $env:GITHUB_REF_NAME 与 tauri.conf.json 版本 $version 不一致。"
+          }
+          "VERSION=$version" >> $env:GITHUB_ENV
+          "TAG=$env:GITHUB_REF_NAME" >> $env:GITHUB_ENV
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type check
+        run: npm run typecheck
+
+      - name: Require update signing key
+        if: env.TAURI_SIGNING_PRIVATE_KEY == ''
+        shell: pwsh
+        run: throw '缺少仓库 Secret TAURI_SIGNING_PRIVATE_KEY。'
+
+      - name: Build signed installer
+        shell: pwsh
+        run: |
+          # Tauri 的 build/bundle 命令既接受私钥路径，也接受私钥内容。
+          # GitHub Secret 通常是多行内容；落到临时文件，避免命令行换行被破坏。
+          if (-not (Test-Path -LiteralPath $env:TAURI_SIGNING_PRIVATE_KEY)) {
+            $key = Join-Path $env:RUNNER_TEMP 'zhiyue-updater.key'
+            [IO.File]::WriteAllText($key, $env:TAURI_SIGNING_PRIVATE_KEY, [Text.UTF8Encoding]::new($false))
+            $env:TAURI_SIGNING_PRIVATE_KEY = $key
+          }
+          npm run desktop:build
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Generate latest.json
+        shell: pwsh
+        run: |
+          $installer = Get-ChildItem 'app/desktop/src-tauri/target/release/bundle/nsis' `
+            -Filter "Zhiyue_$($env:VERSION)_x64-setup.exe" -File
+          if (-not $installer) { throw '找不到 NSIS 安装包。' }
+          $signaturePath = "$($installer.FullName).sig"
+          if (-not (Test-Path -LiteralPath $signaturePath)) {
+            throw "找不到更新签名文件：$signaturePath"
+          }
+          $signature = (Get-Content -LiteralPath $signaturePath -Raw).Trim()
+          $url = "https://github.com/$env:GITHUB_REPOSITORY/releases/download/$env:TAG/$($installer.Name)"
+          $manifest = [ordered]@{
+            version = $env:VERSION
+            notes = "Zhiyue $($env:VERSION)"
+            pub_date = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+            platforms = [ordered]@{
+              'windows-x86_64' = [ordered]@{
+                signature = $signature
+                url = $url
+              }
+            }
+          }
+          $json = $manifest | ConvertTo-Json -Depth 6
+          [IO.File]::WriteAllText(
+            (Join-Path $PWD 'latest.json'),
+            $json,
+            [Text.UTF8Encoding]::new($false)
+          )
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: Zhiyue ${{ env.VERSION }}
+          make_latest: true
+          fail_on_unmatched_files: true
+          body: |
+            Zhiyue ${{ env.VERSION }}
+
+            由 GitHub Actions 构建并签名的 Windows 安装包。
+          files: |
+            app/desktop/src-tauri/target/release/bundle/nsis/Zhiyue_${{ env.VERSION }}_x64-setup.exe
+            app/desktop/src-tauri/target/release/bundle/nsis/Zhiyue_${{ env.VERSION }}_x64-setup.exe.sig
+            latest.json

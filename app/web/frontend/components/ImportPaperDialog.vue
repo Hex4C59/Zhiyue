@@ -50,11 +50,12 @@ const workspace = inject('workspace') as WorkspaceApi;
 const state = workspace.state;
 const emit = defineEmits<{ close: []; imported: [id: string] }>();
 const MAX_FILES = 100;
+const preferredCategory = state.importCategory || '';
 const dialog = ref<HTMLDialogElement | null>(null);
 const fileInput = ref<HTMLInputElement | null>(null);
 const folderInput = ref<HTMLInputElement | null>(null);
 const form = reactive({
-  category: 'papers/09_情感综述调研/网站导入',
+  category: preferredCategory || 'papers/09_情感综述调研/网站导入',
   confirmed: false,
 });
 const items = reactive<ImportItem[]>([]);
@@ -71,6 +72,14 @@ const currentJob = ref<JobRecord | null>(null);
 let sequence = 0;
 const categories = computed<CategoryChoice[]>(() => {
   const choices = categoryChoices(state.categories);
+  if (preferredCategory && !choices.some(([value]) => value === preferredCategory)) {
+    const label = preferredCategory
+      .replace(/^papers\//, '')
+      .split('/')
+      .map((part) => part.replace(/^\d+_/, ''))
+      .join(' / ');
+    choices.push([preferredCategory, label]);
+  }
   const extra = folderChoice.value;
   if (extra && !choices.some(([value]) => value === extra[0])) choices.push(extra);
   return choices;

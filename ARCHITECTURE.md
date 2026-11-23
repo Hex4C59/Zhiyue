@@ -87,9 +87,9 @@ flowchart LR
 ### Pi 问答从发送到保存结果
 
 1. `Composer` 提交给 `workspace.sendMessage`，无会话时先 `POST /api/chats`，再 `POST /api/chats/:id/messages`。斜杠命令走同一套上下文：`POST /api/chats/:id/commands` 与 `/messages` 都携带 `paperIds`、`activePaperId` 与 `pdfPage`，由 `normalizePaperContext` 在 HTTP 入口统一校验（仅接受 `L\d+`、最多 6 篇、页序为正整数），命令路径同样把选中范围写回会话。`ChatService.send` 按 chat ID 限制同一会话的活动回答，提交时保存用户消息及占位回答到 `.zhiyue/data/pi/chats.json`，并立即启动后台处理。HTTP 202 表示消息已接收，回答由异步事件返回。[Composer.vue](app/web/frontend/components/Composer.vue) · [workspace.ts](app/web/frontend/lib/workspace.ts) · [server.ts](app/web/src/server.ts) · [chat.ts](app/web/src/lib/chat.ts)
-2. `ChatService.run` 新建或恢复 SDK 会话，保存关联的 `threadId`。SDK 会话文件位于 `.zhiyue/data/pi-sessions/`。`run` 用 `Library.getPaper` 读取选中文献的索引信息，提示里的每条记录带编号、题名、版本、原文路径、笔记与页数；`activePaperId` 命中的那条标注 `当前打开: true` 与 `阅读页`，提示正文再点明“这篇”指该文献、读取原文用 `read_paper_pages` 并先读当前页与首末页。`run` 用 `extractFile` 提取非图片附件的内容。图片由 `PiClient.runTurn` 读取并按模型能力附加到 `session.prompt`。需要读取论文正文时，SDK 工具经 `PiClient.callTool → ChatService.serverRequest` 进入 `read_paper_pages`，并通过 `Library.safeFile` 定位原文。模型服务会收到文献索引、附件内容及工具实际返回的正文片段；提示中还有库根、选中文献和附件的本机绝对路径。选中只是初始提示，读取工具可访问任何已索引的 L 编号。工具触发的下载直接入队并在自动核验后归档，笔记只生成草稿。[chat.ts](app/web/src/lib/chat.ts) · [pi.ts](app/web/src/lib/pi.ts) · [server.ts](app/web/src/server.ts) · [数据外发范围](#模型上下文与数据外发)
+2. `ChatService.run` 新建或恢复 SDK 会话，保存关联的 `threadId`。SDK 会话文件位于 `.zhiyue/data/pi-sessions/`。`run` 用 `Library.getPaper` 读取选中文献的索引信息，提示里的每条记录带编号、题名、版本、原文路径、笔记与页数；`activePaperId` 命中的那条标注 `当前打开: true` 与 `阅读页`，提示正文再点明“这篇”指该文献、读取原文用 `read_paper_pages` 并先读当前页与首末页。`run` 用 `extractFile` 提取非图片附件的内容。图片由 `PiClient.runTurn` 读取并按模型能力附加到 `session.prompt`。需要读取论文正文时，SDK 工具经 `PiClient.callTool → ChatService.serverRequest` 进入 `read_paper_pages`，并通过 `Library.safeFile` 定位原文；`paper_outline` 和 `search_paper_text` 复用同一入口与 `extract.py`，`render_paper_page` 经预览缓存返回 PNG。`read_library_doc` 只读 README、笔记、综述和成果文档。模型服务会收到文献索引、附件内容及工具实际返回的正文片段；提示中还有库根、选中文献和附件的本机绝对路径。选中只是初始提示，读取工具可访问任何已索引的 L 编号。工具触发的下载直接入队并在自动核验后归档，笔记只生成草稿。[chat.ts](app/web/src/lib/chat.ts) · [pi.ts](app/web/src/lib/pi.ts) · [server.ts](app/web/src/server.ts) · [数据外发范围](#模型上下文与数据外发)
 3. `PiClient.runTurn` 把 SDK 消息增量和结束状态转成通知。`ChatService.notification` 在内存更新增量，经 `GET /api/events` 发送 `delta`。消息或回答完成时写入聊天记录并推送 `message`。`createWorkspace` 内的 `receive` 合并事件，`syncChat` 用 HTTP 补查状态。停止请求进入 `ChatService.interrupt`，调用 SDK 的 `abort`。若轮次仍在启动，则等 ID 返回再中断。未配置模型或生成失败时，`finish` 记录失败状态。停止只作用于本轮模型调用，已入队任务继续执行，见下文“事件推送、断线恢复与停止”。[pi.ts](app/web/src/lib/pi.ts) · [chat.ts](app/web/src/lib/chat.ts) · [workspace.ts](app/web/frontend/lib/workspace.ts) · [会话与停止测试](app/web/test/chat.test.ts) · [Pi 适配测试](app/web/test/pi.test.ts)
-4. 如果模型调用 `draft_note`，`createNoteDraft` 先把草稿存在会话并发送预览事件。用户在界面选择保存或丢弃后，客户端调用 `POST /api/note-drafts/:id`，由 `resolveNoteDraft` 处理。保存时用独占创建写入 `notes/`，同名时另加序号。工作区随后刷新相关笔记。已保存的笔记在阅读区可删除：`POST /api/notes/delete` 经 `Library.deleteNote` 把文件移到 `.zhiyue/trash/notes/`（带时间戳前缀，不直接抹除），并返回刷新后的索引。[chat.ts](app/web/src/lib/chat.ts) · [library.ts](app/web/src/lib/library.ts) · [server.ts](app/web/src/server.ts) · [草稿测试](app/web/test/chat.test.ts)
+4. 如果模型调用 `draft_note` 或 `draft_document`，`createNoteDraft` / `createDocumentDraft` 先把草稿存在会话并发送预览事件。用户在界面选择保存或丢弃后，客户端调用 `POST /api/note-drafts/:id`，由 `resolveNoteDraft` 处理。保存时用独占创建写入 `notes/`、`synthesis/` 或 `outputs/`，同名时另加序号。工作区随后刷新相关笔记。已保存的笔记在阅读区可删除：`POST /api/notes/delete` 经 `Library.deleteNote` 把文件移到 `.zhiyue/trash/notes/`（带时间戳前缀，不直接抹除），并返回刷新后的索引。[chat.ts](app/web/src/lib/chat.ts) · [library.ts](app/web/src/lib/library.ts) · [server.ts](app/web/src/server.ts) · [草稿测试](app/web/test/chat.test.ts)
 
 ### 事件推送、断线恢复与停止
 
@@ -110,9 +110,9 @@ flowchart LR
 | 修改时要守住的边界 | 现有保证与验证入口 |
 | --- | --- |
 | 桌面壳管理进程与窗口，Vue 通过本地 HTTP/SSE 使用业务能力 | Tauri 的 `run` 注册插件与窗口逻辑。主业务接口集中在 `createApp`，由本地服务校验 Host、Origin、跨站标记与请求类型；这些校验只排除浏览器跨源和域名重绑定，不构成登录鉴权，本机任意进程可直接调用。资料读取经 `Library.safeFile` 和真实路径检查，信任假设见下文“本机接口的信任边界”。变更文件接口时保持索引和目录边界。[Tauri 权限](app/desktop/src-tauri/capabilities/default.json) · [server.ts](app/web/src/server.ts) · [HTTP 测试](app/web/test/server.test.ts) · [资料边界测试](app/web/test/library.test.ts) |
-| 添加论文走 Python 归档，阅读标记走 Node | `archive` 在批次锁内取库写锁，保留原文和版本，编号在这里分配。`library.build` 从文献库 README 与来源记录生成索引。`Library.updatePaper` 只接受阅读状态和收藏字段，排队写入 `.zhiyue/data/reading.json`。分类改名也由 Python 文献工具在库写锁下移动目录并同步引用、批次台账和索引；Node 只做请求校验。相关迁移须按团队约定一次性切换。[archiving.py](app/downloader/archiving.py) · [categories.py](app/downloader/categories.py) · [library.ts](app/web/src/lib/library.ts) · [归档与并发编号测试](app/downloader/tests/test_workflow.py) · [分类事务测试](app/downloader/tests/test_categories.py) · [协作约定](AGENTS.md) |
+| 添加论文走 Python 归档，阅读标记走 Node | `archive` 在批次锁内取库写锁，保留原文和版本，编号在这里分配。`library.build` 从文献库 README 与来源记录生成索引。`Library.updatePaper` 只接受阅读状态和收藏字段，排队写入 `.zhiyue/data/reading.json`。分类改名也由 Python 文献工具在库写锁下移动目录并同步引用、批次台账和索引；Node 只做请求校验。新建顶层或子文件夹只在目标目录做一次独占 `mkdir`，子文件夹沿用两位编号前缀。删除分类只接受空目录，在库写锁下移到 `.zhiyue/trash/categories/`，并拒绝仍被批次台账引用的目录。相关迁移须按团队约定一次性切换。[archiving.py](app/downloader/archiving.py) · [categories.py](app/downloader/categories.py) · [library.ts](app/web/src/lib/library.ts) · [归档与并发编号测试](app/downloader/tests/test_workflow.py) · [分类事务测试](app/downloader/tests/test_categories.py) · [协作约定](AGENTS.md) |
 | 任务队列、批次台账与归档文件是三类状态 | Node 的 `JobManager` 对应用任务串行调度并持久化，Python CLI 对批次操作加锁，归档和分类结构改动共用库写锁。进程重启时，Node 端排队中和运行中的任务会被标为失败并提示查看批次后续跑。同一库的写入范围、锁顺序和恢复规则见下文“文献库写入与并发”。[jobs.ts](app/web/src/lib/jobs.ts) · [run.py](app/downloader/run.py) · [categories.py](app/downloader/categories.py) · [归档锁](app/downloader/archiving.py) |
-| 模型能力由文献工具清单限定，正式笔记由用户定稿 | `AssistantService` 注册 `dynamicTools`，`PiClient.createSession` 只把这六项文献工具与 `read_skill` 交给 SDK；扩展加载器返回空，技能只从库内 `.zhiyue/skills` 扫描，系统提示列出名称与描述，正文按需读取。斜杠命令分两层：`/help`、`/skills`、`/compact` 由 `ChatService.command` 直接回执或调用 Pi 的 `thread/compact`，不进入模型；`/skill:<名称>` 与 Pi 的技能命令同格式展开后作为普通用户回合发送，聊天记录只保留单行指令。新增工具在 `serverRequest` 校验输入后复用已有服务。上下文与外发范围见“模型上下文与数据外发”，各工具确认点见“文献工具的影响与确认点”：工具触发的下载在同一任务里自动归档，正式笔记仍由草稿确认端点写入。流式终态和停止时序有测试。[assistants.ts](app/web/src/lib/assistants.ts) · [pi.ts](app/web/src/lib/pi.ts) · [chat.ts](app/web/src/lib/chat.ts) · [会话与工具测试](app/web/test/chat.test.ts) |
+| 模型能力由文献工具清单限定，正式笔记由用户定稿 | `AssistantService` 注册 `dynamicTools`，`PiClient.createSession` 只把这十二项文献工具交给 SDK；扩展加载器返回空，技能只从库内 `.zhiyue/skills` 扫描，系统提示列出名称与描述，正文按需读取。斜杠命令分两层：`/help`、`/skills`、`/compact` 由 `ChatService.command` 直接回执或调用 Pi 的 `thread/compact`，不进入模型；`/skill:<名称>` 与 Pi 的技能命令同格式展开后作为普通用户回合发送，聊天记录只保留单行指令。新增工具在 `serverRequest` 校验输入后复用已有服务。上下文与外发范围见“模型上下文与数据外发”，各工具确认点见“文献工具的影响与确认点”：工具触发的下载在同一任务里自动归档，正式笔记仍由草稿确认端点写入。流式终态和停止时序有测试。[assistants.ts](app/web/src/lib/assistants.ts) · [pi.ts](app/web/src/lib/pi.ts) · [chat.ts](app/web/src/lib/chat.ts) · [会话与工具测试](app/web/test/chat.test.ts) |
 
 仓库中未找到独立 ADR。表中记录的是当前代码、测试或维护约定可确认的边界。当前由桌面 WebView 通过本机 HTTP 发起请求、以 SSE 接收异步事件；这是实现现状，不代表已确认长期保留该接口方式。保留 HTTP/SSE 的理由，以及接口是否只服务桌面 WebView 或面向其他本机客户端，仍待维护者确认。
 
@@ -144,7 +144,7 @@ flowchart LR
 | 用户问题 | 最多 5 万字符 | 每轮 |
 | 图片附件 | 上传文件的原始字节，按 base64 图像块发送；模型不支持图片时报错 | 提交时 |
 | 其他附件 | `extract.py` 提取的文本：PDF 未指定页时取前 8 页，单项文本上限 10 万字符；Office 取正文 XML；同时附上传文件的绝对路径 | 提交时 |
-| 工具结果 | `library_search` 最多 20 条（编号、题名、年份、DOI、相对路径、笔记入口）；`read_paper_pages` 每次最多 12 页逐页文本，单次输出上限约 800 KB | 调用时 |
+| 工具结果 | `library_search` 最多 20 条（编号、题名、年份、DOI、相对路径、笔记入口）；`read_paper_pages` 每次最多 12 页逐页文本，单次输出上限约 800 KB；`read_library_doc` 单次最多 12 万字符；`search_paper_text` 最多 20 条命中；`paper_outline` 最多 200 条书签；`render_paper_page` 返回一页 PNG（base64） | 调用时 |
 
 选中文献只决定首轮提示，不限制读取范围：`read_paper_pages` 接受任何已索引的 L 编号，库内全部文献都在模型可达范围内；会话历史中出现过的页文本会随后续轮次再次发送。PDF 原件、全库索引、其他会话内容、`~/.pi/agent` 中的凭据不会被自动发送。
 
@@ -152,17 +152,22 @@ flowchart LR
 
 ### 文献工具的影响与确认点
 
-网页会话只注册 `dynamicTools` 六项文献工具与 `read_skill`，`createAgentSession` 的 `tools` 也只列这些；斜杠命令是网站的输入层，`/help`、`/skills` 只生成回执消息，`/compact` 复用 Pi 会话压缩（写回同一会话文件），`/skill:<名称>` 仅把库内技能正文放进本轮提示，都不新增模型可达的写入入口；资源加载器返回空的扩展、提示和主题，技能仅限文献库 `.zhiyue/skills` 内的 Markdown/文本，Pi 的 shell 与任意文件写入工具没有启用。模型对磁盘的影响只经过下表入口。工具调用只在活动会话内响应，单次调用 120 秒超时。
+网页会话只注册 `dynamicTools` 十二项文献工具，`createAgentSession` 的 `tools` 也只列这些；斜杠命令是网站的输入层，`/help`、`/skills` 只生成回执消息，`/compact` 复用 Pi 会话压缩（写回同一会话文件），`/skill:<名称>` 仅把库内技能正文放进本轮提示，都不新增模型可达的写入入口；资源加载器返回空的扩展、提示和主题，技能仅限文献库 `.zhiyue/skills` 内的 Markdown/文本，Pi 的 shell 与任意文件写入工具没有启用。模型对磁盘的影响只经过下表入口。工具调用只在活动会话内响应，单次调用 120 秒超时。
 
 | 工具 | 可达范围 | 影响 | 确认 |
 | --- | --- | --- | --- |
 | `library_search` | 全库索引 | 只读 | 无 |
+| `read_library_doc` | README、`notes/`、`synthesis/`、`outputs/` 的 `.md`/`.txt` | 只读，单文件最多 3 MB，单次最多 12 万字符；拒绝符号链接与越界路径 | 无 |
+| `paper_outline` | 任意已索引 L 编号 | 只读 PDF 内嵌书签与元信息 | 无 |
+| `search_paper_text` | 任意已索引 L 编号，最多 300 页 | 只读文字层，最多 20 条命中 | 无 |
 | `read_paper_pages` | 任意已索引 L 编号，每次 1 至 12 个物理页 | 只读原文，45 秒超时，输出上限约 800 KB | 无 |
+| `render_paper_page` | 任意已索引 L 编号，单页 | 只读原文，写 `.zhiyue/cache` 预览缓存，返回 PNG | 无 |
 | `download_papers` | 新批次，单次 1 至 500 条 | 联网后入队 `import → download → archive`，写 `papers/`、README、来源记录与批次 | 无二次确认；归档前由 `validation.verify` 自动比对首页题名与 DOI 或第一作者，未通过项留在批次 |
 | `continue_download_batch` | 已有批次 | 入队 download、verify、archive、ieee、collect | 无；`submit` 只对 ieee 生效 |
 | `get_download_status` | 单个任务 | 只读任务与日志 | 无 |
 | `read_skill` | 库内 `.zhiyue/skills` | 只读技能目录内的 `.md`/`.txt` | 无 |
 | `draft_note` | 当前会话 | 只写 `chats.json` 草稿并推送预览 | 两步：用户点击保存后 `POST /api/note-drafts/:id` 才写入 `notes/`，独占创建、同名加序号、不覆盖 |
+| `draft_document` | 当前会话 | 只写 `chats.json` 草稿并推送预览 | 两步：用户点击保存后写入 `synthesis/` 或 `outputs/`，独占创建、同名加序号、不覆盖 |
 
 `requestApproval` 与 `requestUserInput` 的转发通道存在，请求会显示在右侧、默认拒绝；当前工具不触发这类审批，不能当作逐工具确认。网页端的其他写入入口（上传、导入、分类改名、阅读标记、笔记删除、模型密钥、审批）不在工具表内，调用即生效，由上面的信任边界兜底。
 
@@ -172,7 +177,7 @@ flowchart LR
 
 共享写入指 `README.md`、`.zhiyue/catalog/*`、批次台账中的分类路径，以及 `papers/` 下的分类目录本身。它们只由 Python 文献工具在库写锁 `.zhiyue/library.write.lock` 下修改。Node 的任务队列只保证同一进程内的提交顺序，不替代文件锁。
 
-锁按固定顺序获取：批次命令先取 `.zhiyue/batches/.<批次>.lock`，需要修改共享状态时再取库写锁；归档在批次锁内完成编号、复制、来源记录、README 和索引更新。分类改名只取库写锁，对批次台账的 `category` 使用写入前比对（CAS），不反向等待批次锁，避免与归档形成等待环。新建分类只做一次独占 `mkdir`，不写 README 或索引；导入前由 Node 按编号规则创建分类，`import` 和 `archive` 只接受已存在的分类目录。
+锁按固定顺序获取：批次命令先取 `.zhiyue/batches/.<批次>.lock`，需要修改共享状态时再取库写锁；归档在批次锁内完成编号、复制、来源记录、README 和索引更新。分类改名只取库写锁，对批次台账的 `category` 使用写入前比对（CAS），不反向等待批次锁，避免与归档形成等待环。新建顶层或子文件夹只在目标目录做一次独占 `mkdir`，不写 README 或索引；导入前由 Node 按编号规则创建分类，`import` 和 `archive` 只接受已存在的分类目录。
 
 | 场景 | 行为 |
 | --- | --- |
@@ -253,7 +258,7 @@ flowchart LR
 ## 5. 构建、部署与排障
 
 - `desktop:build` 先由 `npm run build:node` 把服务端、测试与脚本编译到 `build/`，再由 Vite 从 `frontend/main.ts` 生成 `app/web/dist/app.js` 与 Vue 许可证副本（`dist/` 不入库，检出源码后必须构建）；`prepare-desktop.ts` 随后准备 `resources/runtime/`，复制 Node、编译后的服务端（`build/app/web/src`）、前端产物、文献库模板和 npm 运行依赖。Tauri 的 `frontendDist` 指向桌面启动页，`bundle.targets` 配置为 NSIS，发布资源随安装包交付。插入构建步骤时同时检查构建清单、启动路径和安装布局测试。[package.json](package.json) · [Vite 配置](app/web/vite.config.ts) · [资源准备](scripts/prepare-desktop.ts) · [Tauri 配置](app/desktop/src-tauri/tauri.conf.json)
-- 排查“打开了另一份库”时，查 `GET /api/status` 的 `root` 与 `python`。源码调试默认用项目内 `library/`，安装版正常从系统文档目录定位 `Zhiyue/library`，`LITERATURE_LIBRARY` 可覆盖。`start-desktop.cmd` 默认显式指向项目库并优先使用项目虚拟环境。安装包内置 Node 与 Pi SDK，Python、Poppler、curl 和机构登录环境由本机提供。更新检查依赖运行时的 `ZHIYUE_UPDATE_ENDPOINT`，安装行为受 Tauri 的更新签名配置约束。正式更新源及其访问、签名和安装行为需在发布环境核验。[resolve_launch](app/desktop/src-tauri/src/lib.rs) · [paths.ts](app/web/src/lib/paths.ts) · [本机启动脚本](scripts/start-desktop.ps1) · [更新器](app/desktop/src-tauri/src/update.rs) · [更新与签名说明](app/README.md#桌面应用)
+- 排查“打开了另一份库”时，查 `GET /api/status` 的 `root` 与 `python`。源码调试默认用项目内 `library/`，安装版正常从系统文档目录定位 `Zhiyue/library`，`LITERATURE_LIBRARY` 可覆盖。`start-desktop.cmd` 默认显式指向项目库并优先使用项目虚拟环境。安装包内置 Node 与 Pi SDK，Python、Poppler、curl 和机构登录环境由本机提供。更新检查优先使用运行时的 `ZHIYUE_UPDATE_ENDPOINT`，其次使用 `tauri.conf.json` 的 `plugins.updater.endpoints`；两者都没有时跳过启动检查，托盘手动检查提示尚未配置。安装行为受 Tauri 的更新签名配置约束。正式更新源及其访问、签名和安装行为需在发布环境核验。[resolve_launch](app/desktop/src-tauri/src/lib.rs) · [paths.ts](app/web/src/lib/paths.ts) · [本机启动脚本](scripts/start-desktop.ps1) · [更新器](app/desktop/src-tauri/src/update.rs) · [更新与签名说明](app/README.md#桌面应用)
 - 本地服务在握手后退出时，窗口会回到启动页显示退出码和最后输出，但不会自动重启；托盘退出后重新打开即可。强制结束桌面进程时 Node 由作业对象一并结束，正在运行的任务在下次启动标为中断。相关边界和手工步骤见[桌面进程验收清单](app/desktop/桌面进程验收.md)。
 - `app/web/` 是桌面界面与本地服务的源码目录。启动命令见 [package.json](package.json) · [本地服务入口](app/web/src/server.ts) · [界面说明](app/web/README.md)
 - 从 `npm test` 的 HTTP/SSE、任务和 Vue DOM 测试定位应用行为。Python 核验和归档查 `npm run test:downloads`。`npm run test:desktop` 在已有构建产物上复制安装布局，直接启动随包 Node，覆盖空库初始化、离线归档和重启后读取。它通过 Python CLI 准备候选，再调用归档接口；由于直接启动 Node 并显式传入库路径，它不覆盖桌面壳、WebView2、握手后崩溃、强制退出和默认库路径定位，也不运行 NSIS 安装器。上述桌面行为由[桌面进程验收清单](app/desktop/桌面进程验收.md)在真实安装版上验收。WebView2、NSIS 安装操作、更新源及真实模型服务需要各自的验证。[测试命令](package.json) · [安装布局测试](app/desktop/test/first-run-import.test.ts) · [验证说明](app/web/README.md#验证与维护)

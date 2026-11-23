@@ -22,6 +22,9 @@ def parser():
  c.add_argument('--category',required=True,help='papers下的顶层目录名')
  c.add_argument('--subcategory',default='',help='要改名的子目录；省略时改顶层')
  c.add_argument('--name',required=True,help='新名称，保留原编号前缀')
+ c=s.add_parser('delete-category',help='在库写锁下把空分类目录移到回收站')
+ c.add_argument('--category',required=True,help='papers下的顶层目录名')
+ c.add_argument('--subcategory',default='',help='要删除的子目录；省略时删除顶层')
  s.add_parser('repair',help='恢复未完成的分类改名和归档事务，报告冲突')
  q=batch_parser(s,'import','导入DOI列表、CSV/TSV、JSON或Markdown清单');q.add_argument('input',type=Path);q.add_argument('--category',help='归档目录，相对项目路径，必须位于papers下且已存在')
  q=s.add_parser('status',help='查看批次状态');q.add_argument('--batch')
@@ -62,6 +65,9 @@ def main(argv=None):
  if args.command=='rename-category':
   import categories
   return categories.rename(root,args.category,args.subcategory,args.name)
+ if args.command=='delete-category':
+  import categories
+  return categories.delete(root,args.category,args.subcategory)
  if args.command=='repair':
   import categories
   from archiving import archive

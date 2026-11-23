@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Zhiyue",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "identifier": "com.zhiyue.desktop",
   "build": {
     "frontendDist": "../frontend"
@@ -24,14 +24,18 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["nsis"],
+    "targets": [
+      "nsis"
+    ],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
       "icons/128x128@2x.png",
       "icons/icon.ico"
     ],
-    "resources": ["resources/runtime/**/*"],
+    "resources": [
+      "resources/runtime/**/*"
+    ],
     "windows": {
       "nsis": {
         "installMode": "currentUser"
@@ -40,11 +44,14 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDc2NEVGMEUyNTlGOTRGNUUKUldSZVQvbFo0dkJPZHMvNEZXTVJzb0JkbzJjdlhpT0pnZTdaRjdxZ01YZkkzMWQ2bWE1ZUV4MVQK",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEY0ODk0NTlFMTQyMkJBMTgKUldRWXVpSVVua1dKOUp3NEJidTloNWVHTnl6TWRkYTE1TGNSMmliNmtTNHB5cW9tV3Z6d0RsWGQK",
       "requireSignedVersion": true,
       "windows": {
         "installMode": "passive"
-      }
+      },
+      "endpoints": [
+        "https://github.com/Hex4C59/Zhiyue/releases/latest/download/latest.json"
+      ]
     }
   }
 }

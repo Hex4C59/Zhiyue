@@ -19,6 +19,10 @@ function afterImport(id?: string): void {
   workspace.setView('library');
   if (id) workspace.selectPaper(id);
 }
+function closeImport(): void {
+  state.importOpen = false;
+  state.importCategory = '';
+}
 const panelKeys: Array<['list' | 'reader' | 'chat', string]> = [
   ['list', '文献'],
   ['reader', '阅读'],
@@ -97,7 +101,7 @@ onBeforeUnmount(() => {
     </main>
     <ImportPaperDialog
       v-if="state.importOpen"
-      @close="state.importOpen = false"
+      @close="closeImport"
       @imported="afterImport"
     />
   </div>

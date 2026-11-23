@@ -131,6 +131,7 @@ export function createWorkspace({
     pendingPatches: new Set(),
     refreshing: false,
     importOpen: false,
+    importCategory: '',
     ui: { chatId: null, paperId: null },
     panelWidths: {},
     uiDirty: false,
@@ -237,9 +238,9 @@ export function createWorkspace({
     }
   }
 
-  async function createCategory(name: string): Promise<unknown> {
+  async function createCategory(name: string, parent = ''): Promise<unknown> {
     try {
-      const result = await api('/api/categories', json('POST', { name }));
+      const result = await api('/api/categories', json('POST', { name, ...(parent ? { parent } : {}) }));
       await loadLibrary();
       return result;
     } catch (error) {
@@ -253,6 +254,20 @@ export function createWorkspace({
       const result = await api(
         '/api/categories/rename',
         json('POST', { category, subcategory, name }),
+      );
+      await loadLibrary();
+      return result;
+    } catch (error) {
+      toast(messageOf(error), true);
+      return null;
+    }
+  }
+
+  async function deleteCategory(category: string, subcategory = ''): Promise<unknown> {
+    try {
+      const result = await api(
+        '/api/categories/delete',
+        json('POST', { category, ...(subcategory ? { subcategory } : {}) }),
       );
       await loadLibrary();
       return result;
@@ -697,9 +712,10 @@ export function createWorkspace({
     state.noteSaving = id;
     try {
       const result = await api<{ path?: string }>(`/api/note-drafts/${endpoint(id)}`, json('POST', { action }));
+      const isDocument = draft.target === 'synthesis' || draft.target === 'outputs';
       chat!.noteDrafts = (chat!.noteDrafts || []).filter((item) => item.id !== id);
       if (action === 'save') {
-        toast(`笔记已保存：${result.path ?? ''}`);
+        toast(`${isDocument ? '文稿' : '笔记'}已保存：${result.path ?? ''}`);
         await loadLibrary();
       } else {
         toast('已丢弃笔记草稿');
@@ -994,6 +1010,7 @@ export function createWorkspace({
     loadLibrary,
     createCategory,
     renameCategory,
+    deleteCategory,
     patchPaper,
     loadStatus,
     reconnectAgent,
