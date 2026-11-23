@@ -2,7 +2,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use tauri::window::{ProgressBarState, ProgressBarStatus};
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 use tauri_plugin_updater::UpdaterExt;
 
 use crate::stop_sidecar;
@@ -115,6 +115,38 @@ pub(crate) fn schedule_startup_check(app: AppHandle) {
     });
 }
 
+fn open_update_window(app: &AppHandle) -> Option<WebviewWindow> {
+    if let Some(existing) = app.get_webview_window("update") {
+        let _ = existing.close();
+    }
+    WebviewWindowBuilder::new(app, "update", WebviewUrl::App("update.html".into()))
+        .title("Zhiyue 更新")
+        .inner_size(400.0, 210.0)
+        .resizable(false)
+        .maximizable(false)
+        .minimizable(false)
+        .always_on_top(true)
+        .center()
+        .build()
+        .ok()
+}
+
+fn show_update_progress(window: &WebviewWindow, percent: Option<u64>, message: &str) {
+    let _ = window.set_progress_bar(ProgressBarState {
+        status: Some(if percent.is_some() {
+            ProgressBarStatus::Normal
+        } else {
+            ProgressBarStatus::Indeterminate
+        }),
+        progress: percent,
+    });
+    let message = serde_json::to_string(message).unwrap_or_else(|_| "\"正在下载更新…\"".to_string());
+    let percent = percent.map_or_else(|| "null".to_string(), |value| value.to_string());
+    let _ = window.eval(format!(
+        "window.setUpdateProgress && window.setUpdateProgress({percent}, {message});"
+    ));
+}
+
 async fn run_check(app: AppHandle) -> Result<Outcome, String> {
     let mut builder = app.updater_builder();
     if let Some(endpoint) = update_endpoint() {
@@ -164,34 +196,53 @@ async fn run_check(app: AppHandle) -> Result<Outcome, String> {
         return Ok(Outcome::Declined);
     }
 
-    // 下载期间隐藏主窗口，避免页面停在“正在下载更新”；任务栏显示进度。
-    // 下载完成后 updater 会停止本地服务、启动安装器并退出进程。
-    let window = app.get_webview_window("main");
-    if let Some(window) = &window {
-        let _ = window.set_title("Zhiyue（正在下载更新…）");
-        let _ = window.set_progress_bar(ProgressBarState {
-            status: Some(ProgressBarStatus::Indeterminate),
-            progress: None,
-        });
-        let _ = window.hide();
+    // 下载时显示独立进度窗口；下载完成后更新器会停止本地服务、启动安装器并退出。
+    let main_window = app.get_webview_window("main");
+    let update_window = open_update_window(&app);
+    if let Some(main) = &main_window {
+        let _ = main.hide();
     }
-    let progress_window = window.clone();
+    if update_window.is_none() {
+        if let Some(main) = &main_window {
+            let _ = main.set_title("Zhiyue（正在下载更新…）");
+            let _ = main.set_progress_bar(ProgressBarState {
+                status: Some(ProgressBarStatus::Indeterminate),
+                progress: None,
+            });
+        }
+    }
+    let progress_window = update_window.clone();
+    let fallback_window = if update_window.is_none() { main_window.clone() } else { None };
     let result = update
         .download_and_install(
             move |chunk, total| {
-                let (Some(window), Some(total)) = (progress_window.as_ref(), total.filter(|value| *value > 0)) else {
-                    return;
-                };
-                let percent = ((chunk as f64 / total as f64) * 100.0).clamp(0.0, 100.0) as u64;
-                let _ = window.set_progress_bar(ProgressBarState {
-                    status: Some(ProgressBarStatus::Normal),
-                    progress: Some(percent),
-                });
+                let percent = total
+                    .filter(|value| *value > 0)
+                    .map(|total| ((chunk as f64 / total as f64) * 100.0).clamp(0.0, 100.0) as u64);
+                if let Some(window) = progress_window.as_ref() {
+                    show_update_progress(window, percent, "正在下载更新…");
+                } else if let Some(window) = fallback_window.as_ref() {
+                    let _ = window.set_progress_bar(ProgressBarState {
+                        status: Some(if percent.is_some() {
+                            ProgressBarStatus::Normal
+                        } else {
+                            ProgressBarStatus::Indeterminate
+                        }),
+                        progress: percent,
+                    });
+                }
             },
             || {},
         )
         .await;
-    if let Some(window) = &window {
+    if let Some(window) = &update_window {
+        let _ = window.set_progress_bar(ProgressBarState {
+            status: Some(ProgressBarStatus::None),
+            progress: None,
+        });
+        let _ = window.close();
+    }
+    if let Some(window) = &main_window {
         let _ = window.set_progress_bar(ProgressBarState {
             status: Some(ProgressBarStatus::None),
             progress: None,
