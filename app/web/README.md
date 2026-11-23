@@ -18,7 +18,7 @@
 
 应用使用项目依赖自带的官方 Pi SDK（`@earendil-works/pi-coding-agent`，当前 1.5.2）；模型与登录配置仍读取本机 `~/.pi/agent`（可用 `PI_CODING_AGENT_DIR` 指定）。可在助手面板的“模型与密钥”中保存或清除 API 密钥、更换默认模型、调整思考强度与上下文压缩阈值，账号登录仍在终端运行 `pi` 完成；未配置时仍可浏览和整理文献。
 
-论文解析和下载复用已有 Python、pypdf、curl、Poppler 与 InstSci。启动前可运行 `.\scripts\download.ps1 doctor` 检查。本地服务优先使用 `LITERATURE_PYTHON` 指定的 Python，其次为 `app/downloader/.venv` 和 PATH。
+论文解析和下载使用随包便携 Python（pypdf、pdfplumber、pypdfium2）；Poppler 和 curl 可选。启动前可运行 `.\scripts\download.ps1 doctor` 检查。本地服务优先使用 `LITERATURE_PYTHON`，其次为随包 Python、`app/downloader/.venv` 和 PATH。
 
 ## 阅读和提问
 
@@ -106,7 +106,7 @@ Pi Agent 可用的具名工具：`library_search`、`read_library_doc`、`paper_
 | `src/lib/commands.ts` | 斜杠命令目录、解析与本地命令回执，技能命令只做校验与展开 |
 | `src/lib/uiState.ts` | 界面状态（上次会话、当前文献、栏宽）的读写与字段校验，存 `.zhiyue/data/ui.json` |
 | `frontend/components/CommandMenu.vue` | 输入框的斜杠命令菜单、键盘导航与插入 |
-| `src/lib/preview.ts`、`src/lib/render.py` | 用现有 Poppler 按需渲染单页；源 PDF 保持原样 |
+| `src/lib/preview.ts`、`src/lib/render.py` | 优先用 Poppler、缺失时用 pypdfium2 按需渲染单页；源 PDF 保持原样 |
 | `test/` | TypeScript 测试源码：HTTP/SSE、任务、PDF 边界与 jsdom 交互（编译后运行） |
 | 仓库根 `build/` | `tsc` 输出的服务端、测试与脚本；被 Git 忽略，桌面资源与测试从这里取 |
 | `../../library/.zhiyue/data/` | 网站聊天、上传原文件、任务输入和阅读标记；全部被 Git 忽略 |

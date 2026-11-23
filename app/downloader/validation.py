@@ -55,15 +55,29 @@ def verify(path,entry,work,config=None,render=True):
  if result['single_page_requires_type_check']:result['identity_verified']=False;result['review_reason']='单页PDF，请确认是完整短文、会议摘要还是缺页文件。'
  if '\x00' in first:result['text_extraction_warning']='首页抽取文本包含缺失字形，建议查看渲染图确认题名与作者。'
  if render and cfg['render']['enabled']:
-  exe=poppler();result['render_tool_available']=bool(exe)
-  if exe:
+  exe=poppler();pdfium=None
+  if not exe:
+   try:import pypdfium2 as pdfium
+   except ImportError:pdfium=None
+  result['render_tool_available']=bool(exe or pdfium)
+  if exe or pdfium:
    renders=[]
    for page,tag in [(1,'first'),(len(texts),'last')]:
     prefix=work/tag
+    if exe:
+     try:
+      proc=subprocess.run([exe,'-f',str(page),'-l',str(page),'-scale-to',str(cfg['render']['max_side']),'-singlefile','-png',str(p),str(prefix)],capture_output=True,text=True,encoding='utf-8',errors='replace',timeout=40)
+      renders.append({'pdf_page_order':page,'image':str(prefix.with_suffix('.png')),'exit_code':proc.returncode,'warning':proc.stderr[:1600]})
+     except subprocess.TimeoutExpired:renders.append({'pdf_page_order':page,'exit_code':124,'warning':'渲染超时'})
+     continue
     try:
-     proc=subprocess.run([exe,'-f',str(page),'-l',str(page),'-scale-to',str(cfg['render']['max_side']),'-singlefile','-png',str(p),str(prefix)],capture_output=True,text=True,encoding='utf-8',errors='replace',timeout=40)
-     renders.append({'pdf_page_order':page,'image':str(prefix.with_suffix('.png')),'exit_code':proc.returncode,'warning':proc.stderr[:1600]})
-    except subprocess.TimeoutExpired:renders.append({'pdf_page_order':page,'exit_code':124,'warning':'渲染超时'})
-   result['renders']=renders;result['first_last_rendered']=all(r['exit_code']==0 and Path(r['image']).exists() for r in renders)
+     document=pdfium.PdfDocument(str(p))
+     try:
+      sheet=document[page-1];width,height=sheet.get_size()
+      sheet.render(scale=cfg['render']['max_side']/max(width,height)).to_pil().convert('RGB').save(prefix.with_suffix('.png'),format='PNG')
+     finally:document.close()
+     renders.append({'pdf_page_order':page,'image':str(prefix.with_suffix('.png')),'exit_code':0,'warning':'使用便携 Python 的 pypdfium2 渲染'})
+    except Exception as exc:renders.append({'pdf_page_order':page,'exit_code':1,'warning':str(exc)[:1600]})
+   result['renders']=renders;result['first_last_rendered']=all(r['exit_code']==0 and Path(r.get('image','')).exists() for r in renders)
  result['scope']='逐页文本解析、首页题名/DOI/作者身份检查；如提供渲染则仅代表生成了首页和末页预览，未自动声称人工查看或精读。'
  return result

@@ -22,11 +22,11 @@
 | --- | --- |
 | 操作系统 | Windows 10/11（启动脚本与安装包面向 Windows） |
 | Node.js | 源码开发与构建需要 ≥ 22（推荐 24.15+），安装版内置 |
-| Python | 3.12（验证环境版本；PDF 解析、下载与文字层提取，仅浏览索引时可缺省） |
-| Poppler | `pdftoppm` 用于 PDF 页面渲染。优先用 `PDFTOPPM` 指定；项目内 `tools/poppler/Library/bin/pdftoppm.exe` 会被自动使用 |
+| Python | 3.13（源码运行与打包需要；安装版已内置便携 Python 3.13） |
+| Poppler | 可选。`pdftoppm` 用于页面渲染；优先用 `PDFTOPPM` 指定，项目内 `tools/poppler/Library/bin/pdftoppm.exe` 会被自动使用，缺失时安装版使用随包 `pypdfium2` 渲染 |
 | Rust | 仅构建桌面版时需要（Tauri 2） |
 
-Python 依赖见 [app/downloader/requirements.txt](app/downloader/requirements.txt)（pypdf、pdfplumber）。运行 `npm run doctor` 可检查本机各项依赖是否就绪。
+Python 依赖见 [app/downloader/requirements.txt](app/downloader/requirements.txt)（pypdf、pdfplumber、pypdfium2）。运行 `npm run doctor` 可检查本机各项依赖是否就绪。桌面安装包会从 Python 官网下载并内置便携 Python，不需要用户另装 Python。
 
 ## 快速开始
 
@@ -40,7 +40,7 @@ app\downloader\.venv\Scripts\pip install -r app\downloader\requirements.txt
 npm run doctor
 ```
 
-源码环境优先使用 `LITERATURE_PYTHON` 指定的解释器，其次是项目虚拟环境和 PATH。安装版从 `LITERATURE_PYTHON` 或 PATH 选择本机 Python。
+源码环境优先使用 `LITERATURE_PYTHON` 指定的解释器，其次是项目虚拟环境和 PATH。安装版优先使用随包便携 Python，`LITERATURE_PYTHON` 可覆盖。
 
 ### 启用 AI 助手（可选）
 
@@ -56,7 +56,7 @@ npm run desktop:dev     # 开发调试
 npm run desktop:build   # 生成 NSIS 安装包
 ```
 
-安装包输出在 `app/desktop/src-tauri/target/release/bundle/`。安装版首次启动会在 `文档/Zhiyue/library` 创建默认文献库（`LITERATURE_LIBRARY` 可覆盖）；Pi SDK 随安装包分发，模型登录、Python 与 Poppler 仍使用本机环境。
+安装包输出在 `app/desktop/src-tauri/target/release/bundle/`。安装版首次启动会在 `文档/Zhiyue/library` 创建默认文献库（`LITERATURE_LIBRARY` 可覆盖）；Pi SDK 和便携 Python 随安装包分发；模型登录仍使用用户配置，Poppler 缺失时用随包 pypdfium2 渲染。
 
 本机构建后可用 `.\start-desktop.cmd` 启动，它默认把文献库指向项目内 `library/`、Python 指向 `app/downloader/.venv`（`-Library`、`-Python` 可改）。代码签名、更新签名与更新源等构建变量见 [app/README.md](app/README.md)。推送 `v*` 标签会触发 GitHub Actions 自动构建并发布更新，配置见 [GitHub Releases 自动发布](app/README.md#github-releases-自动发布)。
 

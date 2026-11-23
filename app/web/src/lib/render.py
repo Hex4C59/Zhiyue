@@ -88,24 +88,47 @@ def render(root, file, page, output, scale, skip_text):
         total = len(reader.pages)
         if not 1 <= page <= total:
             raise RenderError(f'PDF页序超出范围：应为1至{total}。')
-    executable = poppler()
-    if not executable:
-        raise RenderError('未找到Poppler pdftoppm。', 'environment')
     output.parent.mkdir(parents=True, exist_ok=True)
     prefix = output.parent / ('render_' + uuid.uuid4().hex)
     temporary = prefix.with_suffix('.png')
     try:
-        result = subprocess.run(
-            [executable, '-f', str(page), '-l', str(page), '-scale-to', str(scale),
-             '-singlefile', '-png', str(file), str(prefix)],
-            cwd=root, shell=False, stdin=subprocess.DEVNULL, capture_output=True,
-            timeout=40, creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
-        if result.returncode or not temporary.is_file():
-            message = 'Poppler渲染失败：' + result.stderr.decode('utf-8', errors='replace')[-1500:]
-            raise RenderError(message, 'environment')
+        executable = poppler()
+        rendered = False
+        if executable:
+            try:
+                result = subprocess.run(
+                    [executable, '-f', str(page), '-l', str(page), '-scale-to', str(scale),
+                     '-singlefile', '-png', str(file), str(prefix)],
+                    cwd=root, shell=False, stdin=subprocess.DEVNULL, capture_output=True,
+                    timeout=40, creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
+                if result.returncode or not temporary.is_file():
+                    raise RenderError('Poppler渲染失败：' + result.stderr.decode('utf-8', errors='replace')[-1500:], 'environment')
+                rendered = True
+            except RenderError:
+                # 安装包不依赖 Poppler；Poppler 不可用时退回随包 Python 的 pypdfium2。
+                pass
+        if not rendered:
+            try:
+                import pypdfium2 as pdfium
+                document = pdfium.PdfDocument(str(file))
+                try:
+                    sheet = document[page-1]
+                    width, height = sheet.get_size()
+                    if not width or not height:
+                        raise RenderError('PDF页面尺寸无效。', 'environment')
+                    image = sheet.render(scale=scale/max(width, height)).to_pil().convert('RGB')
+                    image.save(temporary, format='PNG')
+                finally:
+                    document.close()
+            except RenderError:
+                raise
+            except ImportError as exc:
+                raise RenderError('未找到Poppler，且便携 Python 未安装 pypdfium2。', 'environment') from exc
+            except Exception as exc:
+                raise RenderError(f'PDFium渲染失败：{exc}', 'environment') from exc
         with temporary.open('rb') as stream:
             if stream.read(8) != b'\x89PNG\r\n\x1a\n':
-                raise RenderError('Poppler未返回有效PNG。', 'environment')
+                raise RenderError('渲染器未返回有效PNG。', 'environment')
         os.replace(temporary, output)
     finally:
         temporary.unlink(missing_ok=True)

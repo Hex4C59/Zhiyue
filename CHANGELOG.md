@@ -2,6 +2,7 @@
 
 ## 未发布
 
+- 桌面安装包内置便携 Python 3.13（pypdf、pdfplumber、pypdfium2），不再依赖用户本机 Python；Poppler 缺失时使用 pypdfium2 渲染页面和核验预览，`prepare-desktop` 会下载并校验 Python 运行时。
 - 检查更新并确认安装后，下载期间隐藏主窗口并在任务栏显示进度；下载完成由更新器停止本地服务、启动安装器并退出进程，安装完成后自动重新打开。
 - 修复更新到 0.1.1 后启动页“本地服务启动超时”：GitHub Actions 随包 Node 22 在 Windows verbatim 路径下无法解析 `server.js`；启动 Node 前统一去掉 Windows verbatim 前缀，并改用 Node 24 构建。
 - 更新源内置为 GitHub Releases 的 `latest.json`，并轮换更新签名密钥；私钥和密码只保存在本机 `.tauri` 目录与 GitHub Actions Secrets，不进入仓库。

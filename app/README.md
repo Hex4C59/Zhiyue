@@ -54,7 +54,7 @@ npm run desktop:build
 
 下载工具默认将 `library` 作为 `--root`，可显式指定其他工作区。`start-desktop.cmd` 调用系统 Windows PowerShell，并仅对启动子进程设置执行策略。根目录和 `scripts/` 下的 `start-desktop.ps1` 使用 UTF-8 BOM，供 Windows PowerShell 5.1 解析中文注释和字符串。
 
-构建桌面版后可用根目录的 `./start-desktop.cmd` 启动窗口。该入口默认将 `LITERATURE_LIBRARY` 指向本项目的 `library`，并优先将 `LITERATURE_PYTHON` 指向 `app/downloader/.venv`；可用 `-Library`、`-Python` 改为其他位置。直接运行可执行文件不会带上这些路径。
+构建桌面版需要 Python 3.13 用于打包便携运行时；安装后的用户不需要本机 Python。构建完成后可用根目录的 `./start-desktop.cmd` 启动窗口。该入口默认将 `LITERATURE_LIBRARY` 指向本项目的 `library`，并优先将 `LITERATURE_PYTHON` 指向 `app/downloader/.venv`；可用 `-Library`、`-Python` 改为其他位置。直接运行可执行文件不会带上这些路径。
 
 应用私有状态在 `library/.zhiyue/data/`。原上传文件路径已随目录迁移更新，聊天文本及会话标识保留。PDF 渲染使用 `library/.zhiyue/cache/pdf-preview/` 下的派生缓存，不修改原文。
 
@@ -62,7 +62,7 @@ npm run desktop:build
 
 ## 桌面应用
 
-桌面版由 Tauri 2 启动原生窗口和托盘，并拉起内置 Node 运行 `app/web/src/server.ts`；服务仅监听 127.0.0.1，由系统分配空闲端口，并在标准输出写入 `ZHIYUE_URL=` 握手行供窗口加载界面，关闭窗口只隐藏到托盘，托盘菜单可显示、检查更新或退出。Rust 代码在 `app/desktop/src-tauri/src/`。调试构建从仓库根定位网站源码；发布构建读取 `resources/runtime/`，该目录由 `npm run desktop:prepare` 生成并被 Git 忽略，包含网站、下载器、文献库模板、当前机器的 Node 可执行文件和网站的 npm 运行依赖（含项目自带的官方 Pi SDK）。安装版默认使用 `文档/Zhiyue/library`，`LITERATURE_LIBRARY` 可覆盖；Pi Agent 登录配置、Python 和 Poppler 取用户本机安装。本机构建可用 `./start-desktop.cmd` 让桌面版直接使用项目文献库和虚拟环境，并在未设置 `PDFTOPPM` 时指向项目内 `tools/poppler`。
+桌面版由 Tauri 2 启动原生窗口和托盘，并拉起内置 Node 运行 `app/web/src/server.ts`；服务仅监听 127.0.0.1，由系统分配空闲端口，并在标准输出写入 `ZHIYUE_URL=` 握手行供窗口加载界面，关闭窗口只隐藏到托盘，托盘菜单可显示、检查更新或退出。Rust 代码在 `app/desktop/src-tauri/src/`。调试构建从仓库根定位网站源码；发布构建读取 `resources/runtime/`，该目录由 `npm run desktop:prepare` 生成并被 Git 忽略，包含网站、下载器、文献库模板、当前机器的 Node 可执行文件、便携 Python 3.13（pypdf、pdfplumber、pypdfium2）和网站的 npm 运行依赖（含项目自带的官方 Pi SDK）。安装版默认使用 `文档/Zhiyue/library`，`LITERATURE_LIBRARY` 可覆盖；Pi Agent 登录配置取用户本机，Poppler 可选，缺失时使用随包 pypdfium2 渲染。本机构建可用 `./start-desktop.cmd` 让桌面版直接使用项目文献库和虚拟环境，并在未设置 `PDFTOPPM` 时指向项目内 `tools/poppler`。
 
 握手成功后 Tauri 每秒检查 Node 子进程：服务意外退出时窗口回到启动页，显示退出码和 stderr 最近输出，不会自动重启，需从托盘退出后重新打开。关闭窗口只隐藏；托盘退出和更新安装前用 `taskkill /T /F` 终止 Node 进程树，Windows 作业对象在桌面进程被强制结束时兜底终止 Node 及其子进程。两条退出路径都不执行任务与事务的优雅收尾（库写锁由操作系统释放），下次启动会把 `running`/`queued` 任务标为失败，流式回答标为中断，归档按事务日志用 `run.py repair` 恢复。真实安装版的验收步骤见 [桌面进程验收清单](desktop/桌面进程验收.md)。
 

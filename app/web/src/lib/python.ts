@@ -35,6 +35,11 @@ export interface CliOptions {
 export function resolvePython(): string {
   if (process.env.LITERATURE_PYTHON) return process.env.LITERATURE_PYTHON;
   const candidates = [
+    // 安装包随包分发的便携 Python；源码开发时该目录不存在，退回项目虚拟环境。
+    path.join(
+      path.dirname(downloaderScript), '..', '..', 'python',
+      process.platform === 'win32' ? 'python.exe' : 'bin/python',
+    ),
     path.join(path.dirname(downloaderScript), '.venv', process.platform === 'win32' ? 'Scripts/python.exe' : 'bin/python'),
   ];
   for (const candidate of candidates) if (existsSync(candidate)) return candidate;

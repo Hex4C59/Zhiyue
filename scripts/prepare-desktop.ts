@@ -1,5 +1,7 @@
 import { cp, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { existsSync, readFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -25,6 +27,11 @@ const APP = path.join(ROOT, 'app');
 const OUT = path.join(APP, 'desktop/src-tauri/resources/runtime');
 const SERVER_BUILD = path.join(ROOT, 'build/app/web/src');
 const EXCLUDED = new Set(['.venv', 'tests', '__pycache__', '.pytest_cache']);
+const PYTHON_VERSION = '3.13.11';
+const PYTHON_URL = `https://www.python.org/ftp/python/${PYTHON_VERSION}/python-${PYTHON_VERSION}-embed-amd64.zip`;
+const PYTHON_SHA256 = '1ec066fb61ba5e8c73e29e048cd07c26850f74585e3a116005135b31b8004890';
+const PYTHON_CACHE = path.join(APP, 'desktop/src-tauri/target/python-runtime');
+const PYTHON_OUT = path.join(OUT, 'python');
 
 interface Manifest {
   name?: string;
@@ -57,6 +64,76 @@ function locatePackage(name: string, from: string): string | null {
   }
 }
 
+function run(command: string, args: string[]): void {
+  const result = spawnSync(command, args, { stdio: 'inherit' });
+  if (result.error) throw new Error(`无法执行 ${command}：${result.error.message}`);
+  if (result.status !== 0) throw new Error(`${command} 退出码 ${result.status ?? 'unknown'}。`);
+}
+
+async function downloadPython(): Promise<string> {
+  await mkdir(PYTHON_CACHE, { recursive: true });
+  const archive = path.join(PYTHON_CACHE, path.basename(PYTHON_URL));
+  const valid = async (): Promise<boolean> => {
+    if (!existsSync(archive)) return false;
+    const digest = createHash('sha256').update(await readFile(archive)).digest('hex');
+    return digest === PYTHON_SHA256;
+  };
+  if (await valid()) return archive;
+  const response = await fetch(PYTHON_URL);
+  if (!response.ok) throw new Error(`下载便携 Python 失败：HTTP ${response.status}`);
+  const temp = `${archive}.${process.pid}.tmp`;
+  await writeFile(temp, Buffer.from(await response.arrayBuffer()));
+  const digest = createHash('sha256').update(await readFile(temp)).digest('hex');
+  if (digest !== PYTHON_SHA256) throw new Error(`便携 Python 校验失败：${digest}`);
+  await cp(temp, archive);
+  await rm(temp, { force: true });
+  return archive;
+}
+
+function hostPython(): string {
+  const candidates = [
+    process.env.LITERATURE_PYTHON,
+    path.join(APP, 'downloader', '.venv', process.platform === 'win32' ? 'Scripts/python.exe' : 'bin/python'),
+    'python',
+  ].filter((value): value is string => !!value);
+  for (const candidate of candidates) {
+    if (candidate !== 'python' && !existsSync(candidate)) continue;
+    const result = spawnSync(candidate, ['-c', 'import sys; print(f"{sys.version_info[0]}.{sys.version_info[1]}")'], {
+      encoding: 'utf8',
+    });
+    if (result.status === 0 && result.stdout.trim() === '3.13') return candidate;
+  }
+  throw new Error('打包便携 Python 需要 Python 3.13（LITERATURE_PYTHON 或 app/downloader/.venv）。');
+}
+
+async function preparePython(): Promise<void> {
+  if (process.platform !== 'win32') throw new Error('桌面版便携 Python 目前只支持 Windows。');
+  const archive = await downloadPython();
+  await rm(PYTHON_OUT, { recursive: true, force: true });
+  await mkdir(PYTHON_OUT, { recursive: true });
+  // Windows 自带的 bsdtar 可以直接解压 ZIP；避免 PowerShell 7 的 Expand-Archive 兼容问题。
+  run(process.platform === 'win32' ? 'tar.exe' : 'unzip', ['-xf', archive, '-C', PYTHON_OUT]);
+  const pth = path.join(PYTHON_OUT, 'python313._pth');
+  let content = await readFile(pth, 'utf8');
+  if (!content.includes('Lib\site-packages')) {
+    content = content.replace(/#?\s*import site/g, 'Lib\site-packages\nimport site');
+    if (!content.includes('Lib\site-packages')) content += '\nLib\site-packages\nimport site\n';
+    await writeFile(pth, content, 'utf8');
+  }
+  const site = path.join(PYTHON_OUT, 'Lib', 'site-packages');
+  await mkdir(site, { recursive: true });
+  const requirements = path.join(APP, 'downloader/requirements.txt');
+  run(hostPython(), [
+    '-m', 'pip', 'install', '--disable-pip-version-check', '--no-compile',
+    '--only-binary=:all:', '--target', site, '-r', requirements,
+  ]);
+  run(path.join(PYTHON_OUT, 'python.exe'), [
+    '-c',
+    'import importlib.metadata as m, pypdf, pdfplumber; print(pypdf.__version__, pdfplumber.__version__, m.version("pypdfium2"))',
+  ]);
+  console.log('便携 Python 已准备：python/（含 pypdf、pdfplumber、pypdfium2）');
+}
+
 await rm(OUT, { recursive: true, force: true });
 const nodeDirectory = path.join(OUT, 'node');
 await mkdir(nodeDirectory, { recursive: true });
@@ -64,6 +141,8 @@ const nodeName = process.platform === 'win32' ? 'node.exe' : 'node';
 await cp(process.execPath, path.join(nodeDirectory, nodeName));
 const nodeLicense = path.join(path.dirname(process.execPath), 'LICENSE');
 if (existsSync(nodeLicense)) await cp(nodeLicense, path.join(nodeDirectory, 'LICENSE'));
+
+await preparePython();
 
 // 服务端随包分发 tsc 产物，源码目录里的 .ts 不进入安装包。
 if (!existsSync(path.join(SERVER_BUILD, 'server.js'))) {
@@ -114,6 +193,10 @@ while (pending.length) {
 
 const requiredFiles = [
   'node/' + nodeName,
+  'python/python.exe',
+  'python/Lib/site-packages/pypdf/__init__.py',
+  'python/Lib/site-packages/pdfplumber/__init__.py',
+  'python/Lib/site-packages/pypdfium2/__init__.py',
   'app/web/src/server.js',
   'app/web/src/lib/extract.py',
   'app/web/src/lib/render.py',
