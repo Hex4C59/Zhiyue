@@ -1,6 +1,6 @@
 [package]
 name = "zhiyue-desktop"
-version = "0.1.1"
+version = "0.1.2"
 description = "Zhiyue 桌面应用"
 edition = "2021"
 rust-version = "1.77.2"
@@ -14,6 +14,7 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 serde_json = "1"
+dunce = "1"
 tauri = { version = "2", features = ["image-png", "tray-icon"] }
 tauri-plugin-single-instance = "2"
 tauri-plugin-updater = "2"

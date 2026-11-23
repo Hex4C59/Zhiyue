@@ -216,14 +216,22 @@ fn purge_legacy_storage(identifier: &str) {
     let _ = std::fs::write(&marker, b"1");
 }
 
+/// Tauri 在 Windows 上可能返回带 verbatim 前缀的路径；Node 22 会把它
+/// 误解析成盘符。启动 Node 前用 dunce 去掉前缀，保留普通绝对路径。
+fn plain_path(path: PathBuf) -> PathBuf {
+    dunce::simplified(&path).to_path_buf()
+}
+
 fn resolve_launch(app: &AppHandle) -> Result<Launch, String> {
     if cfg!(debug_assertions) {
-        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("..")
-            .join("..")
-            .join("..")
-            .canonicalize()
-            .map_err(|error| format!("无法定位项目目录：{error}"))?;
+        let root = plain_path(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("..")
+                .join("..")
+                .join("..")
+                .canonicalize()
+                .map_err(|error| format!("无法定位项目目录：{error}"))?,
+        );
         return Ok(Launch {
             node: PathBuf::from(if cfg!(windows) { "node.exe" } else { "node" }),
             entry: root.join("build/app/web/src/server.js"),
@@ -231,12 +239,13 @@ fn resolve_launch(app: &AppHandle) -> Result<Launch, String> {
             library: None,
         });
     }
-    let runtime = app
-        .path()
-        .resource_dir()
-        .map_err(|error| format!("无法定位应用资源目录：{error}"))?
-        .join("resources")
-        .join("runtime");
+    let runtime = plain_path(
+        app.path()
+            .resource_dir()
+            .map_err(|error| format!("无法定位应用资源目录：{error}"))?
+            .join("resources")
+            .join("runtime"),
+    );
     let node = runtime
         .join("node")
         .join(if cfg!(windows) { "node.exe" } else { "node" });
@@ -249,12 +258,12 @@ fn resolve_launch(app: &AppHandle) -> Result<Launch, String> {
         return Err("缺少本地服务文件，请重新安装 Zhiyue。".to_string());
     }
     let library = std::env::var_os("LITERATURE_LIBRARY")
-        .map(PathBuf::from)
+        .map(|value| plain_path(PathBuf::from(value)))
         .or_else(|| {
             app.path()
                 .document_dir()
                 .ok()
-                .map(|directory| directory.join("Zhiyue").join("library"))
+                .map(|directory| plain_path(directory.join("Zhiyue").join("library")))
         });
     Ok(Launch {
         node,

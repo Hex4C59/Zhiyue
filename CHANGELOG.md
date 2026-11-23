@@ -2,6 +2,7 @@
 
 ## 未发布
 
+- 修复更新到 0.1.1 后启动页“本地服务启动超时”：GitHub Actions 随包 Node 22 在 Windows verbatim 路径下无法解析 `server.js`；启动 Node 前统一去掉 Windows verbatim 前缀，并改用 Node 24 构建。
 - 更新源内置为 GitHub Releases 的 `latest.json`，并轮换更新签名密钥；私钥和密码只保存在本机 `.tauri` 目录与 GitHub Actions Secrets，不进入仓库。
 - 新增 GitHub Actions 发布流程：推送 `v*` 标签时在 `windows-latest` 构建 NSIS 安装包、签名更新、创建 GitHub Release，并自动生成 `latest.json`。
 - 分类右键菜单新增“删除文件夹”：只允许删除空文件夹，并在库写锁下移到 `.zhiyue/trash/categories/`；非空文件夹或仍被批次台账引用的文件夹会拒绝删除。
