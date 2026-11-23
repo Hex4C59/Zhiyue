@@ -1,6 +1,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
+use tauri::window::{ProgressBarState, ProgressBarStatus};
 use tauri::{AppHandle, Manager};
 use tauri_plugin_updater::UpdaterExt;
 
@@ -163,12 +164,41 @@ async fn run_check(app: AppHandle) -> Result<Outcome, String> {
         return Ok(Outcome::Declined);
     }
 
-    if let Some(window) = app.get_webview_window("main") {
+    // 下载期间隐藏主窗口，避免页面停在“正在下载更新”；任务栏显示进度。
+    // 下载完成后 updater 会停止本地服务、启动安装器并退出进程。
+    let window = app.get_webview_window("main");
+    if let Some(window) = &window {
         let _ = window.set_title("Zhiyue（正在下载更新…）");
+        let _ = window.set_progress_bar(ProgressBarState {
+            status: Some(ProgressBarStatus::Indeterminate),
+            progress: None,
+        });
+        let _ = window.hide();
     }
-    let result = update.download_and_install(|_, _| {}, || {}).await;
-    if let Some(window) = app.get_webview_window("main") {
+    let progress_window = window.clone();
+    let result = update
+        .download_and_install(
+            move |chunk, total| {
+                let (Some(window), Some(total)) = (progress_window.as_ref(), total.filter(|value| *value > 0)) else {
+                    return;
+                };
+                let percent = ((chunk as f64 / total as f64) * 100.0).clamp(0.0, 100.0) as u64;
+                let _ = window.set_progress_bar(ProgressBarState {
+                    status: Some(ProgressBarStatus::Normal),
+                    progress: Some(percent),
+                });
+            },
+            || {},
+        )
+        .await;
+    if let Some(window) = &window {
+        let _ = window.set_progress_bar(ProgressBarState {
+            status: Some(ProgressBarStatus::None),
+            progress: None,
+        });
         let _ = window.set_title("Zhiyue");
+        let _ = window.show();
+        let _ = window.set_focus();
     }
     result.map_err(|error| format!("下载或安装更新失败：{error}"))?;
     Ok(Outcome::Installed)
