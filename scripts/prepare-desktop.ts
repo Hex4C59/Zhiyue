@@ -114,11 +114,17 @@ async function preparePython(): Promise<void> {
   // Windows 自带的 bsdtar 可以直接解压 ZIP；避免 PowerShell 7 的 Expand-Archive 兼容问题。
   run(process.platform === 'win32' ? 'tar.exe' : 'unzip', ['-xf', archive, '-C', PYTHON_OUT]);
   const pth = path.join(PYTHON_OUT, 'python313._pth');
+  // _pth 的相对条目按 python.exe 所在目录解析，且不做转义；这里必须写入字面量反斜杠，
+  // 否则会得到无效的 Libsite-packages 目录，site-packages 只能依赖 site 模块的隐式推断。
+  const siteEntry = String.raw`Lib\site-packages`;
+  const entries = (value: string): string[] => value.split(/\r?\n/).map((line) => line.trim());
   let content = await readFile(pth, 'utf8');
-  if (!content.includes('Lib\site-packages')) {
-    content = content.replace(/#?\s*import site/g, 'Lib\site-packages\nimport site');
-    if (!content.includes('Lib\site-packages')) content += '\nLib\site-packages\nimport site\n';
+  if (!entries(content).includes(siteEntry)) {
+    content = /^#?\s*import site\s*$/m.test(content)
+      ? content.replace(/^#?\s*import site\s*$/m, `${siteEntry}\nimport site`)
+      : `${content.trimEnd()}\n${siteEntry}\nimport site\n`;
     await writeFile(pth, content, 'utf8');
+    if (!entries(content).includes(siteEntry)) throw new Error(`未能把 ${siteEntry} 写入 python313._pth。`);
   }
   const site = path.join(PYTHON_OUT, 'Lib', 'site-packages');
   await mkdir(site, { recursive: true });
@@ -130,6 +136,12 @@ async function preparePython(): Promise<void> {
   run(path.join(PYTHON_OUT, 'python.exe'), [
     '-c',
     'import importlib.metadata as m, pypdf, pdfplumber; print(pypdf.__version__, pdfplumber.__version__, m.version("pypdfium2"))',
+  ]);
+  // 确认 site-packages 由 _pth 直接登记，而不是靠 site 模块从解释器前缀推断。
+  run(path.join(PYTHON_OUT, 'python.exe'), [
+    '-c',
+    'import sys; from pathlib import Path; wanted = Path(sys.executable).parent / "Lib/site-packages"; '
+      + 'assert wanted in [Path(p) for p in sys.path], sys.path',
   ]);
   console.log('便携 Python 已准备：python/（含 pypdf、pdfplumber、pypdfium2）');
 }
@@ -214,6 +226,18 @@ const requiredFiles = [
 for (const relative of requiredFiles) {
   const info = await stat(path.join(OUT, relative)).catch(() => null);
   if (!info?.isFile()) throw new Error('桌面资源缺少文件：' + relative);
+}
+
+// 用随包解释器真正跑一次下载器入口：便携 Python 的 _pth 接管 sys.path，
+// 脚本目录不会自动加入，这一步能拦住“模板可导入但安装版缺模块”的回归。
+{
+  const result = spawnSync(path.join(PYTHON_OUT, 'python.exe'), [path.join(OUT, 'app/downloader/run.py'), '--help'], {
+    encoding: 'utf8',
+  });
+  if (result.status !== 0) {
+    const detail = (result.stderr || result.error?.message || '').trim().split(/\r?\n/).slice(-6).join('\n');
+    throw new Error(`随包 Python 无法启动下载器入口（exit=${result.status ?? 'unknown'}）：\n${detail}`);
+  }
 }
 
 const piManifest = JSON.parse(

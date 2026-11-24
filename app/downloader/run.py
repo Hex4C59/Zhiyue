@@ -3,6 +3,9 @@
 from __future__ import annotations
 import argparse,json,os,shutil,sys
 from pathlib import Path
+# 桌面版随包的是 embeddable Python，它的 python313._pth 接管 sys.path 初始化，
+# 不再自动加入脚本目录（与 -P 相同）；显式加入同目录才能导入 common、batches 等同级模块。
+sys.path.insert(0,str(Path(__file__).resolve().parent))
 from common import *
 import batches,library,workflow
 from validation import verify,poppler
