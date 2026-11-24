@@ -637,6 +637,26 @@ test('模型搜索和键盘选择驱动实际发送参数，输入与停止操�
   assert.equal(page.workspace.state.chat.messages.at(-1).status, 'interrupted');
 });
 
+test('任务进行中也能切换模型，新模型从下一条消息生效', async (t) => {
+  const page = await fixture(t);
+  page.workspace.state.chat = {
+    id: 'busy-chat',
+    messages: [{ id: 'busy-1', role: 'assistant', text: '正在回答', status: 'running' }],
+  };
+  await flush();
+  const trigger = page.$('#model-trigger');
+  assert.equal(trigger.disabled, false);
+  assert.match(trigger.getAttribute('title') ?? '', /下一条消息生效/);
+  click(trigger);
+  await flush();
+  click(page.$('[data-provider-value="test"]'));
+  await flush();
+  click(page.$('[data-model-value="test/sonnet"]'));
+  await flush();
+  assert.equal(page.workspace.state.model, 'test/sonnet');
+  assert.match(page.$('#toast-region').textContent ?? '', /下一条消息生效/);
+});
+
 test('流式增量只更新目标消息，保留已完成内容的选择范围、焦点与审批草稿', async (t) => {
   const page = await fixture(t),
     { workspace } = page;

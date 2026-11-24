@@ -58,9 +58,10 @@ const query = computed({
 });
 const searchLabel = computed(() => activeProvider.value === null ? '搜索服务商' : '搜索模型');
 const selected = computed(() => workspace.models.value.find((model) => model.id === state.model) ?? defaultModel);
+// 生成中不锁住选择器：当前回合仍用发出时的模型，新模型从下一条消息开始生效。
+const running = computed(() => workspace.busy.value);
 const disabled = computed(
   () =>
-    workspace.busy.value ||
     state.creating ||
     workspace.agent.value.available !== true ||
     !workspace.models.value.length,
@@ -107,9 +108,15 @@ async function goBack(): Promise<void> {
   (button ?? search.value)?.focus();
 }
 function choose(id: string): void {
+  const changed = id !== state.model;
+  const option = workspace.models.value.find((model) => model.id === id);
   state.model = id;
   close();
   state.focusComposer++;
+  // 生成中重选同一个模型不提示；换了模型只影响下一条消息。
+  if (running.value && changed) {
+    workspace.toast(option ? `已切换为 ${modelLabel(option)}，下一条消息生效` : '已恢复默认模型，下一条消息生效');
+  }
 }
 function keydown(event: KeyboardEvent): void {
   if (event.isComposing) return;
@@ -177,7 +184,7 @@ onBeforeUnmount(() => {
     aria-haspopup="dialog"
     :aria-expanded="open"
     aria-controls="model-menu"
-    :title="selected.label"
+    :title="running ? `${selected.label}（任务进行中，切换后从下一条消息生效）` : selected.label"
     @click="toggle"
   >
     <span id="model-name">{{ modelLabel(selected) }}</span
