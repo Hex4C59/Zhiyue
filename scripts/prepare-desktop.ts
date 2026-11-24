@@ -231,9 +231,13 @@ for (const relative of requiredFiles) {
 // 用随包解释器真正跑一次下载器入口：便携 Python 的 _pth 接管 sys.path，
 // 脚本目录不会自动加入，这一步能拦住“模板可导入但安装版缺模块”的回归。
 {
-  const result = spawnSync(path.join(PYTHON_OUT, 'python.exe'), [path.join(OUT, 'app/downloader/run.py'), '--help'], {
-    encoding: 'utf8',
-  });
+  // 帮助文本含中文：Windows 默认控制台编码（cp1252/gbk）下 Python 会报 charmap 编码错误，
+  // 用 -X utf8 与 PYTHONIOENCODING 固定输出编码后再执行。
+  const result = spawnSync(
+    path.join(PYTHON_OUT, 'python.exe'),
+    ['-X', 'utf8', path.join(OUT, 'app/downloader/run.py'), '--help'],
+    { encoding: 'utf8', env: { ...process.env, PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8' } },
+  );
   if (result.status !== 0) {
     const detail = (result.stderr || result.error?.message || '').trim().split(/\r?\n/).slice(-6).join('\n');
     throw new Error(`随包 Python 无法启动下载器入口（exit=${result.status ?? 'unknown'}）：\n${detail}`);
