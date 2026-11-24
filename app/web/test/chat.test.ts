@@ -154,7 +154,7 @@ test('会话接入真实协议形状，图片以localImage输入，文件提取�
   assert.equal(turn.input[1]?.type, 'localImage');
   assert.match(turn.input[0]?.text ?? '', /文件内容/);
   assert.match(String(client.calls[0]?.params?.developerInstructions), /文献研究助手/);
-  assert.equal((client.calls[0]?.params?.dynamicTools as unknown[]).length, 12);
+  assert.equal((client.calls[0]?.params?.dynamicTools as unknown[]).length, 17);
 });
 
 test('多条agent消息流可拼接并在turn完成后持久化', async (t) => {
@@ -222,6 +222,97 @@ test('下载请求必须通过命名工具，审批只响应明确点击', async
   chats.approve(approval.approval.id, { decision: 'decline' });
   assert.equal(client.responses.at(-1)?.result.decision, 'decline');
   assert.throws(() => chats.approve(approval.approval.id, { decision: 'accept' }));
+});
+
+test('分类工具：新建与改名直接执行，删除先生成待确认卡片', async (t) => {
+  const { chats, client, events } = await fixture(t);
+  const calls: Array<{ method: string; args: unknown[] }> = [];
+  const library = {
+    getPaper: async () => null,
+    getLibrary: async () => ({
+      papers: [], stats: {},
+      categories: [{
+        id: '09_空分类', name: '09_空分类', count: 1,
+        children: [{ id: '09_空分类/01_子目录', name: '01_子目录', count: 0 }],
+      }],
+    }),
+    safeFile: async () => '',
+    readDocument: async () => ({ path: '', offset: 0, totalChars: 0, text: '', truncated: false }),
+    refresh: async () => {},
+    resolveCategory: async (value: unknown) => {
+      calls.push({ method: 'resolveCategory', args: [value] });
+      if (String(value).includes('不存在')) {
+        throw Object.assign(new Error('没有找到分类「不存在」。'), { statusCode: 404 });
+      }
+      const [top, child] = String(value).replace(/^papers\//, '').split('/');
+      return child
+        ? { category: top, subcategory: child, path: `papers/${top}/${child}` }
+        : { category: top, subcategory: '', path: `papers/${top}` };
+    },
+    createCategory: async (name: unknown, parent: unknown) => {
+      calls.push({ method: 'createCategory', args: [name, parent] });
+      return { category: '10_新分类', subcategory: '' };
+    },
+    renameCategory: async (category: unknown, subcategory: unknown, name: unknown) => {
+      calls.push({ method: 'renameCategory', args: [category, subcategory, name] });
+      return { category: '09_改名', subcategory: '' };
+    },
+    deleteCategory: async (category: unknown, subcategory: unknown) => {
+      calls.push({ method: 'deleteCategory', args: [category, subcategory] });
+      return { trashed: '.zhiyue/trash/categories/x' };
+    },
+    movePaper: async (paperId: unknown, category: unknown) => {
+      calls.push({ method: 'movePaper', args: [paperId, category] });
+      return { literature_id: 'L001', from: 'papers/08_SER', to: 'papers/09_空分类' };
+    },
+  } as unknown as ChatServiceOptions['library'];
+  chats.library = library;
+  const chat = chats.create();
+  await chats.send(chat.id, { text: '整理分类' });
+  await until(() => Boolean(chat.threadId));
+  const request = (id: number, tool: string, args: Record<string, unknown>): Promise<void> =>
+    chats.serverRequest({ id, method: 'item/tool/call', params: { threadId: chat.threadId, tool, arguments: args } } as ClientRequest);
+  const reply = (): { success: boolean; text: string } => {
+    const result = client.responses.at(-1)?.result as ToolReplyShape;
+    return { success: result.success, text: result.contentItems[0]?.text ?? '' };
+  };
+  await request(1, 'library_categories', {});
+  assert.equal(reply().success, true);
+  assert.match(reply().text, /09_空分类/);
+  await request(2, 'create_category', { name: '新分类' });
+  assert.deepEqual(calls.at(-1), { method: 'createCategory', args: ['新分类', undefined] });
+  assert.ok(events.some((event) => event.type === 'library'));
+  await request(3, 'rename_category', { category: '09_空分类', name: '改名' });
+  assert.deepEqual(calls.at(-1), { method: 'renameCategory', args: ['09_空分类', '', '改名'] });
+  await request(4, 'delete_category', { category: '09_空分类' });
+  assert.match(reply().text, /pending_confirmation/);
+  assert.equal(calls.some((call) => call.method === 'deleteCategory'), false);
+  const pending = chat.folderActions?.[0];
+  assert.ok(pending);
+  assert.equal(pending?.papers, 1);
+  assert.ok(events.some((event) => event.type === 'folderAction'));
+  // 非空目录删除失败：卡片保留错误原因且不丢弃，用户处理后可以重试或取消。
+  chats.library = {
+    ...library,
+    deleteCategory: async () => {
+      throw Object.assign(new Error('文件夹不是空的，请先移出文献或子文件夹。'), { statusCode: 409 });
+    },
+  } as unknown as ChatServiceOptions['library'];
+  await assert.rejects(chats.resolveFolderAction(pending!.id, 'apply'), /文件夹不是空的/);
+  assert.equal(chat.folderActions?.length, 1);
+  assert.match(String(chat.folderActions?.[0]?.error), /文件夹不是空的/);
+  chats.library = {
+    ...library,
+    deleteCategory: async (_category: unknown, subcategory: unknown) => {
+      calls.push({ method: 'deleteCategory', args: [subcategory] });
+      return { trashed: 'x' };
+    },
+  } as unknown as ChatServiceOptions['library'];
+  assert.deepEqual(await chats.resolveFolderAction(pending!.id, 'discard'), { discarded: true });
+  assert.equal(chat.folderActions?.length, 0);
+  await assert.rejects(chats.resolveFolderAction('missing', 'apply'), /不存在/);
+  await request(5, 'move_paper', { paperId: 'L001', category: '09_空分类' });
+  assert.deepEqual(calls.at(-1), { method: 'movePaper', args: ['L001', '09_空分类'] });
 });
 
 test('新增阅读工具通过桥接返回文档、目录、检索片段和页面图片', async (t) => {

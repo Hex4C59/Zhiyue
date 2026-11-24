@@ -287,7 +287,8 @@ test('Pi 复用流式消息、附件和文献工具', async (t) => {
   assert.deepEqual(
     (session.options as unknown as { tools: string[] }).tools,
     ['library_search', 'read_library_doc', 'paper_outline', 'search_paper_text', 'read_paper_pages',
-      'render_paper_page', 'download_papers', 'continue_download_batch', 'get_download_status',
+      'render_paper_page', 'library_categories', 'create_category', 'rename_category', 'delete_category',
+      'move_paper', 'download_papers', 'continue_download_batch', 'get_download_status',
       'read_skill', 'draft_note', 'draft_document'],
   );
   assert.equal(session.lastPrompt?.expandPromptTemplates, false);

@@ -1,4 +1,4 @@
-"""Category directory moves and their reference updates under the library write lock."""
+"""Category and single-paper moves with their reference updates under the library write lock."""
 from __future__ import annotations
 import contextlib,datetime,errno,json,os,re,time,urllib.parse,uuid
 from pathlib import Path
@@ -12,6 +12,7 @@ TEXT_SUFFIXES={'.md','.csv','.tsv','.txt','.json'}
 SIDECAR_SUFFIX='.来源.json'
 PATH_FIELDS=('当前路径','PDF路径','文件路径','归档路径')
 JOURNAL_PARTS=('data','repairs','rename')
+MOVE_JOURNAL_PARTS=('tmp','paper_moves')
 INVALID=re.compile(r'[\\/:*?"<>|%\x00-\x1f\x7f]')
 RESERVED=re.compile(r'^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?$',re.I)
 
@@ -180,6 +181,166 @@ def _update_receipts(root,old,new):
   if path.read_bytes()!=raw:raise RuntimeError(f'归档事务记录正在写入，请稍后重试：{path.name}')
   atomic_text(path,json.dumps(receipt,ensure_ascii=False,indent=2)+'\n')
 
+def _move_journal_path(root):
+ directory=meta(root).joinpath(*MOVE_JOURNAL_PARTS)
+ directory.mkdir(parents=True,exist_ok=True)
+ stamp=datetime.datetime.now().strftime('%Y%m%dT%H%M%S')
+ return directory/f'{stamp}_{uuid.uuid4().hex[:8]}.json'
+
+def _collect_path_candidates(root,old_paths):
+ """Return text files and sidecars under papers/notes/synthesis/outputs that mention the old paths."""
+ text=[];sidecars=[]
+ for base in [Path(root)/'papers',Path(root)/'notes',Path(root)/'synthesis',Path(root)/'outputs']:
+  if not base.is_dir():continue
+  for directory,dirs,files in os.walk(base,onerror=_raise_walk_error):
+   dirs[:]=[name for name in dirs if not (Path(directory)/name).is_symlink()]
+   for name in files:
+    path=Path(directory)/name
+    if path.is_symlink() or not path.is_file():continue
+    suffix=path.suffix.casefold()
+    if suffix not in TEXT_SUFFIXES:continue
+    try:
+     if path.stat().st_size>MAX_TEXT:continue
+     content=path.read_text('utf-8-sig')
+    except (OSError,UnicodeDecodeError):continue
+    if not any(_contains(content,old) for old in old_paths):continue
+    if suffix=='.json' and name.endswith(SIDECAR_SUFFIX):sidecars.append(path)
+    else:text.append(path)
+ return text,sidecars
+
+def _rewrite_sidecar_paths(path,mapping):
+ raw=path.read_bytes()
+ try:data=json.loads(raw.decode('utf-8-sig'))
+ except (json.JSONDecodeError,UnicodeDecodeError) as exc:
+  raise RuntimeError(f'来源记录无法解析：{path.name}') from exc
+ if not isinstance(data,dict):return False
+ changed=False
+ for key in PATH_FIELDS:
+  value=data.get(key)
+  if not isinstance(value,str):continue
+  updated=value
+  for old,new in mapping:
+   if _contains(updated,old):updated=_replace_all(updated,old,new)
+  if updated!=value:data[key]=updated;changed=True
+ if not changed:return False
+ if path.read_bytes()!=raw:raise RuntimeError(f'{path.name}同时被其他程序改动，请重新执行移动。')
+ save(path,data)
+ return True
+
+def _update_ledger_files(root,mapping):
+ """Rewrite archived paths on batch entries; the batch-level category stays unchanged."""
+ base=meta(root)/'batches'
+ if not base.is_dir():return 0
+ pairs=dict(mapping);changed=0
+ for path in sorted(base.glob('*/下载状态.json')):
+  for _ in range(3):
+   raw=path.read_bytes()
+   try:state=json.loads(raw.decode('utf-8-sig'))
+   except (json.JSONDecodeError,UnicodeDecodeError) as exc:
+    raise RuntimeError(f'批次台账无法解析：{path.parent.name}') from exc
+   if not isinstance(state,dict):raise RuntimeError(f'批次台账格式无效：{path.parent.name}')
+   touched=False
+   entries=state.get('entries')
+   for entry in entries if isinstance(entries,list) else []:
+    if not isinstance(entry,dict):continue
+    for key in ('file','source_record'):
+     value=entry.get(key)
+     if isinstance(value,str) and value in pairs and pairs[value]!=value:
+      entry[key]=pairs[value];touched=True
+   if not touched:break
+   if path.read_bytes()!=raw:continue
+   atomic_text(path,json.dumps(state,ensure_ascii=False,indent=2)+'\n');changed+=1;break
+  else:
+   raise RuntimeError(f'批次台账正在写入，请稍后重试：{path.parent.name}')
+ return changed
+
+def _update_receipt_files(root,mapping):
+ pairs=dict(mapping);changed=0
+ base=meta(root)/'tmp'
+ if not base.is_dir():return 0
+ for path in sorted(base.glob('*/archive_backups/*_归档事务.json')):
+  raw=path.read_bytes()
+  try:receipt=json.loads(raw.decode('utf-8-sig'))
+  except (json.JSONDecodeError,UnicodeDecodeError):continue
+  if not isinstance(receipt,dict):continue
+  record=receipt.get('record')
+  if not isinstance(record,dict):continue
+  versions=record.get('versions')
+  items=[record]+([item for item in versions if isinstance(item,dict)] if isinstance(versions,list) else [])
+  touched=False
+  for item in items:
+   for key in ('file','source_record'):
+    value=item.get(key)
+    if isinstance(value,str) and value in pairs and pairs[value]!=value:
+     item[key]=pairs[value];touched=True
+  if not touched:continue
+  if path.read_bytes()!=raw:raise RuntimeError(f'归档事务记录正在写入，请稍后重试：{path.name}')
+  atomic_text(path,json.dumps(receipt,ensure_ascii=False,indent=2)+'\n');changed+=1
+ return changed
+
+def _rewrite_move_references(root,journal_path,journal):
+ mapping=[(move['from'],move['to']) for move in journal['moves']]
+ text_files,sidecars=_collect_path_candidates(root,[old for old,_ in mapping])
+ journal['files']=[{'path':rel(root,path),'sha256':sha256(path)} for path in text_files+sidecars]
+ readme=Path(root)/'README.md'
+ if readme.is_file():journal['readme_sha256']=sha256(readme)
+ save(journal_path,journal)
+ if readme.is_file():
+  for old,new in mapping:_rewrite_text(readme,old,new)
+ journal['stage']='references';save(journal_path,journal)
+ rewritten=0
+ for path in text_files:
+  changed=False
+  for old,new in mapping:
+   if _rewrite_text(path,old,new):changed=True
+  rewritten+=int(changed)
+ for path in sidecars:_rewrite_sidecar_paths(path,mapping)
+ journal['stage']='ledgers';save(journal_path,journal)
+ ledgers=_update_ledger_files(root,mapping)
+ receipts=_update_receipt_files(root,mapping)
+ journal['stage']='catalog';save(journal_path,journal)
+ _rebuild_catalog(root)
+ return {'readme':readme.is_file(),'texts':rewritten,'ledgers':ledgers,'receipts':receipts}
+
+def _paper_move_files(root,record):
+ """Return the source directory, every file of this paper inside it, and versions stored elsewhere."""
+ lid=record.get('literature_id') or ''
+ primary=record.get('file')
+ if not isinstance(primary,str) or not primary:raise CliError(f'{lid} 缺少归档文件路径，请先修复索引。',4)
+ try:first=within(root,primary)
+ except ValueError as exc:raise CliError('归档路径超出文献库。',4) from exc
+ if first.is_symlink() or not first.is_file():raise CliError(f'{lid} 的归档PDF不存在，请先修复文献库。',4)
+ directory=first.parent
+ versions=record.get('versions') if isinstance(record.get('versions'),list) else []
+ candidates={}
+ def add(value):
+  if not isinstance(value,str) or not value:return
+  try:path=within(root,value)
+  except ValueError:return
+  if path.parent!=directory or path.is_symlink() or not path.is_file():return
+  candidates[rel(root,path)]=path
+ add(record.get('file'));add(record.get('source_record'))
+ for version in versions:
+  if isinstance(version,dict):add(version.get('file'));add(version.get('source_record'))
+ for sidecar in sorted(directory.glob('*'+SIDECAR_SUFFIX)):
+  if sidecar.is_symlink() or not sidecar.is_file():continue
+  try:data=json.loads(sidecar.read_text('utf-8-sig'))
+  except (OSError,UnicodeDecodeError,json.JSONDecodeError):continue
+  if not isinstance(data,dict) or str(data.get('文献编号') or '')!=lid:continue
+  add(rel(root,sidecar))
+  name=data.get('文件名')
+  if isinstance(name,str) and name:add(rel(root,directory/name))
+ other=set()
+ for version in versions:
+  if not isinstance(version,dict):continue
+  for key in ('file','source_record'):
+   value=version.get(key)
+   if not isinstance(value,str) or not value:continue
+   try:path=within(root,value)
+   except ValueError:continue
+   if path.parent!=directory:other.add(rel(root,path))
+ return directory,sorted(candidates.values(),key=lambda path:path.name),sorted(other)
+
 def _rewrite_all(root,journal_path,journal):
  old,new=journal['old'],journal['new']
  text_files,sidecars=_collect_candidates(root,old)
@@ -335,6 +496,76 @@ def repair_renames(root):
    try:
     journal['stage']='moved';save(path,journal)
     _rewrite_all(root,path,journal)
+   except Exception as exc:
+    summary.append({'journal':rel(root,path),'action':'failed','error':str(exc)});continue
+   journal['stage']='done';save(path,journal);path.unlink(missing_ok=True)
+   summary.append({'journal':rel(root,path),'action':'repaired'})
+ return summary
+
+def move_paper(root,literature_id,category,timeout=RENAME_TIMEOUT):
+ """Move one archived paper and its sidecars to an existing category, rewriting every reference."""
+ root=Path(root).resolve()
+ lid=str(literature_id or '').strip().upper()
+ if not re.fullmatch(r'L\d+',lid):raise CliError('请指定 L 编号，例如 L003。',2)
+ with library_lock(root,timeout):
+  destdir=require_category(root,category)
+  catalog=library_index.read(root)
+  record=next((item for item in catalog.get('records',[]) if item.get('literature_id')==lid),None)
+  if not record:raise CliError(f'文献库中没有 {lid}。',2)
+  source_dir,files,other=_paper_move_files(root,record)
+  summary={'literature_id':lid,'from':rel(root,source_dir),'to':rel(root,destdir),'category':rel(root,destdir),
+           'unchanged':source_dir==destdir,'moved':[],'other_locations':other,'references':{}}
+  if summary['unchanged']:return summary
+  conflicts=[path.name for path in files if (destdir/path.name).exists() or (destdir/path.name).is_symlink()]
+  if conflicts:raise CliError('目标分类已存在同名文件：'+'、'.join(sorted(conflicts))+'。',4)
+  moves=[{'from':rel(root,path),'to':rel(root,destdir/path.name),'sha256':sha256(path)} for path in files]
+  journal_path=_move_journal_path(root)
+  journal={'schema_version':1,'at':now(),'literature_id':lid,'old_dir':summary['from'],'new_dir':summary['to'],
+           'stage':'prepared','moves':moves,'files':[]}
+  save(journal_path,journal)
+  moved=[]
+  try:
+   for move in moves:
+    os.rename(within(root,move['from']),within(root,move['to']));moved.append(move)
+  except OSError as exc:
+   for move in reversed(moved):
+    with contextlib.suppress(OSError):os.rename(within(root,move['to']),within(root,move['from']))
+   journal_path.unlink(missing_ok=True)
+   if getattr(exc,'winerror',None) in (5,32,33) or exc.errno in (errno.EACCES,errno.EBUSY,errno.EPERM):
+    raise CliError('文件正在使用，请关闭后重试。',4) from exc
+   raise
+  journal['stage']='moved';save(journal_path,journal)
+  try:summary['references']=_rewrite_move_references(root,journal_path,journal)
+  except Exception as exc:
+   raise CliError(f'文件已移动，但更新引用失败：{exc}；修复记录：{rel(root,journal_path)}',1) from exc
+  journal['stage']='done';save(journal_path,journal);journal_path.unlink(missing_ok=True)
+  summary['moved']=[{'from':move['from'],'to':move['to']} for move in moves]
+  return summary
+
+def repair_moves(root):
+ """Resume unfinished single-paper moves and report conflicts without rewriting silently."""
+ root=Path(root).resolve();summary=[]
+ directory=meta(root).joinpath(*MOVE_JOURNAL_PARTS)
+ with library_lock(root):
+  paths=sorted(directory.glob('*.json')) if directory.is_dir() else []
+  for path in paths:
+   journal=load(path,{})
+   moves=journal.get('moves') if isinstance(journal,dict) else None
+   if not isinstance(moves,list) or not moves or not all(isinstance(move,dict) and
+     _valid_journal_path(move.get('from')) and _valid_journal_path(move.get('to')) for move in moves):
+    summary.append({'journal':rel(root,path),'action':'invalid'});continue
+   if journal.get('stage')=='done':
+    path.unlink(missing_ok=True);summary.append({'journal':rel(root,path),'action':'cleaned'});continue
+   states=[(within(root,move['from']),within(root,move['to'])) for move in moves]
+   if any(source.exists() and target.exists() for source,target in states):
+    summary.append({'journal':rel(root,path),'action':'conflict'});continue
+   if all(source.exists() for source,target in states):
+    path.unlink(missing_ok=True);summary.append({'journal':rel(root,path),'action':'not_moved'});continue
+   if not all(target.exists() for source,target in states):
+    summary.append({'journal':rel(root,path),'action':'conflict'});continue
+   if any(move.get('sha256') and sha256(target)!=move['sha256'] for move,(source,target) in zip(moves,states)):
+    summary.append({'journal':rel(root,path),'action':'conflict'});continue
+   try:_rewrite_move_references(root,path,journal)
    except Exception as exc:
     summary.append({'journal':rel(root,path),'action':'failed','error':str(exc)});continue
    journal['stage']='done';save(path,journal);path.unlink(missing_ok=True)

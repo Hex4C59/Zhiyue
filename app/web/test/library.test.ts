@@ -121,6 +121,28 @@ test('deleteCategory 只接受有效路径并委托 Python 移入回收站', asy
   await assert.rejects(library.deleteCategory('09_空目录', '../逃逸'), /文件夹路径无效/);
 });
 
+test('resolveCategory 接受显示名或编号目录，movePaper 委托 Python 执行', async t => {
+  const { root, library } = await fixture(t);
+  await mkdir(path.join(root, 'papers/08_SER/02_预算'), { recursive: true });
+  assert.deepEqual(await library.resolveCategory('ser'), { category: '08_SER', subcategory: '', path: 'papers/08_SER' });
+  assert.deepEqual(await library.resolveCategory('papers/08_SER/资源'),
+    { category: '08_SER', subcategory: '01_资源', path: 'papers/08_SER/01_资源' });
+  assert.deepEqual(await library.resolveCategory('08_SER/02_预算'),
+    { category: '08_SER', subcategory: '02_预算', path: 'papers/08_SER/02_预算' });
+  await assert.rejects(library.resolveCategory('不存在'), /没有找到分类/);
+  await assert.rejects(library.resolveCategory('08_SER/不存在'), /没有找到子文件夹/);
+  await assert.rejects(library.resolveCategory('../逃逸'), /分类目录无效/);
+  const calls: string[][] = [];
+  library.categoryCommand = async (args) => {
+    calls.push(args);
+    return { literature_id: 'L001', moved: [] };
+  };
+  assert.deepEqual(await library.movePaper('l001', '08_SER/资源'), { literature_id: 'L001', moved: [] });
+  assert.deepEqual(calls[0], ['move-paper', '--literature-id', 'L001', '--category', 'papers/08_SER/01_资源']);
+  await assert.rejects(library.movePaper('paper', '08_SER'), /L 编号/);
+  await assert.rejects(library.movePaper('L001', '不存在'), /没有找到分类/);
+});
+
 test('import categories are created with numbering before the batch starts', async t => {
   const { root, library, put } = await fixture(t);
   assert.equal(await library.ensureCategory('papers/实验数据复核/网站导入'), 'papers/09_实验数据复核/网站导入');

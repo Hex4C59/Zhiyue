@@ -60,6 +60,19 @@ const papers = computed<Paper[]>(() => {
   );
   return state.sort === 'year-desc' ? result.reverse() : result;
 });
+
+// 拖动只负责选中源；放置目标由左侧分类判断，实际移动由工作区提交给 Python。
+function dragStart(event: DragEvent, paper: Paper): void {
+  if (!workspace.beginPaperDrag(paper.literature_id)) {
+    event.preventDefault();
+    return;
+  }
+  const transfer = event.dataTransfer;
+  if (!transfer) return;
+  transfer.effectAllowed = 'move';
+  transfer.setData('application/x-zhiyue-paper', paper.literature_id);
+  transfer.setData('text/plain', paper.literature_id);
+}
 </script>
 
 <template>
@@ -138,11 +151,15 @@ const papers = computed<Paper[]>(() => {
         v-else
         :key="paper.literature_id"
         class="paper-card"
-        :class="{ active: state.current === paper.literature_id }"
+        :class="{ active: state.current === paper.literature_id, dragging: state.draggingPaper === paper.literature_id }"
         :data-paper="paper.literature_id"
+        draggable="true"
+        title="拖动到左侧文件夹可移动分类"
         tabindex="0"
         :aria-label="titleOf(paper)"
         :aria-current="state.current === paper.literature_id"
+        @dragstart="dragStart($event, paper)"
+        @dragend="workspace.endPaperDrag()"
         @click="workspace.selectPaper(paper.literature_id)"
         @keydown.enter.self.prevent="workspace.selectPaper(paper.literature_id)"
         @keydown.space.self.prevent="workspace.selectPaper(paper.literature_id)"
@@ -157,6 +174,8 @@ const papers = computed<Paper[]>(() => {
             :title="paper.starred ? '取消收藏' : '收藏论文'"
             :aria-label="paper.starred ? '取消收藏' : '收藏论文'"
             :disabled="state.pendingPatches.has(paper.literature_id)"
+            draggable="false"
+            @dragstart.stop.prevent
             @click.stop="workspace.patchPaper(paper.literature_id, { starred: !paper.starred })"
           >
             <Icon name="star" />

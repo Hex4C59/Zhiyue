@@ -28,7 +28,10 @@ def parser():
  c=s.add_parser('delete-category',help='在库写锁下把空分类目录移到回收站')
  c.add_argument('--category',required=True,help='papers下的顶层目录名')
  c.add_argument('--subcategory',default='',help='要删除的子目录；省略时删除顶层')
- s.add_parser('repair',help='恢复未完成的分类改名和归档事务，报告冲突')
+ c=s.add_parser('move-paper',help='在库写锁下把一篇文献及其来源记录移到现有分类，并同步README、引用、台账和索引')
+ c.add_argument('--literature-id',required=True,help='文献编号，例如L003')
+ c.add_argument('--category',required=True,help='已存在的分类目录，相对项目路径，必须位于papers下')
+ s.add_parser('repair',help='恢复未完成的分类改名、文献移动和归档事务，报告冲突')
  q=batch_parser(s,'import','导入DOI列表、CSV/TSV、JSON或Markdown清单');q.add_argument('input',type=Path);q.add_argument('--category',help='归档目录，相对项目路径，必须位于papers下且已存在')
  q=s.add_parser('status',help='查看批次状态');q.add_argument('--batch')
  q=batch_parser(s,'download','查重并下载；已完成且文件未变化的条目自动跳过');q.add_argument('--item');q.add_argument('--channel',choices=['auto','public','elsevier','ieee'],default='auto');q.add_argument('--retry',action='store_true',help='明确重新处理此前失败/待人工条目');q.add_argument('--limit',type=int);q.add_argument('--dry-run',action='store_true');q.add_argument('--require-published',action='store_true',help='本地复用仅接受明确出版版本；不将该标志当作PDF版本证据')
@@ -71,10 +74,13 @@ def main(argv=None):
  if args.command=='delete-category':
   import categories
   return categories.delete(root,args.category,args.subcategory)
+ if args.command=='move-paper':
+  import categories
+  return categories.move_paper(root,args.literature_id,args.category)
  if args.command=='repair':
   import categories
   from archiving import archive
-  result={'rename':categories.repair_renames(root),'archive':[]}
+  result={'rename':categories.repair_renames(root),'moves':categories.repair_moves(root),'archive':[]}
   for journal in sorted((meta(root)/'tmp').glob('*/archive_backups/*_归档事务.json')):
    receipt=load(journal,{})
    if not isinstance(receipt,dict) or receipt.get('state')!='prepared':continue

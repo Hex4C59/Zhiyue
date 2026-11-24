@@ -30,7 +30,7 @@ const rows = computed<CategoryRow[]>(() => {
       name: category.name ?? category.id,
       count: category.count ?? 0,
     });
-    if (state.category !== category.id) continue;
+    if (state.category !== category.id && !state.draggingPaper && !state.movingPaper) continue;
     for (const child of category.children || []) {
       result.push({
         category: category.id,
@@ -60,6 +60,27 @@ function choose(row: CategoryRow): void {
   state.subcategory = row.child;
   workspace.setView('library');
   workspace.setPanel('list');
+}
+const dropKey = ref('');
+const rowKey = (row: CategoryRow): string => `${row.category}/${row.child}`;
+function dragOver(event: DragEvent, row: CategoryRow): void {
+  if (!state.draggingPaper || !row.category) return;
+  event.preventDefault();
+  if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
+  dropKey.value = rowKey(row);
+}
+function dragLeave(event: DragEvent, row: CategoryRow): void {
+  const next = event.relatedTarget as Node | null;
+  if (next && (event.currentTarget as HTMLElement | null)?.contains(next)) return;
+  if (dropKey.value === rowKey(row)) dropKey.value = '';
+}
+async function dropPaper(event: DragEvent, row: CategoryRow): Promise<void> {
+  event.preventDefault();
+  dropKey.value = '';
+  const id = state.draggingPaper;
+  workspace.endPaperDrag();
+  if (!id || !row.category || state.movingPaper) return;
+  await workspace.movePaper(id, row.category, row.child);
 }
 async function focusEditor(): Promise<void> {
   await nextTick();
@@ -263,7 +284,8 @@ async function submitRename(row: CategoryRow): Promise<void> {
         <Icon name="plus" />
       </button>
     </div>
-    <div id="categories" class="categories" @contextmenu.prevent="openMenu($event, null)" @scroll="closeMenu">
+    <div id="categories" class="categories" @contextmenu.prevent="openMenu($event, null)" @scroll="closeMenu"
+      @dragover.prevent @drop.prevent>
       <form v-if="creating" class="category-editor" @submit.prevent="submitCreate">
         <input
           :ref="setEditor"
@@ -297,6 +319,13 @@ async function submitRename(row: CategoryRow): Promise<void> {
           class="category-row"
           :data-category="row.category"
           :data-subcategory="row.child"
+          :class="{ 'drop-target': !!state.draggingPaper && dropKey === rowKey(row) }"
+          :data-drop-target="state.draggingPaper && dropKey === rowKey(row) ? 'true' : undefined"
+          :aria-dropeffect="state.draggingPaper && row.category ? 'move' : undefined"
+          @dragstart.prevent
+          @dragover="dragOver($event, row)"
+          @dragleave="dragLeave($event, row)"
+          @drop="dropPaper($event, row)"
           @contextmenu.prevent.stop="openMenu($event, row)"
         >
           <button

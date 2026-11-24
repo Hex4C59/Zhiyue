@@ -480,6 +480,53 @@ export class Library {
   }
 
   /**
+   * 解析界面或助手传入的分类名称：接受带编号的目录名（08_SER）或显示名（SER），大小写不敏感，
+   * 返回磁盘上的真实目录名。只做匹配，不创建目录；找不到或有歧义时列出候选。
+   */
+  async resolveCategory(value: unknown): Promise<{ category: string; subcategory: string; path: string }> {
+    if (typeof value !== 'string') throw statusError('分类目录无效。', 400);
+    const trimmed = value.trim().replace(/^papers\//i, '');
+    const parts = trimmed.split('/');
+    if (!trimmed || parts.length > 2 || parts.some((part) =>
+      !part || part === '.' || part === '..' || /[\\:*?"<>|\x00-\x1f]/.test(part))) {
+      throw statusError('分类目录无效。', 400);
+    }
+    const { categories } = await this.getLibrary();
+    const key = (name: string): string => name.replace(/^\d+_/, '').toLocaleLowerCase();
+    const pick = <T extends { id: string }>(items: T[], wanted: string, label: string): T => {
+      const matches = items.filter((item) => item.id.toLocaleLowerCase() === wanted.toLocaleLowerCase() ||
+        key(item.id) === key(wanted));
+      if (!matches.length) {
+        const known = items.map((item) => item.id).join('、') || '无';
+        throw statusError(`没有找到${label}「${wanted}」。现有：${known}`, 404);
+      }
+      if (matches.length > 1) {
+        throw statusError(`${label}「${wanted}」不唯一：${matches.map((item) => item.id).join('、')}`, 409);
+      }
+      return matches[0] as T;
+    };
+    const top = pick(categories, parts[0] as string, '分类');
+    if (parts.length === 1) return { category: top.id, subcategory: '', path: `papers/${top.id}` };
+    const children = top.children.map((child) => ({ id: child.id.split('/').pop() as string, name: child.name }));
+    const child = pick(children, parts[1] as string, '子文件夹');
+    const rel = `papers/${top.id}/${child.id}`;
+    if (!this._validRelative(rel)) throw statusError('分类目录无效。', 400);
+    return { category: top.id, subcategory: child.id, path: rel };
+  }
+
+  // 单篇文献移动由 Python 在库写锁下搬文件并修复 README、来源记录、台账和索引；Node 只校验编号与目标。
+  async movePaper(paperId: unknown, category: unknown): Promise<unknown> {
+    const id = typeof paperId === 'string' ? paperId.trim().toUpperCase() : '';
+    if (!/^L\d+$/.test(id)) throw statusError('请指定 L 编号，例如 L003。', 400);
+    const target = await this.resolveCategory(category);
+    const result = await this.categoryCommand([
+      'move-paper', '--literature-id', id, '--category', target.path,
+    ]);
+    this.cache = null;
+    return result;
+  }
+
+  /**
    * 删除一篇阅读笔记：只接受 notes/ 下的 Markdown/文本，移动到 `.zhiyue/trash/notes/` 而不是直接抹掉，
    * 以便误删后可手动找回。返回回收站内的相对路径与新的文献索引数据。
    */

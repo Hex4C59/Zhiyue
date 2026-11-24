@@ -8,7 +8,7 @@ import { createHash } from 'node:crypto';
 import type { IncomingMessage } from 'node:http';
 import { createApp, checkRequest } from '../src/server.js';
 import { downloaderScript, resolvePython } from '../src/lib/python.js';
-import type { Chat, ChatNoteDraft } from '../src/lib/chat.js';
+import type { Chat, ChatFolderAction, ChatNoteDraft } from '../src/lib/chat.js';
 
 // 服务端返回的 JSON 只在这里按用到的字段声明结构，读取后立即断言。
 interface LibraryResponse {
@@ -333,6 +333,20 @@ test('本地HTTP服务提供目录、PDF范围读取和上传，拒绝跨站与�
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'save' }),
   });
   assert.equal(response.status, 404);
+  // 文件夹删除：只有待确认卡片存在时才可应用，路由透传 Python 结果并清空卡片。
+  app.chats.get(chat.id).folderActions = [{
+    id: 'folder-1', kind: 'delete', category: '01_改名分类', subcategory: '',
+    path: 'papers/01_改名分类', papers: 0, createdAt: new Date().toISOString(),
+  } satisfies ChatFolderAction];
+  response = await fetch(base + '/api/folder-actions/folder-1', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'apply' }),
+  });
+  assert.equal(response.status, 200);
+  assert.deepEqual(app.chats.get(chat.id).folderActions, []);
+  response = await fetch(base + '/api/folder-actions/missing', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'apply' }),
+  });
+  assert.equal(response.status, 404);
   const filename = encodeURIComponent('附件.txt');
   response = await fetch(base + '/api/uploads', {
     method: 'POST', headers: { 'X-Filename': filename, 'Content-Type': 'application/octet-stream' }, body: '待解释的文字',
@@ -398,4 +412,45 @@ test('本地HTTP服务提供目录、PDF范围读取和上传，拒绝跨站与�
   assert.equal(response.status, 400);
   const foreignRequest = { headers: { host: 'evil.example' }, method: 'GET', url: '/api/library' };
   assert.throws(() => checkRequest(foreignRequest as unknown as IncomingMessage), /本机/);
+});
+
+test('拖动移动文献的路由校验参数并委托 move-paper', async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'literature-move-'));
+  await fs.mkdir(path.join(root, 'papers/08_SER'), { recursive: true });
+  await fs.mkdir(path.join(root, 'papers/09_目标'), { recursive: true });
+  await fs.writeFile(path.join(root, 'papers/08_SER/paper.pdf'), '%PDF-1.4\nmove-me');
+  await fs.mkdir(path.join(root, '.zhiyue/catalog'), { recursive: true });
+  await fs.writeFile(path.join(root, '.zhiyue/catalog/文献索引.json'), JSON.stringify({
+    records: [{ literature_id: 'L001', title: '待移动', authors: [], file: 'papers/08_SER/paper.pdf', versions: [] }],
+  }));
+  const calls: string[][] = [];
+  const categoryCli = async (args: string[]): Promise<unknown> => {
+    if (args[0] !== 'move-paper') throw new Error('unexpected category command');
+    calls.push(args);
+    const target = args[args.indexOf('--category') + 1] as string;
+    await fs.rename(
+      path.join(root, 'papers/08_SER/paper.pdf'),
+      path.join(root, ...target.split('/'), 'paper.pdf'),
+    );
+    return { literature_id: 'L001', from: 'papers/08_SER', to: target, moved: [] };
+  };
+  const app = await createApp({ root, stateDir: path.join(root, '.zhiyue/data'), connectPi: false, categoryCli });
+  await new Promise<void>((resolve) => app.server.listen(0, '127.0.0.1', () => resolve()));
+  const address = app.server.address();
+  assert.ok(address && typeof address === 'object');
+  const base = `http://127.0.0.1:${address.port}`;
+  t.after(async () => { await app.close(); await fs.rm(root, { recursive: true, force: true }); });
+  const move = (body: unknown) => fetch(base + '/api/papers/L001/move', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  });
+  assert.equal((await move({})).status, 400);
+  assert.equal((await move({ category: 'a/b' })).status, 400);
+  assert.equal(calls.length, 0);
+  assert.equal((await move({ category: '99_不存在' })).status, 404);
+  assert.equal(calls.length, 0);
+  const accepted = await move({ category: '09_目标' });
+  assert.equal(accepted.status, 200);
+  assert.deepEqual(calls[0]?.slice(0, 5), ['move-paper', '--literature-id', 'L001', '--category', 'papers/09_目标']);
+  assert.equal(await fs.readFile(path.join(root, 'papers/09_目标/paper.pdf'), 'utf8'), '%PDF-1.4\nmove-me');
+  assert.equal(existsSync(path.join(root, 'papers/08_SER/paper.pdf')), false);
 });

@@ -51,6 +51,18 @@ export interface ChatNoteDraft {
   content: string;
 }
 
+/** 助手发起的分类删除：用户在卡片上确认后才执行，服务端持久化。 */
+export interface ChatFolderAction {
+  id: string;
+  kind: 'delete';
+  category: string;
+  subcategory?: string;
+  path: string;
+  papers: number;
+  createdAt: string;
+  error?: string;
+}
+
 export type ChatHistoryState = 'active' | 'archived' | 'trashed';
 
 export interface Chat {
@@ -59,6 +71,7 @@ export interface Chat {
   createdAt?: string;
   messages?: ChatMessage[];
   noteDrafts?: ChatNoteDraft[];
+  folderActions?: ChatFolderAction[];
   threadId?: string | null;
   paperIds?: string[];
   historyState?: ChatHistoryState;
@@ -242,6 +255,9 @@ export interface WorkspaceState {
   batches: BatchRecord[];
   sending: boolean;
   noteSaving: string;
+  folderActionSaving: string;
+  draggingPaper: string;
+  movingPaper: string;
   creating: boolean;
   chatEpoch: number;
   noteEpoch: number;

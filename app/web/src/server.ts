@@ -419,12 +419,34 @@ export async function createApp({
         const { action } = await readJson(req);
         return json(res, await chats.resolveNoteDraft((noteDraft[1] as string), action));
       }
+      const folderAction = /^\/api\/folder-actions\/([\w-]+)$/.exec(route);
+      if (method === 'POST' && folderAction) {
+        const { action } = await readJson(req);
+        return json(res, await chats.resolveFolderAction((folderAction[1] as string), action));
+      }
       const approval = /^\/api\/approvals\/([\w-]+)$/.exec(route);
       if (method === 'POST' && approval) {
         return json(res, chats.approve(approval[1] as string, await readJson(req) as { decision?: string; answers?: Record<string, unknown> }));
       }
       const paper = /^\/api\/papers\/(L\d+)$/.exec(route);
       if (method === 'PATCH' && paper) return json(res, await library.updatePaper(paper[1] as string, await readJson(req)));
+      // 界面拖动只负责提交目标；实际搬文件、改写引用和加锁都在 Python move-paper 内完成。
+      const paperMove = /^\/api\/papers\/(L\d+)\/move$/.exec(route);
+      if (method === 'POST' && paperMove) {
+        const body = await readJson(req);
+        const plain = (value: unknown): value is string =>
+          typeof value === 'string' && value !== '' && value !== '.' && value !== '..' && !/[\\/]/.test(value);
+        if (!plain(body.category)) throw error('请指定目标文件夹。');
+        let subcategory = '';
+        if (body.subcategory !== undefined && body.subcategory !== '') {
+          if (!plain(body.subcategory)) throw error('子文件夹无效。');
+          subcategory = body.subcategory;
+        }
+        const target = `papers/${body.category}${subcategory ? `/${subcategory}` : ''}`;
+        const moved = await library.movePaper(paperMove[1] as string, target);
+        emit({ type: 'library' });
+        return json(res, moved);
+      }
       const preview = /^\/api\/papers\/(L\d+)\/(preview|text-layer)$/.exec(route);
       if ((method === 'GET' || method === 'HEAD') && preview) {
         const entry = await library.getPaper(preview[1] as string);

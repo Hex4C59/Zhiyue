@@ -2,8 +2,8 @@ import { computed, markRaw, reactive } from 'vue';
 import { request } from './api';
 import { endpoint, json, titleOf } from './content';
 import type {
-  AttachmentItem, Category, Chat, ChatHistoryState, ChatMessage, CommandInfo, JobRecord, ModelOption, Paper, PiAgentStatus,
-  StatusInfo, UiState, WorkspaceEvent, WorkspaceState,
+  AttachmentItem, Category, Chat, ChatFolderAction, ChatHistoryState, ChatMessage, CommandInfo, JobRecord, ModelOption, Paper,
+  PiAgentStatus, StatusInfo, UiState, WorkspaceEvent, WorkspaceState,
 } from './types';
 
 export type { WorkspaceState, UiState } from './types';
@@ -113,6 +113,9 @@ export function createWorkspace({
     batches: [],
     sending: false,
     noteSaving: '',
+    folderActionSaving: '',
+    draggingPaper: '',
+    movingPaper: '',
     commands: [],
     desktopCommands: false,
     commandError: '',
@@ -290,6 +293,41 @@ export function createWorkspace({
       return false;
     } finally {
       state.pendingPatches.delete(id);
+    }
+  }
+
+  // 拖动只记录来源，真正的搬文件、改引用和加锁由 Python move-paper 完成。
+  function beginPaperDrag(id: string): boolean {
+    if (!id || state.movingPaper) return false;
+    state.draggingPaper = id;
+    return true;
+  }
+
+  function endPaperDrag(): void {
+    state.draggingPaper = '';
+  }
+
+  async function movePaper(id: string, category: string, subcategory = ''): Promise<boolean> {
+    if (!id || state.movingPaper) return false;
+    const paper = state.papers.find((item) => item.literature_id === id);
+    if (paper && paper.category === category && (paper.subcategory ?? '') === subcategory) {
+      toast('这篇文献已在这个文件夹');
+      return false;
+    }
+    state.movingPaper = id;
+    try {
+      await api(`/api/papers/${endpoint(id)}/move`, json('POST', {
+        category, ...(subcategory ? { subcategory } : {}),
+      }));
+      const target = (subcategory || category).replace(/^\d+_/, '');
+      toast(`已移到「${target}」`);
+      await loadLibrary();
+      return true;
+    } catch (error) {
+      toast(messageOf(error), true);
+      return false;
+    } finally {
+      state.movingPaper = '';
     }
   }
 
@@ -529,7 +567,7 @@ export function createWorkspace({
 
   function canChangeChat(id: string): boolean {
     if (pendingChatChanges.has(id)) return false;
-    if (id === state.chat?.id) return !busy.value && !state.noteSaving;
+    if (id === state.chat?.id) return !busy.value && !state.noteSaving && !state.folderActionSaving;
     const summary = state.chats.find((chat) => chat.id === id);
     return !summary?.messages?.some((message) => activeStatuses.includes(message.status));
   }
@@ -730,6 +768,28 @@ export function createWorkspace({
   const saveNoteDraft = (id: string): Promise<void> => resolveNoteDraft(id, 'save');
   const discardNoteDraft = (id: string): Promise<void> => resolveNoteDraft(id, 'discard');
 
+  /** 确认或取消助手提出的分类删除；失败时服务端会推送带 error 的同一张卡片，这里只提示原因。 */
+  async function resolveFolderAction(id: string, action: 'apply' | 'discard'): Promise<void> {
+    const chat = state.chat;
+    const pending = (chat?.folderActions || []).find((item) => item.id === id);
+    if (!pending || state.folderActionSaving) return;
+    state.folderActionSaving = id;
+    try {
+      await api(`/api/folder-actions/${endpoint(id)}`, json('POST', { action }));
+      chat!.folderActions = (chat!.folderActions || []).filter((item) => item.id !== id);
+      if (action === 'apply') {
+        toast(`文件夹已移到回收站：${pending.path}`);
+        await loadLibrary();
+      } else {
+        toast('已取消删除文件夹');
+      }
+    } catch (error) {
+      toast(messageOf(error), true);
+    } finally {
+      state.folderActionSaving = '';
+    }
+  }
+
   /**
    * 删除已保存的阅读笔记。服务端只把文件移到 `.zhiyue/trash/notes/`，所以确认文案要说明可以找回；
    * 删除后回到笔记列表第一项，没有剩余笔记时清空选中路径。
@@ -864,6 +924,18 @@ export function createWorkspace({
     if (data.type === 'noteDraftResolved' && data.chatId === chat?.id) {
       chat!.noteDrafts = (chat!.noteDrafts || []).filter((item) => item.id !== data.id);
     }
+    if (data.type === 'folderAction' && data.chatId === chat?.id && (data.action as { id?: string } | undefined)?.id) {
+      const action = data.action as ChatFolderAction;
+      const actions = (chat!.folderActions ||= []);
+      const index = actions.findIndex((item) => item.id === action.id);
+      if (index < 0) actions.push(action);
+      else actions[index] = action;
+    }
+    if (data.type === 'folderActionResolved' && data.chatId === chat?.id) {
+      chat!.folderActions = (chat!.folderActions || []).filter((item) => item.id !== data.id);
+    }
+    // 助手在聊天里新建/改名/删除分类或移动文献后，侧栏与分类计数需要跟着刷新。
+    if (data.type === 'library') void loadLibrary();
     if (data.type === 'message' && (data.message as ChatMessage | undefined)?.id) {
       const message = data.message as ChatMessage;
       const summary = state.chats.find((item) => item.id === data.chatId);
@@ -1012,6 +1084,9 @@ export function createWorkspace({
     renameCategory,
     deleteCategory,
     patchPaper,
+    beginPaperDrag,
+    endPaperDrag,
+    movePaper,
     loadStatus,
     reconnectAgent,
     loadChats,
@@ -1035,6 +1110,7 @@ export function createWorkspace({
     decideApproval,
     saveNoteDraft,
     discardNoteDraft,
+    resolveFolderAction,
     deleteNote,
     loadDownloads,
     createDownload,

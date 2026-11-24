@@ -118,6 +118,7 @@ async function fixture(
   const uiState: Json = { chatId: null, paperId: null, panelWidths: {}, ...ui };
   const decisions: any[] = [];
   const noteDecisions: any[] = [];
+  const folderDecisions: any[] = [];
   const chats = new Map<string, any>();
   const papers = [
     {
@@ -306,6 +307,17 @@ async function fixture(
         ? { saved: true, path: 'notes/L001_测试笔记.md' }
         : { discarded: true };
     }
+    if (path.startsWith('/api/folder-actions/')) {
+      folderDecisions.push({ id: path.split('/').pop(), body });
+      return body.action === 'apply'
+        ? { applied: true, result: { trashed: '.zhiyue/trash/categories/x_09_空分类' } }
+        : { discarded: true };
+    }
+    if (options.method === 'POST' && /^\/api\/papers\/L\d+\/move$/.test(path)) {
+      const paper = papers.find((item) => path.includes(item.literature_id));
+      if (paper) Object.assign(paper, { category: body.category, subcategory: body.subcategory ?? '' });
+      return { literature_id: paper?.literature_id, moved: [] };
+    }
     if (path.startsWith('/api/papers/') && options.method === 'PATCH') {
       const paper = papers.find((item) => path.endsWith(item.literature_id))!;
       Object.assign(paper, body);
@@ -367,6 +379,7 @@ async function fixture(
     calls,
     decisions,
     noteDecisions,
+    folderDecisions,
     chats,
     status,
     piSettings,
@@ -734,6 +747,41 @@ test('笔记草稿先预览，保存或丢弃都由用户点击触发', async (t
   assert.deepEqual(page.noteDecisions[2], { id: 'd3', body: { action: 'discard' } });
 });
 
+test('删除文件夹先生成卡片，确认与取消都由用户点击触发', async (t) => {
+  const page = await fixture(t),
+    { workspace } = page;
+  workspace.state.chat = { id: 'folder-chat', messages: [], noteDrafts: [], folderActions: [] };
+  workspace.receive({
+    type: 'folderAction',
+    chatId: 'folder-chat',
+    action: {
+      id: 'f1', kind: 'delete', category: '09_空分类', subcategory: '', path: 'papers/09_空分类',
+      papers: 0, createdAt: new Date().toISOString(),
+    },
+  });
+  await flush();
+  assert.ok(page.$('[data-folder-action="f1"]'));
+  assert.match(page.$('[data-folder-action="f1"]').textContent, /含 0 篇文献/);
+  assert.match(page.$('[data-folder-action="f1"]').textContent, /trash\/categories/);
+  click(page.$('[data-folder-apply="f1"]'));
+  await until(() => !page.$('[data-folder-action="f1"]'));
+  assert.deepEqual(page.folderDecisions[0], { id: 'f1', body: { action: 'apply' } });
+  assert.equal(workspace.state.chat.folderActions.length, 0);
+  workspace.receive({
+    type: 'folderAction',
+    chatId: 'folder-chat',
+    action: {
+      id: 'f2', kind: 'delete', category: '09_空分类', subcategory: '', path: 'papers/09_空分类',
+      papers: 0, createdAt: new Date().toISOString(), error: '文件夹不是空的，请先移出文献或子文件夹。',
+    },
+  });
+  await flush();
+  assert.match(page.$('[data-folder-action="f2"]').textContent, /文件夹不是空的/);
+  click(page.$('[data-folder-discard="f2"]'));
+  await until(() => !page.$('[data-folder-action="f2"]'));
+  assert.deepEqual(page.folderDecisions[1], { id: 'f2', body: { action: 'discard' } });
+});
+
 test('附件上传与删除、Pi 标题与空上下文按 Vue 状态更新', async (t) => {
   const page = await fixture(t),
     { workspace } = page;
@@ -1089,6 +1137,85 @@ test('当前阅读的文献存于服务端文件，并在重启后恢复', async
   // 索引里已不存在的编号不能凭存储复活。
   const stale = await fixture(t, { ui: { paperId: 'L999' } });
   assert.equal(stale.workspace.state.current, null);
+});
+
+test('拖动文献到分类文件夹完成移动，非法放置不发请求', async (t) => {
+  const page = await fixture(t);
+  const { workspace } = page;
+  const categories = [
+    { id: '01_超声', name: '01_超声', count: 1, children: [] },
+    {
+      id: '09_目标', name: '09_目标', count: 0,
+      children: [{ id: '09_目标/01_子目录', name: '01_子目录', count: 0 }],
+    },
+  ];
+  const setCategories = async (): Promise<void> => {
+    workspace.state.categories = structuredClone(categories);
+    await flush();
+  };
+  const drag = (selector: string, type: string): void => {
+    const element = page.$(selector);
+    assert.ok(element, selector);
+    const event = new window.Event(type, { bubbles: true, cancelable: true });
+    const store = new Map<string, string>();
+    Object.defineProperty(event, 'dataTransfer', {
+      value: {
+        effectAllowed: '', dropEffect: '', types: [] as string[],
+        setData: (key: string, value: string) => store.set(key, value),
+        getData: (key: string) => store.get(key) ?? '',
+      },
+    });
+    element.dispatchEvent(event);
+  };
+  const moves = () => page.calls.filter((call) => call.path === '/api/papers/L001/move');
+
+  await setCategories();
+  drag('[data-paper="L001"]', 'dragstart');
+  await flush();
+  assert.equal(workspace.state.draggingPaper, 'L001');
+  assert.ok(page.$('[data-paper="L001"]').classList.contains('dragging'));
+  assert.ok(page.$('[data-category="09_目标"][data-subcategory="01_子目录"]'), '拖动期间展开子文件夹');
+
+  drag('[data-category="09_目标"][data-subcategory=""]', 'dragover');
+  await flush();
+  const target = page.$('[data-category="09_目标"][data-subcategory=""]');
+  assert.ok(target.classList.contains('drop-target'));
+  assert.equal(target.getAttribute('data-drop-target'), 'true');
+  drag('[data-category="09_目标"][data-subcategory=""]', 'drop');
+  await until(() => moves().length === 1);
+  assert.deepEqual(moves()[0].body, { category: '09_目标' });
+  await until(() => workspace.state.movingPaper === '');
+  assert.equal(workspace.state.draggingPaper, '');
+  assert.ok(page.calls.filter((call) => call.path === '/api/library').length >= 2);
+
+  await setCategories();
+  drag('[data-paper="L001"]', 'dragstart');
+  await flush();
+  drag('[data-category="09_目标"][data-subcategory="01_子目录"]', 'drop');
+  await until(() => moves().length === 2);
+  assert.deepEqual(moves()[1].body, { category: '09_目标', subcategory: '01_子目录' });
+  await until(() => workspace.state.movingPaper === '');
+
+  await setCategories();
+  drag('[data-paper="L001"]', 'dragstart');
+  await flush();
+  drag('[data-category=""][data-subcategory=""]', 'drop');
+  await flush();
+  assert.equal(moves().length, 2);
+  drag('[data-paper="L001"]', 'dragstart');
+  await flush();
+  drag('[data-category="09_目标"][data-subcategory="01_子目录"]', 'drop');
+  await flush();
+  assert.equal(moves().length, 2);
+  assert.ok(workspace.state.toasts.some((item: { message: string }) => item.message.includes('已在这个文件夹')));
+
+  drag('[data-paper="L001"]', 'dragstart');
+  await flush();
+  assert.ok(page.$('[data-category="09_目标"][data-subcategory="01_子目录"]'));
+  drag('[data-paper="L001"]', 'dragend');
+  await flush();
+  assert.equal(workspace.state.draggingPaper, '');
+  assert.equal(page.$('[data-category="09_目标"][data-subcategory="01_子目录"]'), null);
 });
 
 test('栏宽从服务端读回，调整后写回服务端', async (t) => {

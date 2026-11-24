@@ -7,6 +7,7 @@ import Composer from './Composer.vue';
 import ChatMessage from './ChatMessage.vue';
 import ApprovalCard from './ApprovalCard.vue';
 import NoteDraftCard from './NoteDraftCard.vue';
+import FolderActionCard from './FolderActionCard.vue';
 import AgentSettingsDialog from './AgentSettingsDialog.vue';
 import PaperActions from './PaperActions.vue';
 import type { PaperLike } from '../lib/content';
@@ -54,6 +55,7 @@ const approvals = computed(() =>
   ),
 );
 const noteDrafts = computed(() => state.chat?.noteDrafts || []);
+const folderActions = computed(() => state.chat?.folderActions || []);
 const promptTemplates: Array<[string, string, string]> = [
   ['search', '解释方法', '请详细解释当前论文的核心方法、输入输出和关键假设，区分作者报告与补充解释。'],
   ['link', '比较论文', '请比较选中论文的研究任务、数据、评价条件和局限；不可比的指标请明确指出。'],
@@ -231,6 +233,9 @@ function historyDate(chat: Chat): string {
           <Icon :name="image" />{{ label }}
         </button>
       </section>
+    </div>
+    <div v-if="!isArchived && folderActions.length" id="folder-actions" class="folder-actions" aria-live="polite">
+      <FolderActionCard v-for="action in folderActions" :key="action.id" :action="action" />
     </div>
     <div v-if="!isArchived && noteDrafts.length" id="note-drafts" class="note-drafts" aria-live="polite">
       <NoteDraftCard v-for="draft in noteDrafts" :key="draft.id" :draft="draft" />
