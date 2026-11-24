@@ -2,6 +2,8 @@
 
 ## 未发布
 
+- 修复安装器目录页总显示旧安装路径：NSIS 模板只在勾选“删除应用数据”时才清除 `HKCU\Software\zhiyue\Zhiyue` 记录的安装目录，普通卸载会把它留给下次安装当默认值，测试或临时安装的路径因此会长期出现。新增 [installer-hooks.nsh](app/desktop/src-tauri/nsis/installer-hooks.nsh) 并在 `bundle.windows.nsis.installerHooks` 中启用，卸载（非更新）时清掉该值。
+- 修复更新下载窗口没有进度：`tauri-plugin-updater` 的回调传入的是本次数据块长度，不是累计下载量，百分比因此长期停在单块占比。现在按累计字节换算，进度文案直接显示百分比，数据收齐后提示“正在校验并安装更新…”，页面加载完成时补发最新状态。
 - 修复安装版下载任务报 `ModuleNotFoundError: No module named 'common'`：便携 Python 的 `python313._pth` 不会把脚本目录加入 `sys.path`，`run.py` 现在显式加入同目录；`prepare-desktop` 改为写入正确的 `Lib\site-packages`，并用随包解释器执行一次下载器入口冒烟检查。
 - 文献卡片支持拖动到左侧任意分类文件夹（含子文件夹）完成移动：拖动期间展开子文件夹并高亮目标，松手后调用 `POST /api/papers/:id/move`，由 Python `move-paper` 在库写锁下搬文件并同步 README、引用、批次台账与索引；拖到“全部文献”或当前所在目录是空操作。窄栏、触摸与键盘用户继续用助手的 `move_paper`。
 - 文献助手新增分类与归属工具：`library_categories`、`create_category`、`rename_category`、`delete_category`、`move_paper`。新建、改名和移动在库写锁下直接执行；删除只接受空文件夹，先生成聊天确认卡片，用户点“确认删除”后才移到 `.zhiyue/trash/categories/`。新增 CLI `move-paper --literature-id L --category DIR`：搬主文件、同目录版本与来源记录，同步 README 链接、笔记/成果引用、批次台账条目、归档事务记录和索引；目标同名文件时报错且不改动，引用写入失败时保留 `.zhiyue/tmp/paper_moves/` 事务记录并由 `repair` 续做。

@@ -71,7 +71,7 @@ npm run desktop:build
 - `ZHIYUE_SIGN_THUMBPRINT`：代码签名证书指纹，设置后对可执行文件和安装包做 Authenticode 签名；可选 `ZHIYUE_SIGN_TIMESTAMP_URL` 加 RFC 3161 时间戳。自签名证书仅供本机验证，分发给他人需换成受信任 CA 签发的证书。
 - `TAURI_SIGNING_PRIVATE_KEY`：更新包签名私钥（Tauri 官方变量），设置后为安装包生成同名 `.sig` 更新签名。公钥固定在 `tauri.conf.json` 的 `plugins.updater.pubkey`，应用只接受用对应私钥签名、且签名内版本号与 `latest.json` 一致的更新包。
 
-应用启动后静默检查一次更新，失败不打扰用户；未配置更新源时启动检查直接跳过，托盘“检查更新”提示尚未配置。手动确认更新后打开独立进度窗口，显示下载百分比；下载完成才退出并启动安装器，安装器使用带目录选择页的基础界面。更新源优先取运行环境变量 `ZHIYUE_UPDATE_ENDPOINT` 的 `latest.json` 地址，其次取 `tauri.conf.json` 的 `plugins.updater.endpoints`。`latest.json` 中 `windows-x86_64` 平台的 `signature` 填 `.sig` 文件内容，`url` 指向安装包；正式发布的更新源必须使用 HTTPS，发布构建会拒绝 HTTP 地址。
+应用启动后静默检查一次更新，失败不打扰用户；未配置更新源时启动检查直接跳过，托盘“检查更新”提示尚未配置。手动确认更新后打开独立进度窗口，显示下载百分比；下载完成才退出并启动安装器。安装器默认装到 `%LOCALAPPDATA%\Zhiyue`，目录页会沿用上次安装位置；卸载时会通过 [installer-hooks.nsh](desktop/src-tauri/nsis/installer-hooks.nsh) 清掉该记录，重新安装回到默认目录。更新源优先取运行环境变量 `ZHIYUE_UPDATE_ENDPOINT` 的 `latest.json` 地址，其次取 `tauri.conf.json` 的 `plugins.updater.endpoints`。`latest.json` 中 `windows-x86_64` 平台的 `signature` 填 `.sig` 文件内容，`url` 指向安装包；正式发布的更新源必须使用 HTTPS，发布构建会拒绝 HTTP 地址。
 
 ### GitHub Releases 自动发布
 

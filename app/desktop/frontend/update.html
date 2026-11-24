@@ -50,8 +50,12 @@
     window.setUpdateProgress = (percent, message) => {
       const bar = document.getElementById('bar');
       const status = document.getElementById('status');
-      if (typeof message === 'string' && message) status.textContent = message;
-      if (typeof percent === 'number' && percent >= 0) {
+      const known = typeof percent === 'number' && percent >= 0;
+      if (typeof message === 'string' && message) {
+        // 百分比直接在文案里可见，避免只能靠细进度条目测。
+        status.textContent = known && percent < 100 ? `${message} ${percent}%` : message;
+      }
+      if (known) {
         bar.classList.remove('indeterminate');
         bar.style.width = `${Math.min(100, Math.max(0, percent))}%`;
       } else {

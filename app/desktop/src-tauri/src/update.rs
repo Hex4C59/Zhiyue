@@ -1,6 +1,8 @@
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use tauri::webview::PageLoadEvent;
 use tauri::window::{ProgressBarState, ProgressBarStatus};
 use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 use tauri_plugin_updater::UpdaterExt;
@@ -8,6 +10,16 @@ use tauri_plugin_updater::UpdaterExt;
 use crate::stop_sidecar;
 
 static CHECKING: AtomicBool = AtomicBool::new(false);
+
+/// 最近一次推送的下载状态。进度窗口的页面加载完成前调用 eval 不会生效，
+/// 加载后需要按这里保存的状态补发一次。
+#[derive(Clone)]
+struct ProgressState {
+    percent: Option<u64>,
+    message: String,
+}
+
+type SharedProgress = Arc<Mutex<Option<ProgressState>>>;
 
 #[cfg(windows)]
 fn message_box(text: &str, flags: u32) -> i32 {
@@ -115,7 +127,7 @@ pub(crate) fn schedule_startup_check(app: AppHandle) {
     });
 }
 
-fn open_update_window(app: &AppHandle) -> Option<WebviewWindow> {
+fn open_update_window(app: &AppHandle, progress: SharedProgress) -> Option<WebviewWindow> {
     if let Some(existing) = app.get_webview_window("update") {
         let _ = existing.close();
     }
@@ -127,8 +139,29 @@ fn open_update_window(app: &AppHandle) -> Option<WebviewWindow> {
         .minimizable(false)
         .always_on_top(true)
         .center()
+        // 下载早就开始的话首个数据块可能早于本次加载，加载完成后再同步最新状态。
+        .on_page_load(move |window, payload| {
+            if payload.event() != PageLoadEvent::Finished {
+                return;
+            }
+            let latest = progress
+                .lock()
+                .ok()
+                .and_then(|state| state.as_ref().cloned());
+            if let Some(state) = latest {
+                show_update_progress(&window, state.percent, &state.message);
+            }
+        })
         .build()
         .ok()
+}
+
+/// 插件回调给出的是本次数据块长度；进度需要调用方累加后再换算百分比。
+/// 总量未知或不可信时返回 None，界面退化为不确定进度。
+fn downloaded_percent(downloaded: u64, total: Option<u64>) -> Option<u64> {
+    total.filter(|value| *value > 0).map(|total| {
+        ((downloaded as f64 / total as f64) * 100.0).clamp(0.0, 100.0) as u64
+    })
 }
 
 fn show_update_progress(window: &WebviewWindow, percent: Option<u64>, message: &str) {
@@ -198,7 +231,8 @@ async fn run_check(app: AppHandle) -> Result<Outcome, String> {
 
     // 下载时显示独立进度窗口；下载完成后更新器会停止本地服务、启动安装器并退出。
     let main_window = app.get_webview_window("main");
-    let update_window = open_update_window(&app);
+    let progress: SharedProgress = Arc::new(Mutex::new(None));
+    let update_window = open_update_window(&app, progress.clone());
     if let Some(main) = &main_window {
         let _ = main.hide();
     }
@@ -213,14 +247,31 @@ async fn run_check(app: AppHandle) -> Result<Outcome, String> {
     }
     let progress_window = update_window.clone();
     let fallback_window = if update_window.is_none() { main_window.clone() } else { None };
+    let download_progress = progress.clone();
+    let finish_progress = progress.clone();
+    let finish_window = update_window.clone();
+    // 插件回调传入的是本次数据块长度，累计下载量需要自行累加。
+    let mut downloaded: u64 = 0;
+    // 只在百分比变化时刷新界面，避免每个数据块都跨线程执行脚本。
+    let mut reported: Option<Option<u64>> = None;
     let result = update
         .download_and_install(
             move |chunk, total| {
-                let percent = total
-                    .filter(|value| *value > 0)
-                    .map(|total| ((chunk as f64 / total as f64) * 100.0).clamp(0.0, 100.0) as u64);
+                downloaded += chunk as u64;
+                let percent = downloaded_percent(downloaded, total);
+                if reported == Some(percent) {
+                    return;
+                }
+                reported = Some(percent);
+                let message = "正在下载更新…";
+                if let Ok(mut state) = download_progress.lock() {
+                    *state = Some(ProgressState {
+                        percent,
+                        message: message.to_string(),
+                    });
+                }
                 if let Some(window) = progress_window.as_ref() {
-                    show_update_progress(window, percent, "正在下载更新…");
+                    show_update_progress(window, percent, message);
                 } else if let Some(window) = fallback_window.as_ref() {
                     let _ = window.set_progress_bar(ProgressBarState {
                         status: Some(if percent.is_some() {
@@ -232,7 +283,19 @@ async fn run_check(app: AppHandle) -> Result<Outcome, String> {
                     });
                 }
             },
-            || {},
+            move || {
+                // 数据已收齐，接下来是签名校验和安装，没有更细的进度可报。
+                let message = "正在校验并安装更新…";
+                if let Ok(mut state) = finish_progress.lock() {
+                    *state = Some(ProgressState {
+                        percent: Some(100),
+                        message: message.to_string(),
+                    });
+                }
+                if let Some(window) = finish_window.as_ref() {
+                    show_update_progress(window, Some(100), message);
+                }
+            },
         )
         .await;
     if let Some(window) = &update_window {
@@ -253,4 +316,23 @@ async fn run_check(app: AppHandle) -> Result<Outcome, String> {
     }
     result.map_err(|error| format!("下载或安装更新失败：{error}"))?;
     Ok(Outcome::Installed)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::downloaded_percent;
+
+    #[test]
+    fn 累计下载量换算为百分比() {
+        assert_eq!(downloaded_percent(0, Some(1000)), Some(0));
+        assert_eq!(downloaded_percent(250, Some(1000)), Some(25));
+        assert_eq!(downloaded_percent(1000, Some(1000)), Some(100));
+        assert_eq!(downloaded_percent(2000, Some(1000)), Some(100));
+    }
+
+    #[test]
+    fn 总量未知时进度不确定() {
+        assert_eq!(downloaded_percent(512, None), None);
+        assert_eq!(downloaded_percent(512, Some(0)), None);
+    }
 }
