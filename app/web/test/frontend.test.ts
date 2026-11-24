@@ -986,6 +986,72 @@ test('右键空文件夹先在应用内对话框确认，非空文件夹禁用�
   assert.equal(busyRemove.disabled, true);
 });
 
+test('已结束的维护任务收进历史任务，进行中任务直接显示', async (t) => {
+  const page = await fixture(t);
+  page.workspace.state.jobs.set('job-old', {
+    id: 'job-old',
+    title: '刷新文献索引',
+    status: 'completed',
+    log: 'ok',
+    createdAt: '2026-11-17T03:18:22.152Z',
+    updatedAt: '2026-11-17T03:18:23.391Z',
+  });
+  click(page.$('[data-view="downloads"]'));
+  await flush();
+  const history = page.$('[data-job-history]');
+  assert.ok(history);
+  assert.equal(history.open, false);
+  assert.match(history.textContent ?? '', /已完成任务/);
+  assert.match(history.textContent ?? '', /刷新文献索引/);
+  assert.ok(history.querySelector('details[data-job-details="job-old"]'));
+  assert.equal(history.querySelector('[data-job-details="job-1"]'), null);
+  assert.ok(page.$('#download-jobs > .job-card details[data-job-details="job-1"]'));
+  // 有进行中任务时历史就在面板里，说明行不再提供入口。
+  assert.equal(page.$('.download-intro .history-link'), null);
+});
+
+test('只有历史任务时收起任务面板，可从说明行展开和收起', async (t) => {
+  const page = await fixture(t);
+  click(page.$('[data-view="downloads"]'));
+  await flush();
+  page.workspace.state.jobs.clear();
+  page.workspace.state.jobs.set('job-old', {
+    id: 'job-old',
+    title: '刷新文献索引',
+    status: 'completed',
+    log: 'ok',
+    createdAt: '2026-11-17T03:18:22.152Z',
+    updatedAt: '2026-11-17T03:18:23.391Z',
+  });
+  await flush();
+  assert.equal(page.$('#downloads-view .download-results'), null);
+  const link = page.$('.download-intro .history-link');
+  assert.ok(link);
+  assert.match(link.textContent ?? '', /历史任务（1）/);
+  click(link);
+  await flush();
+  assert.ok(page.$('#refresh-downloads'));
+  assert.ok(page.$('[data-job-history]'));
+
+  click(page.$('.download-intro .history-link'));
+  await flush();
+  assert.equal(page.$('#downloads-view .download-results'), null);
+});
+
+test('没有任务与批次时不显示任务与批次区域', async (t) => {
+  const page = await fixture(t);
+  click(page.$('[data-view="downloads"]'));
+  await flush();
+  assert.ok(page.$('#refresh-downloads'));
+  page.workspace.state.jobs.clear();
+  page.workspace.state.batches = [];
+  await flush();
+  assert.equal(page.$('#refresh-downloads'), null);
+  assert.equal(page.$('#downloads-view .download-results'), null);
+  assert.equal(page.$('.job-history'), null);
+  assert.equal(page.$('.download-intro .history-link'), null);
+});
+
 test('下载表单和任务日志保持用户状态，模型与正文内容不能注入 HTML', async (t) => {
   const page = await fixture(t),
     { workspace } = page;

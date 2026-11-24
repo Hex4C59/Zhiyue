@@ -107,6 +107,8 @@ export interface JobRecord {
   log?: unknown;
   error?: string;
   steps?: Array<{ action?: string; status?: string }>;
+  createdAt?: string;
+  updatedAt?: string;
   result?: { counts?: Record<string, number>; [key: string]: unknown };
   [key: string]: unknown;
 }

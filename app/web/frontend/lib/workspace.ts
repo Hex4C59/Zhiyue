@@ -878,7 +878,7 @@ export function createWorkspace({
     try {
       const job = await api<JobRecord>('/api/catalog/refresh', json('POST', {}));
       state.jobs.set(job.id, job);
-      toast('索引刷新任务已提交，可在任务中心查看');
+      toast('索引刷新任务已提交，可在“下载任务”页查看');
     } catch (error) {
       toast(messageOf(error), true);
     } finally {

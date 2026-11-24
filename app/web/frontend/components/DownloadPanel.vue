@@ -20,6 +20,25 @@ const submitting = ref(false);
 const pendingActions = reactive(new Set<string>());
 const categories = computed(() => categoryChoices(state.categories, defaultCategory));
 const jobs = computed(() => [...state.jobs.values()].reverse());
+// 下载、核验、归档与刷新索引共用 jobs.json；已结束的任务只在「历史任务」里保留最近若干条，
+// 否则每次刷新索引都会在右栏留下一条常驻卡片。失败任务仍作为待处理项直接显示。
+const finished = (job: JobRecord): boolean => job.status === 'completed';
+const activeJobs = computed(() => jobs.value.filter((job) => !finished(job)));
+const completedJobs = computed(() => jobs.value.filter(finished));
+const historyJobs = computed(() => completedJobs.value.slice(0, 20));
+const showHistory = ref(false);
+const hasActiveWork = computed(
+  () => Boolean(state.downloadsError) || activeJobs.value.length > 0 || state.batches.length > 0,
+);
+// 没有进行中任务与批次时收起整块区域，历史记录只在说明行点链接时才占右栏。
+const showResults = computed(() => hasActiveWork.value || (showHistory.value && completedJobs.value.length > 0));
+const showHistoryLink = computed(() => !hasActiveWork.value && completedJobs.value.length > 0);
+const historyTime = (job: JobRecord): string => {
+  const time = new Date(job.updatedAt || job.createdAt || '');
+  return Number.isNaN(time.getTime())
+    ? ''
+    : time.toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
+};
 const resultCounts = (job: JobRecord): unknown => {
   const result = job.result;
   return result && typeof result === 'object' ? (result as { counts?: unknown }).counts : undefined;
@@ -65,7 +84,13 @@ async function act(batch: string, action: string): Promise<void> {
   <section id="downloads-view" class="downloads-view">
     <div class="download-intro">
       <h2>添加论文</h2>
-      <p>输入 DOI 或题名，查看下载、核验与归档进度。</p>
+      <p>
+        输入 DOI 或题名，查看下载、核验与归档进度。
+        <button v-if="showHistoryLink" type="button" class="text-button history-link"
+          @click="showHistory = !showHistory">
+          {{ showHistory ? '收起历史任务' : `历史任务（${completedJobs.length}）` }}
+        </button>
+      </p>
     </div>
     <div class="download-columns">
       <form id="download-form" class="surface download-form" @submit.prevent="submit">
@@ -104,7 +129,7 @@ async function act(batch: string, action: string): Promise<void> {
         </button>
         <p class="muted form-note">机构认证与需要确认的操作，由后端工具返回状态。</p>
       </form>
-      <div class="download-results">
+      <div v-if="showResults" class="download-results">
         <div class="section-heading">
           <h3>任务与批次</h3>
           <button id="refresh-downloads" class="button subtle" @click="workspace.loadDownloads">
@@ -116,27 +141,42 @@ async function act(batch: string, action: string): Promise<void> {
             <p>{{ state.downloadsError }}</p>
             <button class="button subtle" @click="workspace.loadDownloads">重试</button>
           </div>
-          <article v-for="job in jobs" v-else :key="job.id" class="job-card">
-            <div class="job-heading">
-              <h4>{{ job.title || job.batch || job.id }}</h4>
-              <span class="status-badge" :class="{ failed: ['error', 'failed'].includes(job.status) }">
-                {{ statusLabels[job.status] || job.status || '状态待确认' }}</span
-              >
-            </div>
-            <p v-if="job.error" class="error-text">{{ errorText(job.error) }}</p>
-            <p>{{ job.message || job.action || '' }}</p>
-            <p v-if="resultCounts(job)" class="job-counts">
-              批次结果：{{ counts(resultCounts(job)) || '暂无计数' }}
-            </p>
-            <details :data-job-details="job.id">
-              <summary>查看任务日志</summary>
-              <pre class="job-log">{{ logText(job.log) }}</pre>
+          <template v-else>
+            <article v-for="job in activeJobs" :key="job.id" class="job-card">
+              <div class="job-heading">
+                <h4>{{ job.title || job.batch || job.id }}</h4>
+                <span class="status-badge" :class="{ failed: ['error', 'failed'].includes(job.status) }">
+                  {{ statusLabels[job.status] || job.status || '状态待确认' }}</span
+                >
+              </div>
+              <p v-if="job.error" class="error-text">{{ errorText(job.error) }}</p>
+              <p>{{ job.message || job.action || '' }}</p>
+              <p v-if="resultCounts(job)" class="job-counts">
+                批次结果：{{ counts(resultCounts(job)) || '暂无计数' }}
+              </p>
+              <details :data-job-details="job.id">
+                <summary>查看任务日志</summary>
+                <pre class="job-log">{{ logText(job.log) }}</pre>
+              </details>
+            </article>
+            <details v-if="completedJobs.length" class="job-history" data-job-history>
+              <summary>
+                已完成任务 <span class="muted">{{ completedJobs.length }} 条</span>
+              </summary>
+              <article v-for="job in historyJobs" :key="job.id" class="job-card compact">
+                <div class="job-heading">
+                  <h4>{{ job.title || job.batch || job.id }}</h4>
+                  <span v-if="historyTime(job)" class="job-time">{{ historyTime(job) }}</span>
+                  <span class="status-badge">{{ statusLabels[job.status] || job.status }}</span>
+                </div>
+                <p v-if="job.error" class="error-text">{{ errorText(job.error) }}</p>
+                <details :data-job-details="job.id">
+                  <summary>查看任务日志</summary>
+                  <pre class="job-log">{{ logText(job.log) }}</pre>
+                </details>
+              </article>
             </details>
-          </article>
-          <div v-if="!state.downloadsError && !jobs.length" class="surface empty">
-            <span class="empty-art"><Icon name="download" /></span>
-            <p>暂无下载任务</p>
-          </div>
+          </template>
         </div>
         <div id="download-batches">
           <div v-if="state.batches.length" class="section-heading"><h3>已有下载批次</h3></div>

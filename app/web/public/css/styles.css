@@ -681,6 +681,15 @@ pre,code,kbd,samp { font-family:var(--font-mono); }
 .status-badge.failed { color:var(--danger); background:var(--danger-tint); }
 .job-card p,.batch-card p { color:var(--muted); font-size:12px; overflow-wrap:anywhere; line-height:1.8; }
 .job-card details { margin-top:12px; font-size:11px; color:var(--muted); }
+.job-history { margin-top:4px; }
+.job-history>summary { padding:6px 0; color:var(--muted); font-size:12px; cursor:pointer; }
+.job-history>summary:hover { color:var(--accent); }
+.job-history>summary .muted { margin-left:6px; }
+.job-history .job-card { margin:8px 0 0; }
+.job-card.compact { padding:12px 14px; }
+.job-card.compact details { margin-top:8px; }
+.job-time { margin-left:auto; color:var(--faint); font-size:11px; }
+.history-link { margin-left:4px; text-decoration:underline; text-underline-offset:3px; }
 .job-log { font:11px/1.8 var(--font-mono); background:var(--tint); border-radius:4px; padding:11px; white-space:pre-wrap; overflow-wrap:anywhere; max-height:260px; overflow:auto; color:var(--muted); }
 .batch-actions { display:flex; flex-wrap:wrap; gap:6px; margin-top:12px; }
 
