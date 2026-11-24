@@ -2,6 +2,9 @@
 
 ## 未发布
 
+- 修复安装版下载任务报 `ModuleNotFoundError: No module named 'common'`：便携 Python 的 `python313._pth` 不会把脚本目录加入 `sys.path`，`run.py` 现在显式加入同目录；`prepare-desktop` 改为写入正确的 `Lib\site-packages`，并用随包解释器执行一次下载器入口冒烟检查。
+- 文献卡片支持拖动到左侧任意分类文件夹（含子文件夹）完成移动：拖动期间展开子文件夹并高亮目标，松手后调用 `POST /api/papers/:id/move`，由 Python `move-paper` 在库写锁下搬文件并同步 README、引用、批次台账与索引；拖到“全部文献”或当前所在目录是空操作。窄栏、触摸与键盘用户继续用助手的 `move_paper`。
+- 文献助手新增分类与归属工具：`library_categories`、`create_category`、`rename_category`、`delete_category`、`move_paper`。新建、改名和移动在库写锁下直接执行；删除只接受空文件夹，先生成聊天确认卡片，用户点“确认删除”后才移到 `.zhiyue/trash/categories/`。新增 CLI `move-paper --literature-id L --category DIR`：搬主文件、同目录版本与来源记录，同步 README 链接、笔记/成果引用、批次台账条目、归档事务记录和索引；目标同名文件时报错且不改动，引用写入失败时保留 `.zhiyue/tmp/paper_moves/` 事务记录并由 `repair` 续做。
 - 检查更新后显示独立的下载进度窗口，包含百分比、进度条和失败原因；下载完成后才退出并启动安装器。更新安装改为带目录选择页的 NSIS 基础界面，用户可以确认安装位置。
 - 桌面安装包内置便携 Python 3.13（pypdf、pdfplumber、pypdfium2），不再依赖用户本机 Python；Poppler 缺失时使用 pypdfium2 渲染页面和核验预览，`prepare-desktop` 会下载并校验 Python 运行时。
 - 检查更新并确认安装后，下载期间隐藏主窗口并在任务栏显示进度；下载完成由更新器停止本地服务、启动安装器并退出进程，安装完成后自动重新打开。
