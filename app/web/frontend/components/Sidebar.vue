@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, inject, nextTick, onBeforeUnmount, onMounted, ref } from 'vue';
 import Icon from './Icon.vue';
+import ConfirmDialog from './ConfirmDialog.vue';
 import PanelHandle from './PanelHandle.vue';
 import type { WorkspaceApi } from '../lib/workspace';
 
@@ -30,7 +31,11 @@ const rows = computed<CategoryRow[]>(() => {
       name: category.name ?? category.id,
       count: category.count ?? 0,
     });
-    if (state.category !== category.id && !state.draggingPaper && !state.movingPaper) continue;
+    // 选中的分类默认展开；用户点第二次折叠后隐藏。拖动时临时展开，方便放到子文件夹。
+    const open = state.category === category.id
+      ? collapsedCategory.value !== category.id
+      : !!state.draggingPaper || !!state.movingPaper;
+    if (!open) continue;
     for (const child of category.children || []) {
       result.push({
         category: category.id,
@@ -44,10 +49,19 @@ const rows = computed<CategoryRow[]>(() => {
   return result;
 });
 const label = (text: string): string => text.replace(/^\d+_/, '').replaceAll('_', ' ');
+// 记录用户主动折叠的分类；再次点击同一分类行时复位。
+const collapsedCategory = ref('');
+const hasChildren = (row: CategoryRow): boolean =>
+  !row.child && (state.categories || []).some(
+    (category) => category.id === row.category && (category.children || []).length > 0,
+  );
+const isExpanded = (row: CategoryRow): boolean =>
+  collapsedCategory.value !== row.category;
 const creating = ref(false);
 const creatingChildOf = ref('');
 const editing = ref<{ category: string; child: string } | null>(null);
 const menu = ref<{ row: CategoryRow | null; x: number; y: number } | null>(null);
+const deleteTarget = ref<CategoryRow | null>(null);
 const menuEl = ref<HTMLElement | null>(null);
 const draft = ref('');
 const saving = ref(false);
@@ -56,8 +70,14 @@ const setEditor = (element: unknown): void => {
   if (element) editor.value = element as HTMLInputElement;
 };
 function choose(row: CategoryRow): void {
+  // 点击已选中的父文件夹切换展开状态，其他情况仍然进入该分类并确保展开。
+  if (row.category && !row.child && hasChildren(row) && state.category === row.category) {
+    collapsedCategory.value = collapsedCategory.value === row.category ? '' : row.category;
+    return;
+  }
   state.category = row.category;
   state.subcategory = row.child;
+  collapsedCategory.value = '';
   workspace.setView('library');
   workspace.setPanel('list');
 }
@@ -84,8 +104,10 @@ async function dropPaper(event: DragEvent, row: CategoryRow): Promise<void> {
 }
 async function focusEditor(): Promise<void> {
   await nextTick();
-  editor.value?.focus();
-  editor.value?.select();
+  const element = editor.value;
+  element?.focus();
+  element?.select();
+  element?.scrollIntoView?.({ block: 'nearest' });
 }
 async function startCreate(): Promise<void> {
   if (saving.value) return;
@@ -144,7 +166,7 @@ function runMenu(action: 'create' | 'create-child' | 'import' | 'rename' | 'dele
   else if (action === 'create-child' && row) startCreateChild(row);
   else if (action === 'import' && row) openImport(row);
   else if (action === 'rename' && row) startRename(row);
-  else if (action === 'delete' && row) void removeFolder(row);
+  else if (action === 'delete' && row) removeFolder(row);
 }
 async function removeFolder(row: CategoryRow): Promise<void> {
   if (!row.category || saving.value) return;
@@ -152,15 +174,15 @@ async function removeFolder(row: CategoryRow): Promise<void> {
     workspace.toast('文件夹中还有文献，暂不能删除。', true);
     return;
   }
-  const ok = window.confirm(
-    `删除文件夹「${label(row.label)}」？
-
-仅空文件夹可删除；目录会移到 .zhiyue/trash/categories/，需要时可手动找回。`,
-  );
-  if (!ok) return;
+  deleteTarget.value = row;
+}
+async function confirmRemoveFolder(): Promise<void> {
+  const row = deleteTarget.value;
+  if (!row || saving.value) return;
   saving.value = true;
   const result = await workspace.deleteCategory(row.category, row.child) as { trashed?: string } | null;
   saving.value = false;
+  deleteTarget.value = null;
   if (!result) return;
   if (state.category === row.category && (!row.child || state.subcategory === row.child)) {
     state.category = '';
@@ -250,7 +272,8 @@ async function submitRename(row: CategoryRow): Promise<void> {
 <template>
   <aside id="navigation-panel" class="sidebar" aria-label="主导航">
     <a class="brand" href="/" aria-label="Zhiyue 首页">
-      <span class="brand-mark"><Icon /></span><span>Zhiyue</span>
+      <span class="brand-mark"><Icon /></span>
+      <span class="brand-copy"><strong>Zhiyue</strong><small>知阅 · 研究工作台</small></span>
     </a>
     <nav class="main-nav">
       <button
@@ -286,17 +309,6 @@ async function submitRename(row: CategoryRow): Promise<void> {
     </div>
     <div id="categories" class="categories" @contextmenu.prevent="openMenu($event, null)" @scroll="closeMenu"
       @dragover.prevent @drop.prevent>
-      <form v-if="creating" class="category-editor" @submit.prevent="submitCreate">
-        <input
-          :ref="setEditor"
-          v-model="draft"
-          maxlength="60"
-          placeholder="文件夹名称"
-          aria-label="文件夹名称"
-          @keydown.esc="cancelEdit"
-          @blur="cancelEdit"
-        />
-      </form>
       <template v-for="row in rows" :key="`${row.category}/${row.child}`">
         <form
           v-if="isEditing(row)"
@@ -304,6 +316,7 @@ async function submitRename(row: CategoryRow): Promise<void> {
           :class="{ 'category-child': row.child }"
           @submit.prevent="submitRename(row)"
         >
+          <Icon v-if="!row.child" class="editor-icon" name="folder" />
           <input
             :ref="setEditor"
             v-model="draft"
@@ -333,12 +346,21 @@ async function submitRename(row: CategoryRow): Promise<void> {
             :class="{
               'category-child': row.child,
               active: state.category === row.category && state.subcategory === row.child,
+              'parent-open': !row.child && state.category === row.category && !!state.subcategory,
+              'has-children': hasChildren(row),
             }"
+            :aria-expanded="hasChildren(row) ? isExpanded(row) : undefined"
+            :title="hasChildren(row) ? '点击折叠或展开子文件夹' : undefined"
             @click="choose(row)"
           >
             <Icon v-if="!row.child" name="folder" />
             <span class="cat-name" :title="label(row.label)">{{ label(row.label) }}</span
-            ><span class="cat-count">{{ row.count }}</span>
+            ><span
+              v-if="hasChildren(row)"
+              class="cat-caret"
+              :class="{ open: isExpanded(row) }"
+              aria-hidden="true"
+            /><span class="cat-count">{{ row.count }}</span>
           </button>
           <button
             v-if="row.category"
@@ -368,6 +390,18 @@ async function submitRename(row: CategoryRow): Promise<void> {
           />
         </form>
       </template>
+      <form v-if="creating" class="category-editor" @submit.prevent="submitCreate">
+        <Icon class="editor-icon" name="folder" />
+        <input
+          :ref="setEditor"
+          v-model="draft"
+          maxlength="60"
+          placeholder="文件夹名称"
+          aria-label="文件夹名称"
+          @keydown.esc="cancelEdit"
+          @blur="cancelEdit"
+        />
+      </form>
     </div>
     <Teleport to="body">
       <div
@@ -425,6 +459,18 @@ async function submitRename(row: CategoryRow): Promise<void> {
         </button>
       </div>
     </Teleport>
+    <ConfirmDialog
+      v-if="deleteTarget"
+      title="删除文件夹"
+      :message="`「${label(deleteTarget.label)}」是空文件夹，将移到回收站。`"
+      confirm-label="移到回收站"
+      danger
+      :busy="saving"
+      @confirm="confirmRemoveFolder"
+      @cancel="deleteTarget = null"
+    >
+      仅空文件夹可删除；目录会移到 <code>.zhiyue/trash/categories/</code>，需要时可手动找回。
+    </ConfirmDialog>
     <PanelHandle kind="sidebar" />
   </aside>
 </template>

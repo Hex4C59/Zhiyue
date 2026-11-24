@@ -545,10 +545,19 @@ export function createReader({
     const epoch = ++state.noteEpoch;
     if (!paper) {
       releasePreview();
-      $('#reader-header').innerHTML = '<span class="muted">阅读</span>';
+      $('#reader-header').innerHTML = [
+        `<div class="reader-empty-header"><span class="reader-header-mark">${icon('book')}</span>`,
+        '<span>阅读空间</span></div><span class="reader-header-badge">原文 · 笔记 · 研读</span>',
+      ].join('');
       $('#reader-toolbar').hidden = true;
-      $('#reader-content').innerHTML =
-        '<div class="empty reader-empty">未选择文献</div>';
+      $('#reader-content').innerHTML = [
+        '<div class="empty reader-empty"><div class="reader-empty-card">',
+        `<div class="reader-empty-art"><span>${icon('book')}</span></div>`,
+        '<h2>选择一篇文献，开始阅读</h2>',
+        '<p>原文、笔记与 AI 助手，在这里汇成你的研究思路。</p>',
+        '<div class="reader-empty-tags"><span>原文 PDF</span><span>阅读笔记</span><span>AI 研读</span></div>',
+        '</div></div>',
+      ].join('');
       return;
     }
     releasePreview();

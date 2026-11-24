@@ -61,6 +61,13 @@ const papers = computed<Paper[]>(() => {
   return state.sort === 'year-desc' ? result.reverse() : result;
 });
 
+function openImport(): void {
+  state.importCategory = state.category
+    ? `papers/${state.category}${state.subcategory ? `/${state.subcategory}` : ''}`
+    : '';
+  state.importOpen = true;
+}
+
 // 拖动只负责选中源；放置目标由左侧分类判断，实际移动由工作区提交给 Python。
 function dragStart(event: DragEvent, paper: Paper): void {
   if (!workspace.beginPaperDrag(paper.literature_id)) {
@@ -192,16 +199,21 @@ function dragStart(event: DragEvent, paper: Paper): void {
           >
         </div>
       </article>
-      <div v-if="!state.libraryError && !papers.length" class="empty">
-        <span v-if="!filtering && !state.category" class="empty-art"><Icon name="library" /></span>
-        <p>{{ emptyText }}</p>
-        <div v-if="filtering || state.category" class="empty-actions">
+      <div v-if="!state.libraryError && !papers.length" class="empty paper-list-empty">
+        <span class="empty-art"><Icon :name="filtering ? 'search' : 'library'" /></span>
+        <h2>{{ filtering ? '没有找到匹配结果' : emptyText }}</h2>
+        <p>{{ filtering ? '试试其他关键词，或清除筛选条件。' : '导入 PDF，慢慢搭建你的专属文献库。' }}</p>
+        <div class="empty-actions">
           <button
+            v-if="filtering || state.category"
             id="reset-filters"
             class="button subtle"
             @click="workspace.resetFilters"
           >
             {{ filtering ? '清除筛选' : '查看全部文献' }}
+          </button>
+          <button v-if="!filtering" class="button primary" @click="openImport">
+            <Icon name="upload" />导入 PDF
           </button>
         </div>
       </div>

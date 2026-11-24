@@ -880,12 +880,57 @@ test('右键文件夹可新建子文件夹、重命名并导入 PDF', async (t) 
   assert.doesNotMatch(allMenu.textContent ?? '', /重命名文件夹|重新命名|新建子文件夹/);
 });
 
-test('右键空文件夹移入回收站，非空文件夹禁用删除', async (t) => {
+test('侧栏加号在列表末尾新建顶层文件夹', async (t) => {
   const page = await fixture(t);
   const { workspace } = page;
-  const confirm = window.confirm;
-  t.after(() => { window.confirm = confirm; });
-  window.confirm = () => true;
+  workspace.state.categories = [{ id: '01_超声', name: '01_超声', count: 1, children: [] }];
+  await flush();
+  click(page.$('.category-add'));
+  await flush();
+  const list = document.querySelector('#categories');
+  assert.ok(list);
+  const editor = list.lastElementChild;
+  assert.ok(editor);
+  assert.equal(editor.className, 'category-editor');
+  assert.ok(editor.querySelector('.editor-icon'));
+  const field = editor.querySelector('input');
+  assert.ok(field);
+  input(field, '新主题');
+  editor.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+  await until(() => workspace.state.category === '03_新主题');
+  assert.deepEqual(
+    page.calls.find((call) => call.path === '/api/categories' && call.method === 'POST')?.body,
+    { name: '新主题' },
+  );
+  assert.equal(document.querySelector('#categories .category-editor'), null);
+});
+
+test('再次点击已选中的文件夹折叠子文件夹', async (t) => {
+  const page = await fixture(t);
+  const { workspace } = page;
+  workspace.state.categories = [{
+    id: '01_超声', name: '01_超声', count: 1,
+    children: [{ id: '01_超声/01_子项', name: '01_子项', count: 0 }],
+  }];
+  await flush();
+  const button = (): any => page.$('[data-category="01_超声"][data-subcategory=""] .category-button');
+  click(button());
+  await flush();
+  assert.ok(page.$('[data-subcategory="01_子项"]'));
+  assert.equal(button().getAttribute('aria-expanded'), 'true');
+  click(button());
+  await flush();
+  assert.equal(page.$('[data-subcategory="01_子项"]'), null);
+  assert.equal(button().getAttribute('aria-expanded'), 'false');
+  assert.equal(workspace.state.category, '01_超声');
+  click(button());
+  await flush();
+  assert.ok(page.$('[data-subcategory="01_子项"]'));
+});
+
+test('右键空文件夹先在应用内对话框确认，非空文件夹禁用删除', async (t) => {
+  const page = await fixture(t);
+  const { workspace } = page;
   workspace.state.categories = [{ id: '09_测试', name: '09_测试', count: 0, children: [] }];
   workspace.state.category = '09_测试';
   await flush();
@@ -894,14 +939,35 @@ test('右键空文件夹移入回收站，非空文件夹禁用删除', async (t
       bubbles: true, cancelable: true, clientX: 80, clientY: 100,
     }));
   };
-  open();
-  await flush();
-  const menu = document.querySelector('.category-menu');
-  assert.ok(menu);
-  const remove = [...menu.querySelectorAll('button')].find((item) => /删除文件夹/.test(item.textContent ?? ''));
-  assert.ok(remove);
-  assert.equal(remove.disabled, false);
-  click(remove);
+  const triggerDelete = async (): Promise<Element> => {
+    open();
+    await flush();
+    const menu = document.querySelector('.category-menu');
+    assert.ok(menu);
+    const remove = [...menu.querySelectorAll('button')]
+      .find((item) => /删除文件夹/.test(item.textContent ?? ''));
+    assert.ok(remove);
+    assert.equal(remove.disabled, false);
+    click(remove);
+    await flush();
+    const dialog = document.querySelector('.confirm-dialog');
+    assert.ok(dialog);
+    return dialog;
+  };
+  const dialog = await triggerDelete();
+  assert.match(dialog.textContent ?? '', /删除文件夹/);
+  assert.match(dialog.textContent ?? '', /「测试」是空文件夹/);
+  assert.match(dialog.textContent ?? '', /trash\/categories/);
+  const cancel = [...dialog.querySelectorAll('button')]
+    .find((item) => /取消/.test(item.textContent ?? ''));
+  assert.ok(cancel);
+  click(cancel);
+  await until(() => !document.querySelector('.confirm-dialog'));
+  assert.equal(page.calls.some((call) => call.path === '/api/categories/delete'), false);
+  const again = await triggerDelete();
+  const accept = again.querySelector('[data-confirm-accept]');
+  assert.ok(accept);
+  click(accept);
   await until(() => page.calls.some((call) => call.path === '/api/categories/delete'));
   assert.deepEqual(
     page.calls.find((call) => call.path === '/api/categories/delete')?.body,

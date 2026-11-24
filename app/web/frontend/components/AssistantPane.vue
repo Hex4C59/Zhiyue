@@ -92,7 +92,11 @@ function historyDate(chat: Chat): string {
     <PanelHandle kind="assistant" />
     <div class="chat-header">
       <div class="assistant-title">
-        <span class="agent-name">Pi Agent</span>
+        <span class="agent-mark"><Icon name="spark" /></span>
+        <span class="agent-title-copy">
+          <span class="agent-name">Pi Agent</span>
+          <span class="agent-subtitle">研究助手</span>
+        </span>
         <span
           id="connection-status"
           class="connection-indicator"
@@ -223,15 +227,24 @@ function historyDate(chat: Chat): string {
     <div id="messages" ref="messages" class="messages" role="log" aria-label="对话消息" aria-live="off">
       <ChatMessage v-for="message in state.chat?.messages || []" :key="message.id" :message="message" />
       <section v-if="!isArchived && !state.chat?.messages?.length" class="prompt-shortcuts" aria-label="提问模板">
-        <h2>提问模板</h2>
-        <button
-          v-for="[image, label, prompt] in promptTemplates"
-          :key="label"
-          class="prompt-shortcut"
-          @click="workspace.setDraft(prompt)"
-        >
-          <Icon :name="image" />{{ label }}
-        </button>
+        <div class="assistant-welcome">
+          <span class="welcome-mark"><Icon name="spark" /></span>
+          <h2>需要我帮你读什么？</h2>
+          <p>可以从解释方法、比较论文或查找相关研究开始。</p>
+        </div>
+        <div class="prompt-list">
+          <span class="prompt-label">常用提问</span>
+          <button
+            v-for="[image, label, prompt] in promptTemplates"
+            :key="label"
+            class="prompt-shortcut"
+            @click="workspace.setDraft(prompt)"
+          >
+            <span class="prompt-icon"><Icon :name="image" /></span>
+            <span>{{ label }}</span>
+            <Icon class="prompt-arrow" name="arrow" />
+          </button>
+        </div>
       </section>
     </div>
     <div v-if="!isArchived && folderActions.length" id="folder-actions" class="folder-actions" aria-live="polite">
