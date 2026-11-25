@@ -125,27 +125,17 @@ function dragStart(event: DragEvent, paper: Paper): void {
             <option value="title">题名顺序</option>
           </select>
         </div>
-        <div class="list-meta-actions">
-          <button
-            id="import-paper"
-            class="list-action"
-            title="从本机导入 PDF 并归档"
-            @click="state.importOpen = true"
-          >
-            <Icon name="upload" /><span>导入 PDF</span>
-          </button>
-          <button
-            id="refresh-catalog"
-            class="icon-button compact"
-            :class="{ refreshing: state.refreshing }"
-            title="重新扫描目录并更新索引"
-            aria-label="刷新索引"
-            :disabled="state.refreshing"
-            @click="workspace.refreshCatalog"
-          >
-            <Icon name="refresh" />
-          </button>
-        </div>
+        <button
+          id="refresh-catalog"
+          class="icon-button compact"
+          :class="{ refreshing: state.refreshing }"
+          title="重新扫描目录并更新索引"
+          aria-label="刷新索引"
+          :disabled="state.refreshing"
+          @click="workspace.refreshCatalog"
+        >
+          <Icon name="refresh" />
+        </button>
       </div>
     </div>
     <div id="paper-list" class="paper-list" tabindex="0" aria-label="论文列表">

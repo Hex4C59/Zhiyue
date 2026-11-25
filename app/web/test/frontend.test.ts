@@ -501,7 +501,12 @@ test('文件夹导入忽略来源记录等非 PDF，并明确提示数量上限'
     click(page.$('.import-head .icon-button'));
     await until(() => !page.$('.import-file'));
   };
+  click(page.$('[data-panel="chat"]:is(button)'));
+  await flush();
+  assert.equal(page.$('#library-view').dataset.panel, 'chat');
+  assert.ok(page.$('.topbar #import-paper'));
   await openDialog();
+  assert.equal(page.$('#library-view').dataset.panel, 'chat');
   drop([file('a.pdf'), file('b.pdf'), file('a.来源.json'), file('notes.txt')]);
   await flush();
   assert.equal(page.target.querySelectorAll('.import-item').length, 2);
@@ -828,10 +833,20 @@ test('附件上传与删除、Pi 标题与空上下文按 Vue 状态更新', asy
   click(page.$('#clear-context'));
   await flush();
   assert.equal(page.$('.chat-context'), null);
-  await workspace.uploadFiles([new File(['synthetic'], 'sample.txt', { type: 'text/plain' })]);
-  await flush();
+  const picker = page.$('.attachment-picker');
+  const fileInput = page.$('#file-input');
+  assert.match(picker.textContent, /添加文件/);
+  assert.equal(picker.type, 'button');
+  assert.equal(fileInput.multiple, true);
+  const files = [new File(['synthetic'], 'sample.txt', { type: 'text/plain' })];
+  let opened = 0;
+  fileInput.addEventListener('click', () => { opened++; });
+  click(picker);
+  assert.equal(opened, 1);
+  Object.defineProperty(fileInput, 'files', { value: files });
+  fileInput.dispatchEvent(new Event('change', { bubbles: true }));
+  await until(() => page.$('#send').disabled === false);
   assert.match(page.$('#attachments').textContent, /sample.txt/);
-  assert.equal(page.$('#send').disabled, false);
   click(page.$('#attachments button'));
   await flush();
   assert.equal(page.$('#send').disabled, true);
@@ -1086,6 +1101,31 @@ test('没有任务与批次时不显示任务与批次区域', async (t) => {
   assert.equal(page.$('#downloads-view .download-results'), null);
   assert.equal(page.$('.job-history'), null);
   assert.equal(page.$('.download-intro .history-link'), null);
+});
+
+test('下载页空闲时单栏居中并显示流程，论文信息按行或 JSON 计数', async (t) => {
+  const page = await fixture(t);
+  click(page.$('[data-view="downloads"]'));
+  await flush();
+  page.workspace.state.jobs.clear();
+  await flush();
+  assert.ok(page.$('#downloads-view.idle'));
+  assert.equal(page.target.querySelectorAll('.download-steps li').length, 4);
+  assert.equal(page.$('.entry-count'), null);
+  input(page.$('#download-input'), '10.1/a\n\n10.1/b');
+  await flush();
+  assert.equal(page.$('.entry-count').textContent.trim(), '2 条');
+  input(page.$('#download-input'), '[{"doi":"10.1/a"},{"doi":"10.1/b"},{"doi":"10.1/c"}]');
+  await flush();
+  assert.equal(page.$('.entry-count').textContent.trim(), '3 条');
+  input(page.$('#download-input'), '[{"doi":');
+  await flush();
+  assert.equal(page.$('.entry-count'), null);
+  page.workspace.state.jobs.set('job-run', { id: 'job-run', title: '下载', status: 'running', log: '' });
+  await flush();
+  assert.equal(page.$('#downloads-view.idle'), null);
+  assert.equal(page.$('.download-steps'), null);
+  assert.ok(page.$('#download-jobs .status-badge.running'));
 });
 
 test('下载表单和任务日志保持用户状态，模型与正文内容不能注入 HTML', async (t) => {

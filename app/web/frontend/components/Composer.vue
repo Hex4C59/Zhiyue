@@ -11,6 +11,7 @@ const workspace = inject('workspace') as WorkspaceApi;
 const state = workspace.state;
 const { canSend, generating } = workspace;
 const input = ref<HTMLTextAreaElement | null>(null);
+const fileInput = ref<HTMLInputElement | null>(null);
 const form = ref<HTMLFormElement | null>(null);
 const menu = ref<InstanceType<typeof CommandMenu> | null>(null);
 const stopping = ref(false);
@@ -113,10 +114,15 @@ async function stop(): Promise<void> {
     />
     <div class="composer-toolbar">
       <div class="composer-tools">
-        <label class="icon-button upload-button" title="添加附件"
-          ><Icon name="plus" />
-          <input id="file-input" type="file" multiple aria-label="添加图片或文件" @change="selected" />
-        </label>
+        <button
+          type="button"
+          class="attachment-picker"
+          title="选择图片或文件作为本次提问的附件"
+          @click="fileInput?.click()"
+        >
+          <Icon name="attach" /><span>添加文件</span>
+        </button>
+        <input id="file-input" ref="fileInput" type="file" hidden multiple @change="selected" />
         <ModelPicker />
       </div>
       <button

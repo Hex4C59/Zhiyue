@@ -8,6 +8,7 @@ import ReaderPane from './components/ReaderPane.vue';
 import AssistantPane from './components/AssistantPane.vue';
 import DownloadPanel from './components/DownloadPanel.vue';
 import ImportPaperDialog from './components/ImportPaperDialog.vue';
+import Icon from './components/Icon.vue';
 import type { WorkspaceApi } from './lib/workspace';
 
 const props = defineProps<{ workspace: WorkspaceApi }>();
@@ -76,6 +77,15 @@ onBeforeUnmount(() => {
           <span id="library-summary" class="muted"
             >{{ state.papers.length }} 篇文献 · {{ noteCount }} 篇有笔记</span
           >
+          <button
+            id="import-paper"
+            type="button"
+            class="button primary import-trigger"
+            title="从本机导入 PDF 并归档"
+            @click="state.importOpen = true"
+          >
+            <Icon name="upload" />导入 PDF
+          </button>
         </div>
       </header>
       <div v-show="state.view === 'library'" class="mobile-tabs" aria-label="工作面板">

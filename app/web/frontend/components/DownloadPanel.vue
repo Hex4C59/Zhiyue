@@ -20,6 +20,27 @@ const form = reactive({
 const submitting = ref(false);
 const pendingActions = reactive(new Set<string>());
 const categories = computed(() => categoryChoices(state.categories, defaultCategory));
+// 与后端 entriesFrom 的口径一致：JSON 数组或 entries/条目 计条目数，其余按非空行计数；
+// 未写完的 JSON 不计数，避免输入过程中闪烁误导。
+const entryCount = computed<number>(() => {
+  const text = form.input.trim();
+  if (!text) return 0;
+  if (text.startsWith('[') || text.startsWith('{')) {
+    try {
+      const parsed = JSON.parse(text) as unknown;
+      if (Array.isArray(parsed)) return parsed.length;
+      if (parsed && typeof parsed === 'object') {
+        const record = parsed as { entries?: unknown; 条目?: unknown; doi?: unknown; title?: unknown };
+        const rows = record.entries ?? record.条目;
+        if (Array.isArray(rows)) return rows.length;
+        return record.doi || record.title ? 1 : 0;
+      }
+      return 0;
+    } catch { return 0; }
+  }
+  return text.split(/\r?\n/).filter((line) => line.trim()).length;
+});
+const flowSteps = ['导入清单', '查重下载', '身份核验', '归档编号'];
 const jobs = computed(() => [...state.jobs.values()].reverse());
 // 下载、核验、归档与刷新索引共用 jobs.json；已结束的任务只在「历史任务」里保留最近若干条，
 // 否则每次刷新索引都会在右栏留下一条常驻卡片。失败任务仍作为待处理项直接显示。
@@ -82,11 +103,11 @@ async function act(batch: string, action: string): Promise<void> {
 </script>
 
 <template>
-  <section id="downloads-view" class="downloads-view">
+  <section id="downloads-view" class="downloads-view" :class="{ idle: !showResults }">
     <div class="download-intro">
       <h2>添加论文</h2>
       <p>
-        输入 DOI 或题名，查看下载、核验与归档进度。
+        粘贴 DOI 或题名，自动下载、核验并归档。
         <button v-if="showHistoryLink" type="button" class="text-button history-link"
           @click="showHistory = !showHistory">
           {{ showHistory ? '收起历史任务' : `历史任务（${completedJobs.length}）` }}
@@ -96,38 +117,63 @@ async function act(batch: string, action: string): Promise<void> {
     <div class="download-columns">
       <form id="download-form" class="surface download-form" @submit.prevent="submit">
         <div class="surface-heading">
-          <Icon name="download" />
-          <h3>新建下载任务</h3>
+          <span class="form-mark"><Icon name="download" /></span>
+          <div class="form-title">
+            <h3>新建下载任务</h3>
+            <p>支持 DOI、题名与 JSON 清单，每行一项</p>
+          </div>
         </div>
-        <label for="download-title">任务名称 <span class="muted">可选</span></label>
-        <input id="download-title" v-model="form.title" placeholder="例如：语音情感识别 · 经典文献" />
-        <label for="download-input">论文信息</label>
-        <textarea
-          id="download-input"
-          v-model="form.input"
-          rows="7"
-          required
-          placeholder="粘贴 DOI、论文题名或 JSON 清单&#10;每行一项"
-        />
-        <label for="download-category">归档分类</label>
-        <select id="download-category" v-model="form.category">
-          <option v-for="[value, label] in categories" :key="value" :value="value">{{ label }}</option>
-        </select>
-        <div class="download-options">
-          <label
-            >获取渠道<select id="download-channel" v-model="form.channel">
+        <div class="field">
+          <div class="field-head">
+            <label for="download-input">论文信息</label>
+            <span
+              v-if="entryCount"
+              class="entry-count"
+              :class="{ over: entryCount > 500 }"
+              :title="entryCount > 500 ? '单次最多 500 条' : '按非空行或 JSON 条目计数'"
+            >{{ entryCount }} 条</span>
+          </div>
+          <textarea
+            id="download-input"
+            v-model="form.input"
+            rows="6"
+            required
+            placeholder="10.1109/TASLP.2020.2964956&#10;Speech emotion recognition: a survey&#10;或粘贴 JSON 清单"
+          />
+        </div>
+        <div class="field-row">
+          <div class="field">
+            <label for="download-category">归档分类</label>
+            <select id="download-category" v-model="form.category">
+              <option v-for="[value, label] in categories" :key="value" :value="value">{{ label }}</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="download-channel">获取渠道</label>
+            <select id="download-channel" v-model="form.channel">
               <option value="public">公开来源</option>
               <option value="auto">自动选择</option>
               <option value="ieee">IEEE / 机构渠道</option>
-            </select></label
-          >
+            </select>
+          </div>
+        </div>
+        <div class="field">
+          <label for="download-title">任务名称 <span class="muted">可选</span></label>
+          <input id="download-title" v-model="form.title" placeholder="例如：语音情感识别 · 经典文献" />
+        </div>
+        <div class="download-footer">
           <label class="check-label"
             ><input id="auto-archive" v-model="form.autoArchive" type="checkbox" />核验后自动归档</label
           >
+          <button
+            id="start-download"
+            type="submit"
+            class="button primary"
+            :disabled="submitting || !form.input.trim()"
+          >
+            <Icon name="plus" />创建下载任务
+          </button>
         </div>
-        <button id="start-download" type="submit" class="button primary" :disabled="submitting">
-          <Icon name="plus" />创建下载任务
-        </button>
         <p class="muted form-note">机构认证与需要确认的操作，由后端工具返回状态。</p>
       </form>
       <div v-if="showResults" class="download-results">
@@ -146,7 +192,13 @@ async function act(batch: string, action: string): Promise<void> {
             <article v-for="job in activeJobs" :key="job.id" class="job-card">
               <div class="job-heading">
                 <h4>{{ job.title || job.batch || job.id }}</h4>
-                <span class="status-badge" :class="{ failed: ['error', 'failed'].includes(job.status) }">
+                <span
+                  class="status-badge"
+                  :class="{
+                    failed: ['error', 'failed'].includes(job.status),
+                    running: ['queued', 'pending', 'running'].includes(job.status),
+                  }"
+                >
                   {{ statusLabels[job.status] || job.status || '状态待确认' }}</span
                 >
               </div>
@@ -206,5 +258,8 @@ async function act(batch: string, action: string): Promise<void> {
         </div>
       </div>
     </div>
+    <ol v-if="!showResults" class="download-steps" aria-label="任务流程">
+      <li v-for="(step, index) in flowSteps" :key="step"><i>{{ index + 1 }}</i>{{ step }}</li>
+    </ol>
   </section>
 </template>
