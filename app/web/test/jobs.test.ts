@@ -55,6 +55,33 @@ setTimeout(()=>{process.stdout.write('rer secret-value\\nhttps://example.test/a?
   return { root, stateDir, downloader, events, manager, calls };
 }
 
+test('批量移动任务保存逐项结果并清除私有输入', async t => {
+  const { root, manager, downloader, stateDir } = await fixture(t);
+  await writeFile(downloader, `
+const fs = require('node:fs');
+const moves = JSON.parse(fs.readFileSync(process.argv[5], 'utf8'));
+console.log(JSON.stringify({items: moves.map((move, index) => ({
+  ...move, ...(index ? {status: 'blocked', error: '同名文件'} : {status: 'moved'}),
+}))}));
+`);
+  const moves = [
+    { paperId: 'L001', category: 'papers/01_目标' },
+    { paperId: 'L002', category: 'papers/02_目标' },
+  ];
+  const queued = await manager.startPaperMove(moves);
+  assert.equal(queued.status, 'queued');
+  await manager.queue;
+  const job = manager.getJob(queued.id);
+  assert.equal(job?.status, 'partial');
+  assert.deepEqual(job?.moveResult?.items, [
+    { ...moves[0], status: 'moved' },
+    { ...moves[1], status: 'blocked', error: '同名文件' },
+  ]);
+  await assert.rejects(readFile(path.join(stateDir, `${queued.id}_moves.json`)), { code: 'ENOENT' });
+  const reloaded = new JobManager({ root, stateDir, python: process.execPath, downloader });
+  assert.deepEqual(reloaded.getJob(queued.id)?.moveResult, job?.moveResult);
+});
+
 test('downloads are queued, safely imported, redacted and never claim unverified acquisition', async t => {
   const { root, manager, calls, events, stateDir } = await fixture(t);
   assert.equal(typeof resolvePython(), 'string'); assert.equal(manager.python, process.execPath);

@@ -612,17 +612,21 @@ pre,code,kbd,samp { font-family:var(--font-mono); }
 .question-options button { font-size:11px; text-align:left; display:block; max-width:100%; }
 .question-options small { display:block; color:var(--muted); font-size:10px; line-height:1.7; margin-top:3px; }
 .note-drafts { max-height:38%; overflow:auto; padding:0 14px; }
-.folder-actions { max-height:30%; overflow:auto; padding:0 14px; }
+.folder-actions { max-height:42%; overflow:auto; padding:0 14px; flex-shrink:0; }
 .folder-action {
   border:1px solid var(--border); background:var(--field); padding:12px;
   border-radius:6px; margin-bottom:10px; font-size:12px;
 }
 .folder-action header { display:flex; align-items:flex-start; justify-content:space-between; gap:10px; }
 .folder-action strong { display:block; font-size:13px; color:var(--ink); }
-.folder-action small { display:block; margin-top:4px; color:var(--muted); font-family:var(--font-mono); font-size:10px; overflow-wrap:anywhere; }
-.folder-action-count { flex:none; color:var(--muted); font-size:10px; }
-.folder-action p { margin-top:8px; color:var(--muted); line-height:1.7; overflow-wrap:anywhere; }
-.folder-action-error { color:var(--danger); }
+.folder-action-count { flex:none; color:var(--muted); font-size:11px; }
+.folder-action p { margin-top:6px; color:var(--muted); line-height:1.55; overflow-wrap:anywhere; }
+.folder-action-rows { margin:8px 0 0; padding:0; list-style:none; max-height:min(120px,14dvh); overflow:auto; }
+.folder-action-rows li { padding:5px 2px; border-top:1px solid var(--line); }
+.folder-action-rows label { display:flex; align-items:baseline; gap:6px; cursor:pointer; }
+.folder-action-rows input { flex:none; }
+.folder-action-path { font-family:var(--font-mono); font-size:11px; overflow-wrap:anywhere; }
+.folder-action-error { display:block; color:var(--danger); overflow-wrap:anywhere; }
 .folder-action-actions { display:flex; flex-wrap:wrap; gap:8px; margin-top:10px; }
 .folder-action-actions .button { padding:7px 10px; font-size:11px; }
 .note-draft {
@@ -700,6 +704,9 @@ pre,code,kbd,samp { font-family:var(--font-mono); }
 .job-card.compact details { margin-top:8px; }
 .job-time { margin-left:auto; color:var(--faint); font-size:11px; }
 .history-link { margin-left:4px; text-decoration:underline; text-underline-offset:3px; }
+.paper-move-details ul { max-height:240px; overflow:auto; padding-left:1.4em; }
+.paper-move-details li { padding:4px 0; overflow-wrap:anywhere; }
+.paper-move-details li span { display:block; }
 .job-log { font:11px/1.8 var(--font-mono); background:var(--tint); border-radius:4px; padding:11px; white-space:pre-wrap; overflow-wrap:anywhere; max-height:260px; overflow:auto; color:var(--muted); }
 .batch-actions { display:flex; flex-wrap:wrap; gap:6px; margin-top:12px; }
 

@@ -71,9 +71,10 @@ export function runCli<T = unknown>({ python, root, script = downloaderScript, a
       if (error) reject(error);
       else resolve(value as T);
     };
+    let expired = false;
     const timer = setTimeout(() => {
+      expired = true;
       child.kill();
-      finish(statusError('文献工具执行超时，请稍后重试。', 504));
     }, timeout);
     child.stdout.setEncoding('utf8');
     child.stderr.setEncoding('utf8');
@@ -81,6 +82,7 @@ export function runCli<T = unknown>({ python, root, script = downloaderScript, a
     child.stderr.on('data', (chunk: string) => { stderr += chunk; });
     child.once('error', (error: Error) => finish(statusError(`无法启动Python文献工具：${error.message}`, 500)));
     child.once('close', (code: number | null) => {
+      if (expired) return finish(statusError('文献工具执行超时，请核实当前状态。', 504));
       if (code === 0) {
         try { finish(null, JSON.parse(stdout) as T); }
         catch { finish(statusError('文献工具返回了无效结果。', 500)); }

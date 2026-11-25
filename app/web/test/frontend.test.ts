@@ -310,11 +310,14 @@ async function fixture(
         ? { saved: true, path: 'notes/L001_测试笔记.md' }
         : { discarded: true };
     }
-    if (path.startsWith('/api/folder-actions/')) {
-      folderDecisions.push({ id: path.split('/').pop(), body });
-      return body.action === 'apply'
-        ? { applied: true, result: { trashed: '.zhiyue/trash/categories/x_09_空分类' } }
-        : { discarded: true };
+    if (/^\/api\/chats\/[^/]+\/folder-actions$/.test(path)) {
+      folderDecisions.push({ id: path.split('/')[3], body });
+      return {
+        applied: body.action === 'apply' ? body.ids.filter((id: string) => id !== 'blocked') : [],
+        discarded: body.action === 'discard' ? body.ids : [], remaining: [],
+        failed: body.action === 'apply' && body.ids.includes('blocked')
+          ? [{ id: 'blocked', error: '文件夹不是空的。' }] : [],
+      };
     }
     if (options.method === 'POST' && /^\/api\/papers\/L\d+\/move$/.test(path)) {
       const paper = papers.find((item) => path.includes(item.literature_id));
@@ -784,39 +787,35 @@ test('笔记草稿先预览，保存或丢弃都由用户点击触发', async (t
   assert.deepEqual(page.noteDecisions[2], { id: 'd3', body: { action: 'discard' } });
 });
 
-test('删除文件夹先生成卡片，确认与取消都由用户点击触发', async (t) => {
-  const page = await fixture(t),
-    { workspace } = page;
-  workspace.state.chat = { id: 'folder-chat', messages: [], noteDrafts: [], folderActions: [] };
-  workspace.receive({
-    type: 'folderAction',
-    chatId: 'folder-chat',
-    action: {
-      id: 'f1', kind: 'delete', category: '09_空分类', subcategory: '', path: 'papers/09_空分类',
-      papers: 0, createdAt: new Date().toISOString(),
-    },
+test('多个删除请求合并，确认一次处理勾选项，失败和未选目录保留', async (t) => {
+  const page = await fixture(t);
+  const { workspace } = page;
+  const item = (id: string, category = `目录_${id}`) => ({
+    id, kind: 'delete', category, path: `papers/${category}`, papers: 0, createdAt: new Date().toISOString(),
   });
+  workspace.state.chat = {
+    id: 'folder-chat', messages: [], noteDrafts: [],
+    folderActions: [item('f1'), item('f2'), item('blocked'), item('unchecked'), item('duplicate', '目录_f1')],
+  };
   await flush();
-  assert.ok(page.$('[data-folder-action="f1"]'));
-  assert.match(page.$('[data-folder-action="f1"]').textContent, /含 0 篇文献/);
-  assert.match(page.$('[data-folder-action="f1"]').textContent, /trash\/categories/);
-  click(page.$('[data-folder-apply="f1"]'));
-  await until(() => !page.$('[data-folder-action="f1"]'));
-  assert.deepEqual(page.folderDecisions[0], { id: 'f1', body: { action: 'apply' } });
-  assert.equal(workspace.state.chat.folderActions.length, 0);
-  workspace.receive({
-    type: 'folderAction',
-    chatId: 'folder-chat',
-    action: {
-      id: 'f2', kind: 'delete', category: '09_空分类', subcategory: '', path: 'papers/09_空分类',
-      papers: 0, createdAt: new Date().toISOString(), error: '文件夹不是空的，请先移出文献或子文件夹。',
-    },
-  });
-  await flush();
-  assert.match(page.$('[data-folder-action="f2"]').textContent, /文件夹不是空的/);
-  click(page.$('[data-folder-discard="f2"]'));
-  await until(() => !page.$('[data-folder-action="f2"]'));
-  assert.deepEqual(page.folderDecisions[1], { id: 'f2', body: { action: 'discard' } });
+  assert.equal(document.querySelectorAll('.folder-action').length, 1);
+  assert.equal(document.querySelectorAll('.folder-action input:checked').length, 4);
+  const unchecked = page.$('[data-folder-action="unchecked"] input');
+  unchecked.focus();
+  unchecked.click();
+  const apply = page.$('[data-folder-apply]');
+  click(apply);
+  click(apply);
+  await until(() => !workspace.state.folderActionSaving);
+  assert.deepEqual(page.folderDecisions, [{
+    id: 'folder-chat', body: { action: 'apply', ids: ['f1', 'duplicate', 'f2', 'blocked'] },
+  }]);
+  assert.match(page.$('[data-folder-action="blocked"]').textContent, /文件夹不是空的/);
+  assert.equal(unchecked.checked, false);
+  assert.deepEqual(workspace.state.chat.folderActions.map((item: any) => item.id), ['blocked', 'unchecked']);
+  click(page.$('[data-folder-discard]'));
+  await until(() => !page.$('[data-folder-action="blocked"]'));
+  assert.deepEqual(page.folderDecisions[1], { id: 'folder-chat', body: { action: 'discard', ids: ['blocked'] } });
 });
 
 test('附件上传与删除、Pi 标题与空上下文按 Vue 状态更新', async (t) => {

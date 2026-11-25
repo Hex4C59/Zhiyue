@@ -122,7 +122,7 @@ flowchart LR
 | 桌面壳管理进程与窗口，Vue 通过本地 HTTP/SSE 使用业务能力 | Tauri 的 `run` 注册插件与窗口逻辑。主业务接口集中在 `createApp`，由本地服务校验 Host、Origin、跨站标记与请求类型；这些校验只排除浏览器跨源和域名重绑定，不构成登录鉴权，本机任意进程可直接调用。资料读取经 `Library.safeFile` 和真实路径检查，信任假设见下文“本机接口的信任边界”。变更文件接口时保持索引和目录边界。[Tauri 权限](app/desktop/src-tauri/capabilities/default.json) · [server.ts](app/web/src/server.ts) · [HTTP 测试](app/web/test/server.test.ts) · [资料边界测试](app/web/test/library.test.ts) |
 | 添加论文走 Python 归档，阅读标记走 Node | `archive` 在批次锁内取库写锁，保留原文和版本，编号在这里分配。`library.build` 从文献库 README 与来源记录生成索引。`Library.updatePaper` 只接受阅读状态和收藏字段，排队写入 `.zhiyue/data/reading.json`。分类改名也由 Python 文献工具在库写锁下移动目录并同步引用、批次台账和索引；单篇文献移分类同理，搬主文件、同目录版本与来源记录后同步 README、笔记与成果引用、台账条目和索引；界面的拖动只调用 `POST /api/papers/:id/move`，实际搬文件仍由 Python 完成，不自动建目录；Node 只做请求校验。新建顶层或子文件夹只在目标目录做一次独占 `mkdir`，子文件夹沿用两位编号前缀。删除分类只接受空目录，在库写锁下移到 `.zhiyue/trash/categories/`，并拒绝仍被批次台账引用的目录。相关迁移须按团队约定一次性切换。[archiving.py](app/downloader/archiving.py) · [categories.py](app/downloader/categories.py) · [library.ts](app/web/src/lib/library.ts) · [归档与并发编号测试](app/downloader/tests/test_workflow.py) · [分类事务测试](app/downloader/tests/test_categories.py) · [协作约定](AGENTS.md) |
 | 任务队列、批次台账与归档文件是三类状态 | Node 的 `JobManager` 对应用任务串行调度并持久化，Python CLI 对批次操作加锁，归档和分类结构改动共用库写锁。进程重启时，Node 端排队中和运行中的任务会被标为失败并提示查看批次后续跑。同一库的写入范围、锁顺序和恢复规则见下文“文献库写入与并发”。[jobs.ts](app/web/src/lib/jobs.ts) · [run.py](app/downloader/run.py) · [categories.py](app/downloader/categories.py) · [归档锁](app/downloader/archiving.py) |
-| 模型能力由文献工具清单限定，正式笔记由用户定稿 | `AssistantService` 注册 `dynamicTools`，`PiClient.createSession` 只把这十七项文献工具交给 SDK；扩展加载器返回空，技能只从库内 `.zhiyue/skills` 扫描，系统提示列出名称与描述，正文按需读取。斜杠命令分两层：`/help`、`/skills`、`/compact` 由 `ChatService.command` 直接回执或调用 Pi 的 `thread/compact`，不进入模型；`/skill:<名称>` 与 Pi 的技能命令同格式展开后作为普通用户回合发送，聊天记录只保留单行指令。新增工具在 `serverRequest` 校验输入后复用已有服务。上下文与外发范围见“模型上下文与数据外发”，各工具确认点见“文献工具的影响与确认点”：工具触发的下载在同一任务里自动归档，正式笔记仍由草稿确认端点写入。流式终态和停止时序有测试。[assistants.ts](app/web/src/lib/assistants.ts) · [pi.ts](app/web/src/lib/pi.ts) · [chat.ts](app/web/src/lib/chat.ts) · [会话与工具测试](app/web/test/chat.test.ts) |
+| 模型能力由文献工具清单限定，正式笔记由用户定稿 | `AssistantService` 注册 `dynamicTools`，`PiClient.createSession` 只把清单中的文献工具交给 SDK；扩展加载器返回空，技能只从库内 `.zhiyue/skills` 扫描，系统提示列出名称与描述，正文按需读取。斜杠命令分两层：`/help`、`/skills`、`/compact` 由 `ChatService.command` 直接回执或调用 Pi 的 `thread/compact`，不进入模型；`/skill:<名称>` 与 Pi 的技能命令同格式展开后作为普通用户回合发送，聊天记录只保留单行指令。新增工具在 `serverRequest` 校验输入后复用已有服务。上下文与外发范围见“模型上下文与数据外发”，各工具确认点见“文献工具的影响与确认点”：工具触发的下载在同一任务里自动归档，正式笔记仍由草稿确认端点写入。流式终态和停止时序有测试。[assistants.ts](app/web/src/lib/assistants.ts) · [pi.ts](app/web/src/lib/pi.ts) · [chat.ts](app/web/src/lib/chat.ts) · [会话与工具测试](app/web/test/chat.test.ts) |
 
 仓库中未找到独立 ADR。表中记录的是当前代码、测试或维护约定可确认的边界。当前由桌面 WebView 通过本机 HTTP 发起请求、以 SSE 接收异步事件；这是实现现状，不代表已确认长期保留该接口方式。保留 HTTP/SSE 的理由，以及接口是否只服务桌面 WebView 或面向其他本机客户端，仍待维护者确认。
 
@@ -162,7 +162,7 @@ flowchart LR
 
 ### 文献工具的影响与确认点
 
-网页会话只注册 `dynamicTools` 十七项文献工具，`createAgentSession` 的 `tools` 也只列这些；斜杠命令是网站的输入层，`/help`、`/skills` 只生成回执消息，`/compact` 复用 Pi 会话压缩（写回同一会话文件），`/skill:<名称>` 仅把库内技能正文放进本轮提示，都不新增模型可达的写入入口；资源加载器返回空的扩展、提示和主题，技能仅限文献库 `.zhiyue/skills` 内的 Markdown/文本，Pi 的 shell 与任意文件写入工具没有启用。模型对磁盘的影响只经过下表入口。工具调用只在活动会话内响应，单次调用 120 秒超时。
+网页会话只注册 `dynamicTools` 列出的文献工具，`createAgentSession` 的 `tools` 也只列这些；斜杠命令是网站的输入层，`/help`、`/skills` 只生成回执消息，`/compact` 复用 Pi 会话压缩（写回同一会话文件），`/skill:<名称>` 仅把库内技能正文放进本轮提示，都不新增模型可达的写入入口；资源加载器返回空的扩展、提示和主题，技能仅限文献库 `.zhiyue/skills` 内的 Markdown/文本，Pi 的 shell 与任意文件写入工具没有启用。模型对磁盘的影响只经过下表入口。工具调用只在活动会话内响应，单次调用 120 秒超时。
 
 | 工具 | 可达范围 | 影响 | 确认 |
 | --- | --- | --- | --- |
@@ -170,8 +170,9 @@ flowchart LR
 | `library_categories` | `papers/` 分类树 | 只读目录名、显示名与各级文献数 | 无 |
 | `create_category` | `papers/` 下分类目录 | 独占 `mkdir` 新建顶层或子文件夹，顶层接续两位编号 | 无；同名或非法名称被拒绝 |
 | `rename_category` | 现有分类或子文件夹 | 库写锁下移动目录，保留编号，同步 README、来源记录、文本引用、批次台账和索引 | 无；同名、被占用时拒绝 |
-| `delete_category` | 现有空分类或空子文件夹 | 只写 `chats.json` 待确认动作，不落盘 | 两步：用户点击卡片后 `POST /api/folder-actions/:id` 才移到 `.zhiyue/trash/categories/`；非空或仍被批次引用时拒绝 |
-| `move_paper` | 任意已索引 L 编号与现有分类 | 库写锁下搬主文件、同目录版本与来源记录，同步 README、笔记/成果路径、批次台账条目、归档事务记录与索引 | 无；目标同名文件时报错且不改动 |
+| `delete_category`、`delete_categories` | 现有空分类或空子文件夹 | 在会话中保存待确认请求，同一会话合并显示 | 用户勾选目录后，由 `POST /api/chats/:id/folder-actions` 逐项移入 `.zhiyue/trash/categories/`。非空和仍被批次引用的目录会保留 |
+| `move_paper` | 任意已索引 L 编号与现有分类 | 库写锁下搬主文件、同目录版本与来源记录，同步 README、笔记/成果路径、批次台账条目、归档事务记录与索引 | 无。目标同名文件时报错 |
+| `move_papers` | 最多 1000 个已归档 L 编号，可分多个现有目标分类 | 入队后单次取得库写锁。符合条件的文献共用事务记录，同步引用后统一重建索引 | 用户明确编号和目标即可提交。任务记录提供逐项结果与所需的修复记录 |
 | `read_library_doc` | README、`notes/`、`synthesis/`、`outputs/` 的 `.md`/`.txt` | 只读，单文件最多 3 MB，单次最多 12 万字符；拒绝符号链接与越界路径 | 无 |
 | `paper_outline` | 任意已索引 L 编号 | 只读 PDF 内嵌书签与元信息 | 无 |
 | `search_paper_text` | 任意已索引 L 编号，最多 300 页 | 只读文字层，最多 20 条命中 | 无 |

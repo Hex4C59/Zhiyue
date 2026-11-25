@@ -31,6 +31,8 @@ def parser():
  c=s.add_parser('move-paper',help='在库写锁下把一篇文献及其来源记录移到现有分类，并同步README、引用、台账和索引')
  c.add_argument('--literature-id',required=True,help='文献编号，例如L003')
  c.add_argument('--category',required=True,help='已存在的分类目录，相对项目路径，必须位于papers下')
+ c=s.add_parser('move-papers',help='在库写锁下批量移动已归档文献并同步引用')
+ c.add_argument('input',type=Path,help='含 paperId 和 category 的 JSON 数组')
  s.add_parser('repair',help='恢复未完成的分类改名、文献移动和归档事务，报告冲突')
  q=batch_parser(s,'import','导入DOI列表、CSV/TSV、JSON或Markdown清单');q.add_argument('input',type=Path);q.add_argument('--category',help='归档目录，相对项目路径，必须位于papers下且已存在')
  q=s.add_parser('status',help='查看批次状态');q.add_argument('--batch')
@@ -77,6 +79,10 @@ def main(argv=None):
  if args.command=='move-paper':
   import categories
   return categories.move_paper(root,args.literature_id,args.category)
+ if args.command=='move-papers':
+  import categories
+  items=json.loads(args.input.read_text('utf-8-sig'))
+  return categories.move_papers(root,items)
  if args.command=='repair':
   import categories
   from archiving import archive

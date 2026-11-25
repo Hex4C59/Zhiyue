@@ -1,5 +1,5 @@
 from __future__ import annotations
-import json,os,subprocess,sys,tempfile,unittest
+import json,os,subprocess,sys,tempfile,unittest,urllib.parse
 from pathlib import Path
 from unittest.mock import patch
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
@@ -46,6 +46,24 @@ class MoveTests(unittest.TestCase):
   path=self.root/name;path.parent.mkdir(parents=True,exist_ok=True);path.write_text(text,encoding='utf-8');return path
  def read(self,name):return (self.root/name).read_text('utf-8-sig')
  def catalog(self):return json.loads(self.read('.zhiyue/catalog/文献索引.json'))
+
+ def add_paper(self,paper_id,pdf):
+  self.put(pdf,f'%PDF-1.4\n{paper_id}')
+  source=pdf.removesuffix('.pdf')+'.来源.json'
+  self.add_source(paper_id,pdf,source)
+  row=f'| {paper_id} | 2024 | Alice | [{paper_id}](<{pdf}>) | 待标记 | [来源](<{source}>) |\n'
+  self.put('README.md',self.read('README.md')+row)
+  library.build(self.root,False)
+  return source
+
+ def add_source(self,paper_id,pdf,source):
+  save(self.root/source,{'文献编号':paper_id,'题名':paper_id,'文件名':Path(pdf).name,'当前路径':pdf})
+
+ def request(self,*pairs):
+  return [{'paperId':paper_id,'category':category} for paper_id,category in pairs]
+
+ def journals(self):
+  return list((self.root/'.zhiyue/tmp/paper_moves').glob('*.json'))
 
  def test_move_moves_versions_and_sidecars_and_rewrites_every_reference(self):
   result=categories.move_paper(self.root,'l001',TARGET)
@@ -136,3 +154,187 @@ class MoveTests(unittest.TestCase):
                           '--literature-id','L001','--category','papers/10_不存在'],capture_output=True,text=True,encoding='utf-8',env=env)
   self.assertEqual(missing.returncode,4)
   self.assertIn('错误：',missing.stderr)
+
+ def test_batch_updates_both_targets_and_all_references_with_one_catalog_build(self):
+  # 第一篇的目标路径包含第二篇的源路径，不能重复替换已插入的子串。
+  pdf2='papers/11_来源/paper.pdf'
+  source2=self.add_paper('L002',pdf2)
+  target1=f'{TARGET}/papers/11_来源';target2='papers/12_第二目标'
+  for target in (target1,target2):(self.root/target).mkdir(parents=True)
+  outside='papers/13_另存版本/paper_v3.pdf';outside_source=outside.removesuffix('.pdf')+'.来源.json'
+  self.put(outside,'%PDF-1.4\nexternal version');self.add_source('L001',outside,outside_source)
+  library.build(self.root,False)
+  encoded=urllib.parse.quote(pdf2,safe='/')
+  self.put('notes/两篇.md',f'{PDF}\n{encoded}\n{pdf2}.bak\n')
+  ledger_path='.zhiyue/batches/b1/下载状态.json'
+  ledger=json.loads(self.read(ledger_path));ledger['entries'].append({'file':pdf2,'source_record':source2})
+  save(self.root/ledger_path,ledger)
+  receipt_path='.zhiyue/tmp/20261101/archive_backups/I0001_归档事务.json'
+  receipt=json.loads(self.read(receipt_path));receipt['record']['versions']=[{'file':PDF_V2,'source_record':SOURCE_V2}]
+  save(self.root/receipt_path,receipt)
+  request=self.request((' l001 ',target1),('L002',target2),('L001',target1))
+  with patch.object(library,'build',wraps=library.build) as build:
+   result=categories.move_papers(self.root,request)
+   build.assert_called_once_with(self.root.resolve(),False)
+  self.assertEqual(result,{'items':[
+   {'paperId':'L001','category':target1,'status':'moved','otherLocations':[outside,outside_source]},
+   {'paperId':'L002','category':target2,'status':'moved'}]})
+  final_pairs=[(PDF,f'{target1}/paper.pdf'),(SOURCE,f'{target1}/paper.来源.json'),
+               (PDF_V2,f'{target1}/paper_v2.pdf'),(SOURCE_V2,f'{target1}/paper_v2.来源.json'),
+               (pdf2,f'{target2}/paper.pdf'),(source2,f'{target2}/paper.来源.json')]
+  for old,new in final_pairs:
+   self.assertFalse((self.root/old).exists(),old)
+   self.assertTrue((self.root/new).is_file(),new)
+  for kept in (outside,outside_source):self.assertTrue((self.root/kept).is_file())
+  self.assertEqual(self.read('notes/两篇.md'),f'{target1}/paper.pdf\n{target2}/paper.pdf\n{pdf2}.bak\n')
+  for target in (target1,target2):
+   self.assertIn(f'{target}/paper.pdf',self.read('README.md'))
+   self.assertEqual(json.loads(self.read(f'{target}/paper.来源.json'))['当前路径'],f'{target}/paper.pdf')
+  self.assertEqual(json.loads(self.read(f'{target1}/paper_v2.来源.json'))['当前路径'],f'{target1}/paper_v2.pdf')
+  ledger=json.loads(self.read(ledger_path))
+  self.assertEqual(ledger['category'],'papers/08_SER')
+  self.assertEqual([(item['file'],item['source_record']) for item in ledger['entries']],
+                   [(final_pairs[0][1],final_pairs[1][1]),(final_pairs[4][1],final_pairs[5][1])])
+  record=json.loads(self.read(receipt_path))['record']
+  self.assertEqual(record['file'],final_pairs[0][1])
+  self.assertEqual(record['versions'],[{'file':final_pairs[2][1],'source_record':final_pairs[3][1]}])
+  self.assertEqual([item['file'] for item in self.catalog()['records']],[final_pairs[0][1],final_pairs[4][1]])
+  self.assertEqual(self.journals(),[])
+
+ def test_batch_reports_blocked_and_unchanged_papers_and_moves_the_rest(self):
+  self.add_paper('L002','papers/10_来源/second.pdf')
+  missing='papers/10_来源/missing.pdf';self.add_paper('L003',missing);(self.root/missing).unlink()
+  self.add_paper('L004','papers/10_来源/occupied.pdf')
+  self.add_paper('L005','papers/10_来源/deleted.pdf')
+  self.put(f'{TARGET}/occupied.pdf','已有文件')
+  result=categories.move_papers(self.root,self.request(
+   ('L001','papers/08_SER/01_资源'),('L002',TARGET),('L003',TARGET),('L004',TARGET),
+   ('L005','papers/99_已删除'),('L999',TARGET)))
+  items=result['items']
+  self.assertEqual([item['status'] for item in items],
+                   ['unchanged','moved','blocked','blocked','blocked','blocked'])
+  for item,hint in zip(items[2:],('不存在','同名','分类目录不存在','没有 L999')):
+   self.assertIn(hint,item['error'])
+  self.assertTrue((self.root/f'{TARGET}/second.pdf').is_file())
+  self.assertEqual(self.read(f'{TARGET}/occupied.pdf'),'已有文件')
+
+ def test_batch_blocks_all_contenders_and_refuses_paths_another_move_would_vacate(self):
+  pdfs=['papers/10_甲/paper.pdf','papers/11_乙/paper.pdf','papers/12_丙/paper.pdf']
+  for index,pdf in enumerate(pdfs,2):self.add_paper(f'L00{index}',pdf)
+  result=categories.move_papers(self.root,self.request(
+   ('L001',TARGET),('L002',TARGET),('L003','papers/12_丙'),('L004','papers/10_甲'),
+   ('L002',TARGET)))
+  self.assertEqual([item['status'] for item in result['items']],['blocked']*4)
+  for item in result['items'][:2]:self.assertIn('争用',item['error'])
+  for item in result['items'][2:]:self.assertIn('同名',item['error'])
+  for pdf in [PDF,*pdfs]:self.assertTrue((self.root/pdf).is_file())
+  self.assertFalse((self.root/f'{TARGET}/paper.pdf').exists())
+
+ def test_batch_blocks_source_claimed_by_another_paper_even_when_not_requested(self):
+  self.put('README.md',self.read('README.md')+f'| L002 | 2024 | Alice | [同一文件](<{PDF}>) | 待读 | 无 |\n')
+  library.build(self.root,False)
+  result=categories.move_papers(self.root,self.request(('L001',TARGET)))
+  self.assertEqual(result['items'][0]['status'],'blocked')
+  self.assertIn('多个文献编号',result['items'][0]['error'])
+  self.assertTrue((self.root/PDF).is_file())
+
+ def test_batch_rejects_invalid_input_before_moving_any_files(self):
+  for request in ([],{},[None],self.request(('X001',TARGET)),self.request(('L001','papers/../越界')),
+                  self.request(('L001',TARGET),(' l001 ','papers/08_SER')),self.request(('L001',TARGET))*1001):
+   with self.subTest(request=str(request)[:120]),self.assertRaises(CliError):
+    categories.move_papers(self.root,request)
+  self.assertTrue((self.root/PDF).is_file())
+  self.assertEqual(self.journals(),[])
+
+ def interrupt_batch(self):
+  pdf2='papers/10_来源/second.pdf';self.add_paper('L002',pdf2)
+  target2='papers/11_第二目标';(self.root/target2).mkdir()
+  request=self.request(('L001',TARGET),('L002',target2))
+  rename=categories._rename_file_no_replace
+  def fail_after_first_paper(source,target):
+   if source.parent.name=='10_来源':raise KeyboardInterrupt
+   rename(source,target)
+  with patch.object(categories,'_rename_file_no_replace',side_effect=fail_after_first_paper):
+   with self.assertRaises(KeyboardInterrupt):categories.move_papers(self.root,request)
+  self.assertEqual(len(self.journals()),1)
+  return pdf2,target2
+
+ def test_repair_completes_an_interrupted_batch_and_is_repeatable(self):
+  pdf2,target2=self.interrupt_batch()
+  self.assertTrue((self.root/pdf2).is_file())
+  self.assertIn(PDF,self.read('README.md'))
+  self.assertEqual([item['action'] for item in categories.repair_moves(self.root)],['repaired'])
+  self.assertTrue((self.root/f'{target2}/second.pdf').is_file())
+  self.assertFalse((self.root/pdf2).exists())
+  self.assertEqual([item['file'] for item in self.catalog()['records']],
+                   [f'{TARGET}/paper.pdf',f'{target2}/second.pdf'])
+  self.assertEqual(categories.repair_moves(self.root),[])
+
+ def test_repair_verifies_the_whole_batch_before_moving_remaining_files(self):
+  pdf2,target2=self.interrupt_batch()
+  self.put(pdf2,'意外修改的源文件')
+  before=self.journals()[0].read_bytes()
+  result=categories.repair_moves(self.root)[0]
+  self.assertEqual(result['action'],'conflict')
+  self.assertIn('哈希不匹配',result['error'])
+  self.assertEqual(self.read(pdf2),'意外修改的源文件')
+  self.assertFalse((self.root/f'{target2}/second.来源.json').exists())
+  self.assertEqual(self.journals()[0].read_bytes(),before)
+
+ def test_batch_does_not_overwrite_a_target_created_after_preflight_and_rolls_back(self):
+  rename=categories._rename_file_no_replace
+  def create_conflict(source,target):
+   if source.name=='paper_v2.pdf':target.write_bytes(b'new target')
+   rename(source,target)
+  with patch.object(categories,'_rename_file_no_replace',side_effect=create_conflict):
+   result=categories.move_papers(self.root,self.request(('L001',TARGET)))
+  self.assertEqual(result['items'][0]['status'],'failed')
+  self.assertEqual((self.root/TARGET/'paper_v2.pdf').read_bytes(),b'new target')
+  for path in (PDF,SOURCE,PDF_V2,SOURCE_V2):self.assertTrue((self.root/path).is_file())
+  self.assertNotIn('repair',result)
+  self.assertEqual(self.journals(),[])
+
+ def test_batch_retains_journal_when_roll_back_fails(self):
+  rename=categories._rename_file_no_replace
+  def fail_move_and_first_rollback(source,target):
+   if source.name=='paper_v2.pdf' or source==self.root/TARGET/'paper.pdf':raise OSError('模拟移动失败')
+   rename(source,target)
+  with patch.object(categories,'_rename_file_no_replace',side_effect=fail_move_and_first_rollback):
+   result=categories.move_papers(self.root,self.request(('L001',TARGET)))
+  self.assertEqual(result['items'][0]['status'],'failed')
+  self.assertIn('回滚',result['items'][0]['error'])
+  self.assertEqual(self.journals(),[self.root/result['repair']])
+  self.assertEqual(categories.repair_moves(self.root)[0]['action'],'repaired')
+  self.assertTrue((self.root/TARGET/'paper_v2.pdf').is_file())
+
+ def test_repair_accepts_sidecars_already_rewritten_before_failure(self):
+  pdf2='papers/11_来源/paper.pdf';self.add_paper('L002',pdf2)
+  target1=f'{TARGET}/papers/11_来源';target2='papers/12_第二目标'
+  for target in (target1,target2):(self.root/target).mkdir(parents=True)
+  with patch.object(categories,'_update_ledger_files',side_effect=OSError('模拟台账写入失败')):
+   result=categories.move_papers(self.root,self.request(('L001',target1),('L002',target2)))
+  self.assertEqual([item['status'] for item in result['items']],['failed','failed'])
+  self.assertTrue((self.root/result['repair']).is_file())
+  final=f'{target1}/paper.pdf'
+  self.assertEqual(json.loads(self.read(f'{target1}/paper.来源.json'))['当前路径'],final)
+  self.assertEqual(categories.repair_moves(self.root)[0]['action'],'repaired')
+  self.assertEqual(json.loads(self.read(f'{target1}/paper.来源.json'))['当前路径'],final)
+  self.assertEqual(self.catalog()['records'][0]['file'],final)
+  self.assertEqual(categories.repair_moves(self.root),[])
+
+ def test_cli_batch_reads_json_and_emits_structured_results(self):
+  entry=Path(__file__).resolve().parents[1]/'run.py'
+  env={**os.environ,'PYTHONUTF8':'1','PYTHONIOENCODING':'utf-8'}
+  path=self.root/'input.json'
+  save(path,self.request(('L001',TARGET),('L999',TARGET)))
+  command=[sys.executable,str(entry),'--root',str(self.root),'move-papers',str(path)]
+  proc=subprocess.run(command,capture_output=True,text=True,encoding='utf-8',env=env)
+  self.assertEqual(proc.returncode,0,proc.stderr)
+  self.assertEqual([item['status'] for item in json.loads(proc.stdout)['items']],['moved','blocked'])
+  save(path,self.request(('L001','papers/08_SER/01_资源')))
+  self.put('.zhiyue/batches/b1/下载状态.json','{')
+  proc=subprocess.run(command,capture_output=True,text=True,encoding='utf-8',env=env)
+  self.assertEqual(proc.returncode,0,proc.stderr)
+  result=json.loads(proc.stdout)
+  self.assertEqual(result['items'][0]['status'],'failed')
+  self.assertTrue((self.root/result['repair']).is_file())

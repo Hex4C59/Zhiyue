@@ -229,7 +229,7 @@ export async function createApp({
   });
   const emit = (event: ChatEvent | JobEvent | PdfTranslationEvent): void => {
     const job = event.type === 'job' ? event.job as JobRecord : null;
-    if (job && ['completed', 'failed'].includes(job.status)) void library.refresh();
+    if (job && ['completed', 'partial', 'failed'].includes(job.status)) void library.refresh();
     const data = `data: ${JSON.stringify(event)}\n\n`;
     for (const res of connections) if (!res.writableEnded) res.write(data);
   };
@@ -393,7 +393,7 @@ export async function createApp({
           ...(paperIds ? { paperIds } : {}),
         }), 201);
       }
-      const chatMatch = /^\/api\/chats\/([\w-]+)(?:\/(messages|interrupt|commands))?$/.exec(route);
+      const chatMatch = /^\/api\/chats\/([\w-]+)(?:\/(messages|interrupt|commands|folder-actions))?$/.exec(route);
       if (chatMatch) {
         const [, id, action] = chatMatch as unknown as [string, string, string | undefined];
         if (method === 'GET' && !action) return json(res, chats.get(id));
@@ -419,17 +419,16 @@ export async function createApp({
           });
           return json(res, result, 202);
         }
+        if (method === 'POST' && action === 'folder-actions') {
+          const decision = await readJson(req);
+          return json(res, await chats.resolveFolderActions(id, decision.action, decision.ids));
+        }
         if (method === 'POST' && action === 'interrupt') return json(res, await chats.interrupt(id));
       }
       const noteDraft = /^\/api\/note-drafts\/([\w-]+)$/.exec(route);
       if (method === 'POST' && noteDraft) {
         const { action } = await readJson(req);
         return json(res, await chats.resolveNoteDraft((noteDraft[1] as string), action));
-      }
-      const folderAction = /^\/api\/folder-actions\/([\w-]+)$/.exec(route);
-      if (method === 'POST' && folderAction) {
-        const { action } = await readJson(req);
-        return json(res, await chats.resolveFolderAction((folderAction[1] as string), action));
       }
       const approval = /^\/api\/approvals\/([\w-]+)$/.exec(route);
       if (method === 'POST' && approval) {

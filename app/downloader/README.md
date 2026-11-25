@@ -32,7 +32,8 @@ Python入口为`run.py`，默认以本工具所在项目为根目录，和当前
 | archive --batch NAME [--category DIR] | 归档已核验项，分配或复用L编号，保留版本及更新README/catalog；分类目录须已存在，指定的DIR会写回台账 |
 | rename-category --category NAME [--subcategory NAME] --name NEW | 在库写锁下移动分类目录，同步README、来源记录、文本引用、批次台账和catalog |
 | move-paper --literature-id L --category DIR | 在库写锁下把一篇文献及其来源记录移到现有分类，同步README链接、笔记与成果引用、批次台账条目、归档事务和catalog；目标同名文件时报错且不改动 |
-| repair | 恢复未完成的分类改名、文献移动和归档事务；冲突只报告，不删除文件 |
+| move-papers INPUT.json | 单次取库写锁，按指定目标分类批量移动最多 1000 篇，返回逐项结果和需要时的修复记录 |
+| repair | 恢复未完成的分类改名、文献移动和归档事务，报告冲突 |
 | ieee --batch NAME [--submit] | 生成IEEE串行队列；明确--submit后使用现有可见InstSci机构会话 |
 | pack --batch NAME | 普通分组文件夹ZIP；重复--batch可合包；--mode nested先打各组ZIP再生成外层ZIP |
 
@@ -51,6 +52,8 @@ Python入口为`run.py`，默认以本工具所在项目为根目录，和当前
 改名不会等待尚未开始的批次队列；排队任务开始后若分类已改名会失败，需要重新提交。`repair` 只续做已经移动的目录；只有旧目录时判定未移动，新旧都在时报告冲突。归档的 `prepared` 事务会重新执行归档，目标 PDF 已存在且哈希一致时继续提交，不会重复复制；`repair` 结束前会在库写锁内重建一次派生索引。
 
 `move-paper` 只处理已经归档的 `L` 编号，目标分类必须已存在；同目录内的主文件、其他版本与 `.来源.json` 一起搬，其他目录的同编号版本留在原处并在 `other_locations` 里报告。搬完文件后改写 README 链接、`notes/`/`synthesis/`/`outputs/` 中的路径、来源记录的 `当前路径`、批次台账条目的 `file`/`source_record`、归档事务记录，并重建 catalog；批次级 `category` 不变。引用改写失败时保留 `.zhiyue/tmp/paper_moves/` 事务记录，`repair` 可续做。
+
+`move-papers INPUT.json` 接受 `[{"paperId":"L001","category":"papers/01_分类"}]` 格式的数组。同一编号指定不同目标时拒绝整组。其他预检问题逐项报告，有效项共用一份事务记录，批次级 `category` 保留，索引统一重建。中断后运行 `repair`，它会核对整组文件状态与哈希，能安全续做时完成移动和引用同步。存在冲突时保留修复记录。
 
 `archive` 不再为缺失的分类目录执行 `mkdir`。导入前由网站按编号规则创建分类；直接调用 CLI 时需先创建目录，否则 `import` 返回“分类目录不存在”。已有批次可用 `archive --category papers/现有目录` 把台账分类改到现有目录，后续续跑沿用新分类。
 

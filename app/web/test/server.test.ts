@@ -338,15 +338,18 @@ test('本地HTTP服务提供目录、PDF范围读取和上传，拒绝跨站与�
     id: 'folder-1', kind: 'delete', category: '01_改名分类', subcategory: '',
     path: 'papers/01_改名分类', papers: 0, createdAt: new Date().toISOString(),
   } satisfies ChatFolderAction];
-  response = await fetch(base + '/api/folder-actions/folder-1', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'apply' }),
+  const decideFolders = (ids: string[], id = chat.id) => fetch(`${base}/api/chats/${id}/folder-actions`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'apply', ids }),
   });
+  const other = app.chats.create();
+  assert.equal((await decideFolders(['folder-1'], other.id)).status, 404);
+  assert.equal((await decideFolders(['folder-1', 'missing'])).status, 404);
+  assert.equal(app.chats.get(chat.id).folderActions?.length, 1);
+  response = await decideFolders(['folder-1', 'folder-1']);
   assert.equal(response.status, 200);
+  assert.deepEqual((await response.json() as { applied: string[] }).applied, ['folder-1']);
   assert.deepEqual(app.chats.get(chat.id).folderActions, []);
-  response = await fetch(base + '/api/folder-actions/missing', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'apply' }),
-  });
-  assert.equal(response.status, 404);
+  assert.equal((await decideFolders(['folder-1'])).status, 404);
   const filename = encodeURIComponent('附件.txt');
   response = await fetch(base + '/api/uploads', {
     method: 'POST', headers: { 'X-Filename': filename, 'Content-Type': 'application/octet-stream' }, body: '待解释的文字',

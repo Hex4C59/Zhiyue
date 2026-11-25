@@ -15,6 +15,7 @@ export const statusLabels: Record<string, string> = {
   pending: '等待中',
   running: '进行中',
   completed: '流程结束',
+  partial: '部分完成',
   complete: '已完成',
   success: '已完成',
   succeeded: '已完成',
@@ -772,20 +773,33 @@ export function createWorkspace({
   const saveNoteDraft = (id: string): Promise<void> => resolveNoteDraft(id, 'save');
   const discardNoteDraft = (id: string): Promise<void> => resolveNoteDraft(id, 'discard');
 
-  /** 确认或取消助手提出的分类删除；失败时服务端会推送带 error 的同一张卡片，这里只提示原因。 */
-  async function resolveFolderAction(id: string, action: 'apply' | 'discard'): Promise<void> {
+  /** 提交已勾选的删除请求，按服务端实际返回更新卡片。 */
+  async function resolveFolderActions(ids: string[], action: 'apply' | 'discard'): Promise<void> {
     const chat = state.chat;
-    const pending = (chat?.folderActions || []).find((item) => item.id === id);
-    if (!pending || state.folderActionSaving) return;
-    state.folderActionSaving = id;
+    if (!chat || !ids.length || state.folderActionSaving) return;
+    const paths = new Map((chat.folderActions ?? []).map(({ id, path }) => [id, path]));
+    const countFolders = (items: string[]): number => new Set(items.map((id) => paths.get(id) ?? id)).size;
+    state.folderActionSaving = chat.id;
     try {
-      await api(`/api/folder-actions/${endpoint(id)}`, json('POST', { action }));
-      chat!.folderActions = (chat!.folderActions || []).filter((item) => item.id !== id);
+      const result = await api<{
+        applied: string[]; discarded: string[]; failed: Array<{ id: string; error: string }>; remaining: string[];
+      }>(`/api/chats/${endpoint(chat.id)}/folder-actions`, json('POST', { action, ids }));
+      const resolved = new Set([...result.applied, ...result.discarded]);
+      const errors = new Map(result.failed.map(({ id, error }) => [id, error]));
+      if (state.chat?.id === chat.id) {
+        state.chat.folderActions = (state.chat.folderActions ?? []).filter((item) => !resolved.has(item.id));
+        for (const item of state.chat.folderActions) {
+          const error = errors.get(item.id);
+          if (error) item.error = error;
+        }
+      }
       if (action === 'apply') {
-        toast(`文件夹已移到回收站：${pending.path}`);
+        const failed = result.failed.length ? `，${countFolders(result.failed.map(({ id }) => id))} 项需处理` : '';
+        const remaining = result.remaining.length ? `，${countFolders(result.remaining)} 项未执行` : '';
+        toast(`已移入回收站 ${countFolders(result.applied)} 个文件夹${failed}${remaining}`, !!failed || !!remaining);
         await loadLibrary();
       } else {
-        toast('已取消删除文件夹');
+        toast(`已取消 ${countFolders(result.discarded)} 个文件夹的删除请求`);
       }
     } catch (error) {
       toast(messageOf(error), true);
@@ -1118,7 +1132,7 @@ export function createWorkspace({
     decideApproval,
     saveNoteDraft,
     discardNoteDraft,
-    resolveFolderAction,
+    resolveFolderActions,
     deleteNote,
     loadDownloads,
     createDownload,

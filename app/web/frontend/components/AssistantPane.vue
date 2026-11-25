@@ -248,7 +248,7 @@ function historyDate(chat: Chat): string {
       </section>
     </div>
     <div v-if="!isArchived && folderActions.length" id="folder-actions" class="folder-actions" aria-live="polite">
-      <FolderActionCard v-for="action in folderActions" :key="action.id" :action="action" />
+      <FolderActionCard :key="state.chat?.id" :actions="folderActions" />
     </div>
     <div v-if="!isArchived && noteDrafts.length" id="note-drafts" class="note-drafts" aria-live="polite">
       <NoteDraftCard v-for="draft in noteDrafts" :key="draft.id" :draft="draft" />

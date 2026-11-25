@@ -3,6 +3,7 @@ import { computed, inject, reactive, ref } from 'vue';
 import { categoryChoices } from '../lib/content';
 import { statusLabels } from '../lib/workspace';
 import Icon from './Icon.vue';
+import PaperMoveDetails from './PaperMoveDetails.vue';
 import type { WorkspaceApi } from '../lib/workspace';
 import type { JobRecord } from '../lib/types';
 
@@ -154,6 +155,7 @@ async function act(batch: string, action: string): Promise<void> {
               <p v-if="resultCounts(job)" class="job-counts">
                 批次结果：{{ counts(resultCounts(job)) || '暂无计数' }}
               </p>
+              <PaperMoveDetails v-if="job.moveResult" :result="job.moveResult" />
               <details :data-job-details="job.id">
                 <summary>查看任务日志</summary>
                 <pre class="job-log">{{ logText(job.log) }}</pre>
@@ -170,6 +172,7 @@ async function act(batch: string, action: string): Promise<void> {
                   <span class="status-badge">{{ statusLabels[job.status] || job.status }}</span>
                 </div>
                 <p v-if="job.error" class="error-text">{{ errorText(job.error) }}</p>
+                <PaperMoveDetails v-if="job.moveResult" :result="job.moveResult" />
                 <details :data-job-details="job.id">
                   <summary>查看任务日志</summary>
                   <pre class="job-log">{{ logText(job.log) }}</pre>

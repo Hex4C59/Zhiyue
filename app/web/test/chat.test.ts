@@ -80,6 +80,7 @@ async function fixture(t: test.TestContext): Promise<Fixture> {
     jobs: {
       startDownload: async (input: unknown) => ({ id: 'job-1', status: 'queued', input }),
       startAction: async () => ({ id: 'job-1' }),
+      startPaperMove: async (moves: unknown) => ({ id: 'move-1', status: 'queued', moves }),
       getJob: () => ({ id: 'job-1' }),
     },
     emit: (event: ChatEvent) => events.push(structuredClone(event)),
@@ -154,7 +155,7 @@ test('会话接入真实协议形状，图片以localImage输入，文件提取�
   assert.equal(turn.input[1]?.type, 'localImage');
   assert.match(turn.input[0]?.text ?? '', /文件内容/);
   assert.match(String(client.calls[0]?.params?.developerInstructions), /文献研究助手/);
-  assert.equal((client.calls[0]?.params?.dynamicTools as unknown[]).length, 17);
+  assert.equal((client.calls[0]?.params?.dynamicTools as unknown[]).length, 19);
 });
 
 test('多条agent消息流可拼接并在turn完成后持久化', async (t) => {
@@ -291,28 +292,63 @@ test('分类工具：新建与改名直接执行，删除先生成待确认卡�
   assert.ok(pending);
   assert.equal(pending?.papers, 1);
   assert.ok(events.some((event) => event.type === 'folderAction'));
-  // 非空目录删除失败：卡片保留错误原因且不丢弃，用户处理后可以重试或取消。
-  chats.library = {
-    ...library,
-    deleteCategory: async () => {
-      throw Object.assign(new Error('文件夹不是空的，请先移出文献或子文件夹。'), { statusCode: 409 });
-    },
-  } as unknown as ChatServiceOptions['library'];
-  await assert.rejects(chats.resolveFolderAction(pending!.id, 'apply'), /文件夹不是空的/);
+  await request(41, 'delete_categories', { categories: ['09_空分类/01_子目录', '不存在'] });
+  assert.equal(reply().success, false);
   assert.equal(chat.folderActions?.length, 1);
-  assert.match(String(chat.folderActions?.[0]?.error), /文件夹不是空的/);
+  await request(42, 'delete_categories', { categories: ['09_空分类', '09_空分类/01_子目录'] });
+  assert.equal(reply().success, true);
+  assert.equal(chat.folderActions?.length, 2);
+  const child = chat.folderActions?.find((item) => item.subcategory);
+  assert.ok(child);
+  let resume!: () => void;
+  const waiting = new Promise<void>((resolve) => { resume = resolve; });
   chats.library = {
     ...library,
     deleteCategory: async (_category: unknown, subcategory: unknown) => {
-      calls.push({ method: 'deleteCategory', args: [subcategory] });
-      return { trashed: 'x' };
+      if (subcategory) {
+        await waiting;
+        return { trashed: 'x' };
+      }
+      throw Object.assign(new Error('文件夹不是空的，请先移出文献或子文件夹。'), { statusCode: 409 });
     },
   } as unknown as ChatServiceOptions['library'];
-  assert.deepEqual(await chats.resolveFolderAction(pending!.id, 'discard'), { discarded: true });
-  assert.equal(chat.folderActions?.length, 0);
-  await assert.rejects(chats.resolveFolderAction('missing', 'apply'), /不存在/);
+  const deciding = chats.resolveFolderActions(chat.id, 'apply', [pending.id, child.id]);
+  await assert.rejects(chats.resolveFolderActions(chat.id, 'apply', [child.id]), /正在处理/);
+  await request(43, 'delete_category', { category: '10_新分类' });
+  const extra = chat.folderActions?.find((item) => item.category === '10_新分类');
+  assert.ok(extra);
+  resume();
+  const result = await deciding;
+  assert.deepEqual(result.applied, [child.id]);
+  assert.match(result.failed[0]?.error ?? '', /文件夹不是空的/);
+  assert.deepEqual(chat.folderActions?.map(({ id }) => id), [pending.id, extra.id]);
+  assert.deepEqual((await chats.resolveFolderActions(chat.id, 'discard', [pending.id])).discarded, [pending.id]);
+  await assert.rejects(chats.resolveFolderActions(chat.id, 'apply', ['missing']), /不存在/);
   await request(5, 'move_paper', { paperId: 'L001', category: '09_空分类' });
   assert.deepEqual(calls.at(-1), { method: 'movePaper', args: ['L001', '09_空分类'] });
+  const submitted: unknown[] = [];
+  const startMove = chats.jobs.startPaperMove;
+  chats.jobs.startPaperMove = (items) => {
+    submitted.push(items);
+    return startMove(items);
+  };
+  await request(6, 'move_papers', { groups: [
+    { category: '09_空分类', paperIds: [' l001 ', 'L002', 'L001'] },
+    { category: 'papers/09_空分类/01_子目录', paperIds: ['L003'] },
+  ] });
+  assert.equal(reply().success, true);
+  assert.match(reply().text, /move-1/);
+  assert.deepEqual(submitted, [[
+    { paperId: 'L001', category: 'papers/09_空分类' },
+    { paperId: 'L002', category: 'papers/09_空分类' },
+    { paperId: 'L003', category: 'papers/09_空分类/01_子目录' },
+  ]]);
+  await request(7, 'move_papers', { groups: [
+    { category: '09_空分类', paperIds: ['L001'] },
+    { category: '09_空分类/01_子目录', paperIds: ['L001'] },
+  ] });
+  assert.match(reply().text, /两个不同的目标/);
+  assert.equal(submitted.length, 1);
 });
 
 test('新增阅读工具通过桥接返回文档、目录、检索片段和页面图片', async (t) => {

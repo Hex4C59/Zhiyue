@@ -110,6 +110,13 @@ export interface JobRecord {
   steps?: Array<{ action?: string; status?: string }>;
   createdAt?: string;
   updatedAt?: string;
+  moveResult?: { items: Array<{
+    paperId: string;
+    category: string;
+    status: 'moved' | 'unchanged' | 'blocked' | 'failed';
+    error?: string;
+    otherLocations?: string[];
+  }>; repair?: string };
   result?: { counts?: Record<string, number>; [key: string]: unknown };
   [key: string]: unknown;
 }
