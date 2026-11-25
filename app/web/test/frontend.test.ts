@@ -112,8 +112,11 @@ const click = (element: any): boolean => element.dispatchEvent(new MouseEvent('c
 // `ui` 模拟文献库里的界面状态：传入上一次写回的值即可模拟重启后读回。
 async function fixture(
   t: test.TestContext,
-  { ui = {}, uiPatchError = '', pdfTextLines }: { ui?: Json; uiPatchError?: string; pdfTextLines?: Json[] } = {},
+  { ui = {}, uiPatchError = '', pdfTextLines, pdfTranslation }: {
+    ui?: Json; uiPatchError?: string; pdfTextLines?: Json[]; pdfTranslation?: Json;
+  } = {},
 ) {
+  let translationSequence = 0;
   const calls: any[] = [];
   const uiState: Json = { chatId: null, paperId: null, panelWidths: {}, ...ui };
   const decisions: any[] = [];
@@ -322,6 +325,20 @@ async function fixture(
       const paper = papers.find((item) => path.endsWith(item.literature_id))!;
       Object.assign(paper, body);
       return structuredClone(paper);
+    }
+    const translationRoute = /^\/api\/papers\/(L\d+)\/translation(\/cancel)?$/.exec(path);
+    if (translationRoute) {
+      if (!pdfTranslation || translationRoute[1] !== 'L001') {
+        return { engineAvailable: false, model: null, job: null, result: null, updateAvailable: false };
+      }
+      if (options.method === 'POST' && translationRoute[2]) {
+        assert.equal(body.jobId, pdfTranslation.job.id);
+        Object.assign(pdfTranslation.job, { status: 'cancelling', stage: '正在取消' });
+      } else if (options.method === 'POST') {
+        pdfTranslation.job = { id: `translation-${++translationSequence}`, paperId: 'L001', key: 'a'.repeat(64),
+          status: 'running', percent: 25, stage: '翻译与排版' };
+      }
+      return structuredClone(pdfTranslation);
     }
     if (path.includes('/text-layer?'))
       return {
@@ -1485,6 +1502,114 @@ test('高像素密度下升级 PDF 页图，替换成功或失败都保留选区
   assert.equal(page.$('.pdf-page-image'), sharpImage);
   assert.equal(document.getSelection()!.toString(), 'Selectable ');
   assert.equal(page.calls.filter((call) => call.path.includes('/text-layer?')).length, 1);
+});
+
+test('翻译完成后切换译本，保留物理页和缩放并提供导出', async (t) => {
+  const originalFetch = globalThis.fetch;
+  const requests: URL[] = [];
+  globalThis.fetch = async (url) => {
+    requests.push(new URL(String(url), 'http://localhost'));
+    return new Response(new Uint8Array([137, 80, 78, 71]), {
+      headers: { 'Content-Type': 'image/png', 'X-PDF-Pages': '2' },
+    });
+  };
+  t.after(() => { globalThis.fetch = originalFetch; });
+  const translation: Json = { engineAvailable: true, model: 'test/luna', result: null, job: null, updateAvailable: false };
+  const page = await fixture(t, { pdfTranslation: translation });
+  click(page.$('[data-paper="L001"]'));
+  await until(() => page.$('.pdf-translation-bar button')?.textContent === '翻译成中文' && page.$('.pdf-page-image'));
+  click(page.$('[data-pdf-step="1"]'));
+  click(page.$('[data-pdf-zoom="50"]'));
+  assert.equal(page.workspace.state.pdfPage, 2);
+  assert.equal(page.workspace.state.pdfZoom, 150);
+  click(page.$('.pdf-translation-bar button'));
+  await until(() => page.$('.pdf-translation-bar progress'));
+  assert.deepEqual(page.calls.find(({ path, method }) => path.endsWith('/translation') && method === 'POST').body,
+    { model: 'test/luna' });
+  translation.result = { key: 'a'.repeat(64), pages: 2, reviewPages: [] };
+  translation.job.status = 'completed';
+  translation.job.percent = 100;
+  page.workspace.receive({ type: 'pdfTranslation', job: structuredClone(translation.job) });
+  await until(() => requests.some((url) => url.searchParams.get('translation') === translation.result.key));
+  const translated = requests.find((url) => url.searchParams.has('translation'))!;
+  assert.equal(translated.searchParams.get('page'), '2');
+  assert.equal(page.workspace.state.pdfZoom, 150);
+  assert.match(page.$('.pdf-translation-download').getAttribute('href'), /\/translation\/file\?key=.*&download=1$/);
+  click(page.$('.pdf-translation-bar .segmented button'));
+  await until(() => page.workspace.state.pdfSession?.translation === '' && page.$('.pdf-page-image'));
+  assert.equal(page.workspace.state.pdfPage, 2);
+  assert.equal(page.workspace.state.pdfZoom, 150);
+});
+
+test('更新译本时保留旧版阅读与导出，取消或失败后可重试', async (t) => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(new Uint8Array([137, 80, 78, 71]), {
+    headers: { 'Content-Type': 'image/png', 'X-PDF-Pages': '2' },
+  });
+  t.after(() => { globalThis.fetch = originalFetch; });
+  const old = { key: 'b'.repeat(64), sourceHash: 'c'.repeat(64), pages: 2, reviewPages: [2] };
+  const translation: Json = { engineAvailable: true, model: 'test/luna', result: old, job: null, updateAvailable: true };
+  const page = await fixture(t, { pdfTranslation: translation });
+  const { state } = page.workspace;
+  const button = (text: string) => [...document.querySelectorAll('.pdf-translation-bar button')]
+    .find((item) => item.textContent === text);
+  const downloadKey = () => new URL(page.$('.pdf-translation-download').href).searchParams.get('key');
+  const event = (job = translation.job) => page.workspace.receive({ type: 'pdfTranslation', job: structuredClone(job) });
+  const ready = () => !!page.$('.pdf-page-image') && state.pdfPage === 2 && state.pdfZoom === 150;
+  const start = async () => {
+    await until(() => !!button('更新译本'));
+    click(button('更新译本'));
+    await until(() => page.$('.pdf-translation-bar progress')?.value === 25 && !!button('取消'));
+    await flush();
+  };
+  click(page.$('[data-paper="L001"]'));
+  await until(() => button('更新译本') && page.$('.pdf-page-image'));
+  assert.match(page.$('.pdf-translation-bar').textContent, /正文发送至 test\/luna/);
+  click(page.$('[data-pdf-step="1"]'));
+  click(page.$('[data-pdf-zoom="50"]'));
+  click(button('中文'));
+  await until(() => ready() && state.pdfSession?.translation === old.key);
+  assert.match(page.$('.pdf-translation-bar').textContent, /本页需核对/);
+
+  await start();
+  assert.equal(downloadKey(), old.key);
+  click(button('原文'));
+  await until(() => ready() && state.pdfSession?.translation === '');
+  click(button('中文'));
+  await until(() => ready() && state.pdfSession?.translation === old.key);
+  click(button('取消'));
+  await until(() => page.$('.pdf-translation-bar').textContent.includes('正在取消'));
+  assert.equal(downloadKey(), old.key);
+  Object.assign(translation.job, { status: 'cancelled', stage: '已取消' });
+  event();
+  await until(() => !!button('更新译本'));
+  assert.equal(state.pdfTranslation, old.key);
+  assert.equal(downloadKey(), old.key);
+
+  await start();
+  Object.assign(translation.job, { status: 'failed', error: '合成模型请求失败' });
+  event();
+  await until(() => page.$('.pdf-translation-error')?.textContent.includes('合成模型请求失败'));
+  assert.equal(state.pdfTranslation, old.key);
+  assert.equal(downloadKey(), old.key);
+
+  await start();
+  event({ ...translation.job, id: 'other-task', status: 'completed', percent: 100 });
+  event({ ...translation.job, paperId: 'L002', status: 'completed', percent: 100 });
+  await flush();
+  assert.equal(page.$('.pdf-translation-bar progress').value, 25);
+  const next = { ...old, key: translation.job.key, reviewPages: [] };
+  // 先收到完成通知，HTTP 仍读到旧的任务状态时，按已发布的缓存和本次任务一起确认。
+  event({ ...translation.job, status: 'completed', percent: 100 });
+  await flush();
+  assert.equal(state.pdfTranslation, old.key);
+  assert.equal(downloadKey(), old.key);
+  Object.assign(translation, { result: next, updateAvailable: false });
+  Object.assign(translation.job, { status: 'completed', percent: 100 });
+  event();
+  await until(() => ready() && state.pdfSession?.translation === next.key);
+  assert.equal(downloadKey(), next.key);
+  assert.equal(button('更新译本'), undefined);
 });
 
 test('连续阅读中 Ctrl+滚轮缩放 PDF 页面，普通滚轮不受影响', async (t) => {

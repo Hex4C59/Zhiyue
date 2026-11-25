@@ -143,7 +143,8 @@ export function createReader({
     let url = '';
     try {
       const base = `/api/papers/${endpoint(session.paper.literature_id)}`;
-      const query = `?page=${page}&scale=${scale}`;
+      const suffix = session.translation ? `&translation=${encodeURIComponent(session.translation)}` : '';
+      const query = `?page=${page}&scale=${scale}${suffix}`;
       const options = { signal: controller.signal };
       const textPromise = session.images.has(page) ? undefined : api<TextLayerData>(
         `${base}/text-layer${query}`, options,
@@ -400,6 +401,7 @@ export function createReader({
     const root = $('#reader-content');
     const session: PDFSession = {
       paper,
+      translation: state.pdfTranslation,
       epoch,
       root,
       disposed: false,
@@ -575,15 +577,20 @@ export function createReader({
     const deleteNote = state.readerMode === 'note' && noteSelected
       ? `<button id="delete-note" class="icon-button danger" aria-label="删除当前笔记" title="删除当前笔记" ${state.noteDeleting ? 'disabled' : ''}>${icon('trash')}</button>`
       : '';
+    const pdfLabel = state.pdfTranslation ? '中文 PDF' : '原文 PDF';
+    const pdfURL = state.pdfTranslation
+      ? `/api/papers/${endpoint(paper.literature_id)}/translation/file?key=${encodeURIComponent(state.pdfTranslation)}`
+      : fileURL(paper.file || '');
     $('#reader-toolbar').hidden = false;
     $('#reader-toolbar').innerHTML =
-      `<div class="segmented"><button data-reader-mode="pdf" class="${state.readerMode === 'pdf' ? 'active' : ''}">原文 PDF</button><button data-reader-mode="note" class="${state.readerMode === 'note' ? 'active' : ''}">阅读笔记 <small>${notes.length}</small></button></div>${state.readerMode === 'pdf' && paper.file ? `<select id="pdf-renderer" aria-label="PDF显示方式"><option value="preview" ${!state.pdfBrowser ? 'selected' : ''}>连续阅读</option><option value="browser" ${state.pdfBrowser ? 'selected' : ''}>浏览器阅读器</option></select>` : ''}${state.readerMode === 'note' && notes.length ? `<select id="note-select" aria-label="选择笔记">${notes.map((note) => `<option value="${esc(note.path)}" ${note.path === noteSelected ? 'selected' : ''}>${esc(note.title || note.path.split(/[\\/]/).pop())}</option>`).join('')}</select>${deleteNote}` : ''}${paper.file ? `<a class="open-original" href="${esc(fileURL(paper.file))}" target="_blank" rel="noopener noreferrer">单独打开${icon('external')}</a>` : ''}${state.readerMode === 'pdf' && paper.file && !state.pdfBrowser ? '<div id="pdf-controls" class="pdf-controls" role="group" aria-label="PDF翻页与缩放"></div>' : ''}`;
+      `<div class="segmented"><button data-reader-mode="pdf" class="${state.readerMode === 'pdf' ? 'active' : ''}">${pdfLabel}</button><button data-reader-mode="note" class="${state.readerMode === 'note' ? 'active' : ''}">阅读笔记 <small>${notes.length}</small></button></div>${state.readerMode === 'pdf' && paper.file ? `<select id="pdf-renderer" aria-label="PDF显示方式"><option value="preview" ${!state.pdfBrowser ? 'selected' : ''}>连续阅读</option><option value="browser" ${state.pdfBrowser ? 'selected' : ''}>浏览器阅读器</option></select>` : ''}${state.readerMode === 'note' && notes.length ? `<select id="note-select" aria-label="选择笔记">${notes.map((note) => `<option value="${esc(note.path)}" ${note.path === noteSelected ? 'selected' : ''}>${esc(note.title || note.path.split(/[\\/]/).pop())}</option>`).join('')}</select>${deleteNote}` : ''}${paper.file ? `<a class="open-original" href="${esc(state.readerMode === 'pdf' ? pdfURL : fileURL(paper.file))}" target="_blank" rel="noopener noreferrer">单独打开${icon('external')}</a>` : ''}${state.readerMode === 'pdf' && paper.file && !state.pdfBrowser ? '<div id="pdf-controls" class="pdf-controls" role="group" aria-label="PDF翻页与缩放"></div>' : ''}`;
     if (state.readerMode === 'pdf') {
       if (!paper.file) {
         $('#reader-content').innerHTML = '<div class="empty"><p>该条目尚无可用原文文件。</p></div>';
       } else if (state.pdfBrowser) {
+        const source = state.pdfTranslation ? `${pdfURL}#page=${state.pdfPage}` : pdfURL;
         $('#reader-content').innerHTML =
-          `<iframe class="pdf-frame" title="${esc(titleOf(paper))} PDF原文" src="${esc(fileURL(paper.file))}"></iframe>`;
+          `<iframe class="pdf-frame" title="${esc(`${titleOf(paper)} ${pdfLabel}`)}" src="${esc(source)}"></iframe>`;
       } else loadPDFPreview(paper, epoch);
     } else if (notes.length) {
       state.notePath = notes.some((note) => note.path === state.notePath) ? state.notePath : notes[0]?.path ?? '';

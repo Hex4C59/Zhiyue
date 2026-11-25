@@ -1,3 +1,4 @@
+import type { PdfTranslationEvent } from '../../src/lib/pdfTranslationTypes.js';
 import type { ReadStatus } from './content';
 
 export interface NoteRef {
@@ -174,6 +175,7 @@ export interface PDFPageData {
 
 export interface PDFSession {
   paper: Paper;
+  translation: string;
   epoch: number;
   root: HTMLElement;
   disposed: boolean;
@@ -269,6 +271,8 @@ export interface WorkspaceState {
   pdfTotal: number | null;
   pdfZoom: number;
   pdfBrowser: boolean;
+  pdfTranslation: string;
+  pdfTranslationEvent: PdfTranslationEvent | null;
   pdfSession: PDFSession | null;
   previewLoading: boolean;
   toasts: ToastItem[];

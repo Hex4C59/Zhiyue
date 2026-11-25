@@ -1,4 +1,5 @@
 import { computed, markRaw, reactive } from 'vue';
+import type { PdfTranslationEvent } from '../../src/lib/pdfTranslationTypes.js';
 import { request } from './api';
 import { endpoint, json, titleOf } from './content';
 import type {
@@ -128,6 +129,8 @@ export function createWorkspace({
     pdfTotal: null,
     pdfZoom: 100,
     pdfBrowser: false,
+    pdfTranslation: '',
+    pdfTranslationEvent: null,
     pdfSession: null,
     previewLoading: false,
     toasts: [],
@@ -220,6 +223,7 @@ export function createWorkspace({
     state.pdfTotal = null;
     state.pdfZoom = 100;
     state.pdfBrowser = false;
+    state.pdfTranslation = '';
     if (state.context.size < 6 || state.context.has(id)) state.context.add(id);
     else toast('最多附带 6 篇论文；请先移除不需要的上下文。', true);
     if (window.matchMedia('(max-width:680px)').matches) setPanel('reader');
@@ -896,6 +900,10 @@ export function createWorkspace({
 
   function receive(data: WorkspaceEvent): void {
     if (stopped) return;
+    if (data.type === 'pdfTranslation' && (data.job as PdfTranslationEvent['job'] | undefined)?.paperId) {
+      state.pdfTranslationEvent = data as unknown as PdfTranslationEvent;
+      return;
+    }
     const chat = state.chat;
     const history = data.historyState;
     if (data.type === 'chatHistory' && typeof data.chatId === 'string' &&

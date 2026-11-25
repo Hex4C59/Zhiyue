@@ -352,6 +352,16 @@ pre,code,kbd,samp { font-family:var(--font-mono); }
 .segmented { display:flex; gap:2px; border-radius:5px; padding:2px; background:var(--tint); }
 .segmented button { padding:5px 9px; border-radius:3px; color:var(--muted); font-size:11px; }
 .segmented button.active { background:var(--selected); color:var(--ink); font-weight:600; }
+.pdf-translation-bar {
+  display:flex; align-items:center; flex-wrap:wrap; gap:5px 8px; min-width:0;
+  padding:4px 12px; background:var(--toolbar); border-bottom:1px solid var(--line); font-size:11px;
+}
+.pdf-translation-bar:empty { display:none; }
+.pdf-translation-bar .button { padding:4px 8px; font-size:11px; }
+.pdf-translation-bar progress { width:90px; height:8px; accent-color:var(--accent); }
+.pdf-translation-detail { color:var(--muted); min-width:0; overflow-wrap:anywhere; }
+.pdf-translation-download { color:var(--accent); }
+.pdf-translation-error { flex-basis:100%; overflow-wrap:anywhere; }
 .reader-content { flex:1; min-height:0; overflow:auto; position:relative; background:var(--canvas); }
 .pdf-frame { display:block; border:0; width:100%; height:100%; min-height:300px; background:var(--canvas); }
 .pdf-controls { display:flex; align-items:center; gap:5px; flex-basis:100%; border-top:1px solid var(--line); padding-top:6px; flex-wrap:wrap; }

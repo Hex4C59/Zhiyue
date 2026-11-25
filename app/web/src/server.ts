@@ -19,6 +19,9 @@ import { normalizePaperContext } from './lib/chat.js';
 import { THINKING_LEVELS } from './lib/pi.js';
 import type { ThinkingLevel } from './lib/pi.js';
 import { previewPaper } from './lib/preview.js';
+import { PdfTranslationService } from './lib/pdfTranslation.js';
+import type { PdfTranslationOptions } from './lib/pdfTranslation.js';
+import type { PdfTranslationEvent } from './lib/pdfTranslationTypes.js';
 import { UiStateStore } from './lib/uiState.js';
 import { libraryPaths, resolveLibraryRoot, ensureLibrary } from './lib/paths.js';
 import { appPaths } from './lib/appPaths.js';
@@ -67,6 +70,7 @@ export interface AppOptions {
   connectPi?: boolean;
   piClient?: ConstructorParameters<typeof AssistantService>[0]['piClient'];
   categoryCli?: (args: string[]) => Promise<unknown>;
+  translation?: Pick<PdfTranslationOptions, 'enginePython' | 'worker' | 'getModel'>;
 }
 
 export interface App {
@@ -211,7 +215,7 @@ export function extractFile(python: string, file: string, options: ExtractFileOp
 }
 
 export async function createApp({
-  root: configuredRoot, stateDir: configuredStateDir, connectPi = true, piClient, categoryCli,
+  root: configuredRoot, stateDir: configuredStateDir, connectPi = true, piClient, categoryCli, translation,
 }: AppOptions = {}): Promise<App> {
   const root = configuredRoot ?? resolveLibraryRoot(HERE);
   const paths = libraryPaths(root);
@@ -223,7 +227,7 @@ export async function createApp({
     root, stateDir,
     categoryCommand: categoryCli ?? ((args: string[]) => runCli({ python, root, args })),
   });
-  const emit = (event: ChatEvent | JobEvent): void => {
+  const emit = (event: ChatEvent | JobEvent | PdfTranslationEvent): void => {
     const job = event.type === 'job' ? event.job as JobRecord : null;
     if (job && ['completed', 'failed'].includes(job.status)) void library.refresh();
     const data = `data: ${JSON.stringify(event)}\n\n`;
@@ -245,6 +249,9 @@ export async function createApp({
       };
     },
     piClient,
+  });
+  const translations = new PdfTranslationService({
+    root, python, library, emit, getModel: () => chats.pi.translationModel(), ...translation,
   });
   const uploads = new Store<UploadStore>(path.join(stateDir, 'uploads.json'), { files: [] });
   const ui = new UiStateStore(path.join(stateDir, 'ui.json'));
@@ -447,14 +454,36 @@ export async function createApp({
         emit({ type: 'library' });
         return json(res, moved);
       }
+      const translationRoute = /^\/api\/papers\/(L\d+)\/translation(?:\/(file|cancel))?$/.exec(route);
+      if (translationRoute) {
+        const id = translationRoute[1] as string;
+        const action = translationRoute[2];
+        if (method === 'GET' && !action) return json(res, await translations.status(id));
+        if (method === 'POST' && !action) {
+          const { model } = await readJson(req);
+          const status = await translations.start(id, model);
+          return json(res, status, status.job ? 202 : 200);
+        }
+        if (method === 'POST' && action === 'cancel') {
+          const { jobId } = await readJson(req);
+          return json(res, await translations.cancel(id, jobId), 202);
+        }
+        if ((method === 'GET' || method === 'HEAD') && action === 'file') {
+          const file = await translations.file(id, url.searchParams.get('key') || '');
+          return await serveFile(req, res, file, {
+            download: url.searchParams.get('download') === '1', filename: `${id}-中文.pdf`,
+          });
+        }
+      }
       const preview = /^\/api\/papers\/(L\d+)\/(preview|text-layer)$/.exec(route);
       if ((method === 'GET' || method === 'HEAD') && preview) {
         const entry = await library.getPaper(preview[1] as string);
         if (!entry) throw error('文献不存在。', 404);
         const pageNumber = Number(url.searchParams.get('page') || 1);
         if (!Number.isSafeInteger(pageNumber) || pageNumber < 1) throw error('请指定正整数PDF页序。');
-        const rendered = await previewPaper({
-          root, python, file: await library.safeFile(entry.file), page: pageNumber,
+        const key = url.searchParams.get('translation');
+        const file = key === null ? await library.safeFile(entry.file) : await translations.file(entry.id, key);
+        const rendered = await previewPaper({ root, python, file, page: pageNumber,
           scale: url.searchParams.get('scale') ?? undefined,
         });
         if (preview[2] === 'text-layer') return json(res, { page: pageNumber, totalPages: rendered.totalPages, ...rendered.textLayer });
@@ -585,6 +614,7 @@ export async function createApp({
   return {
     server, library, jobs, chats, ui, emit,
     close: () => closing ??= (async () => {
+      await translations.close();
       await chats.client.close();
       for (const res of connections) res.end();
       const stopped = new Promise<void>((resolve) => server.close(() => resolve()));

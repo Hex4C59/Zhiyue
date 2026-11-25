@@ -91,6 +91,16 @@ flowchart LR
 3. `PiClient.runTurn` 把 SDK 消息增量和结束状态转成通知。`ChatService.notification` 在内存更新增量，经 `GET /api/events` 发送 `delta`。消息或回答完成时写入聊天记录并推送 `message`。`createWorkspace` 内的 `receive` 合并事件，`syncChat` 用 HTTP 补查状态。停止请求进入 `ChatService.interrupt`，调用 SDK 的 `abort`。若轮次仍在启动，则等 ID 返回再中断。未配置模型或生成失败时，`finish` 记录失败状态。停止只作用于本轮模型调用，已入队任务继续执行，见下文“事件推送、断线恢复与停止”。[pi.ts](app/web/src/lib/pi.ts) · [chat.ts](app/web/src/lib/chat.ts) · [workspace.ts](app/web/frontend/lib/workspace.ts) · [会话与停止测试](app/web/test/chat.test.ts) · [Pi 适配测试](app/web/test/pi.test.ts)
 4. 如果模型调用 `draft_note` 或 `draft_document`，`createNoteDraft` / `createDocumentDraft` 先把草稿存在会话并发送预览事件。用户在界面选择保存或丢弃后，客户端调用 `POST /api/note-drafts/:id`，由 `resolveNoteDraft` 处理。保存时用独占创建写入 `notes/`、`synthesis/` 或 `outputs/`，同名时另加序号。工作区随后刷新相关笔记。已保存的笔记在阅读区可删除：`POST /api/notes/delete` 经 `Library.deleteNote` 把文件移到 `.zhiyue/trash/notes/`（带时间戳前缀，不直接抹除），并返回刷新后的索引。[chat.ts](app/web/src/lib/chat.ts) · [library.ts](app/web/src/lib/library.ts) · [server.ts](app/web/src/server.ts) · [草稿测试](app/web/test/chat.test.ts)
 
+### PDF 翻译
+
+[翻译服务](app/web/src/lib/pdfTranslation.ts) 按已索引的 L 编号定位 PDF，以原文 SHA-256、模型指纹和排版修订号识别译本。应用同一时间运行一份翻译。Python 进程在临时目录对原文副本作版式解析和回填，经标准输入输出交换译文和进度。Node 用 `ModelRuntime.completeSimple` 向用户确认的 Pi 默认模型发送待译文本和翻译提示。BabelDOC 的 LLM 回调发送批量和带提示的单段请求。批量回复校验段落编号，两类回复都核对正文中的公式占位符、数字和引用。校验失败时临时保护数字和引用、重试一次，还原后再次校验。原生库诊断流向 stderr，JSON 事件使用独立的输出流。
+
+[书目识别模块](app/web/src/lib/pdf_references.py) 在 BabelDOC 版面钩子中按原页字框和基线确定阅读顺序，划分数字编号或作者年份条目的排版区域。译文按原物理页和栏位回填，可在该区域内换行。输出校验用 PDF 用户坐标对齐裁切和旋转后的字框，检查起行、编号或作者年份、续行及重叠越界。
+
+轻微越栏且字形归属明确时，校验流程调用[书目行收窄模块](app/web/src/lib/pdf_reference_fit.py)。它在原基线按比例收窄单行字形，横向最多压缩 12%，保留文字顺序。确认字形及邻近内容后重新校验书目页。已确认书目无法安全分条或回填时，从原文快照恢复该页内容和文字层，并记入 `reviewPages`。译本须保有可复制的中文。
+
+校验后在短时库写锁内复核原文哈希，将译本原子发布到 `.zhiyue/data/translations/<L 编号>/<译本键>/`。状态查询优先返回与当前模型指纹和排版修订匹配的译本，其余同源结果按完成时间选择。旧译本在更新中可按原键预览和导出。提交命中缓存返回 `200`，创建或复用任务返回 `202`。阅读区用任务 ID 和译本键匹配 SSE 与 HTTP 补查结果，完成后切换到新译本。取消后等待模型调用和进程退出，再清理工作目录。BabelDOC 0.7.1 作为独立运行环境安装，桌面资源包含翻译和书目脚本，发布命令使用随包或用户指定的库工具 Python。
+
 ### 事件推送、断线恢复与停止
 
 **推送与补查**

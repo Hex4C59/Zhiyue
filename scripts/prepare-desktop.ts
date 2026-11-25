@@ -161,8 +161,9 @@ if (!existsSync(path.join(SERVER_BUILD, 'server.js'))) {
   throw new Error('缺少服务端构建产物，请先运行 npm run build:node。');
 }
 await cp(SERVER_BUILD, path.join(OUT, 'app/web/src'), { recursive: true });
-// 只读的 Python 辅助脚本不参与 tsc，随编译产物一起放入运行时目录。
-for (const helper of ['extract.py', 'render.py']) {
+// Python 辅助脚本不参与 tsc，随编译产物一起放入运行时目录。
+const pythonHelpers = ['extract.py', 'render.py', 'translate_pdf.py', 'pdf_references.py', 'pdf_reference_fit.py'];
+for (const helper of pythonHelpers) {
   await cp(path.join(APP, 'web/src/lib', helper), path.join(OUT, 'app/web/src/lib', helper));
 }
 for (const entry of ['dist', 'public']) {
@@ -210,8 +211,7 @@ const requiredFiles = [
   'python/Lib/site-packages/pdfplumber/__init__.py',
   'python/Lib/site-packages/pypdfium2/__init__.py',
   'app/web/src/server.js',
-  'app/web/src/lib/extract.py',
-  'app/web/src/lib/render.py',
+  ...pythonHelpers.map((helper) => `app/web/src/lib/${helper}`),
   'app/web/src/lib/piTerminalPrefill.js',
   'app/web/dist/app.js',
   'app/web/public/index.html',
