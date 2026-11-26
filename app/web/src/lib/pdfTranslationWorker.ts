@@ -10,10 +10,41 @@ const PROMPTED_PARAGRAPH_INPUT = '\n## Output\n\n' +
   'Output ONLY the translated zh-CN text. No explanations, no backticks, no extra text.\n\n' +
   'Now translate the following text:\n\n';
 
+const ENGLISH_MONTH = 'Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|' +
+  'Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?';
+const MONTH_ABBREVIATIONS = 'jan feb mar apr may jun jul aug sep oct nov dec'.split(' ');
+const ORDINAL_DAY = /(\d{1,2})(?:st|nd|rd|th)?/.source;
+const DATE_YEAR = /(?:,\s*|\s+)(\d{4})\b/.source;
+const MONTH_FIRST_DATE = new RegExp(String.raw`\b(${ENGLISH_MONTH})\.?\s+${ORDINAL_DAY}${DATE_YEAR}`, 'giu');
+const DAY_FIRST_DATE = new RegExp(String.raw`\b${ORDINAL_DAY}\s+(${ENGLISH_MONTH})\.?${DATE_YEAR}`, 'giu');
+const CHINESE_DATE = /(?<!\d)(\d{4})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*[日号]/gu;
+
+function replaceCalendarDates(text: string, replace: (literal: string, key: string) => string): string {
+  const replaceDate = (literal: string, year: string, month: number, day: string): string => {
+    const lastDay = new Date(0);
+    lastDay.setUTCFullYear(Number(year), month, 0);
+    if (Number(year) < 1 || month < 1 || month > 12 || Number(day) < 1 || Number(day) > lastDay.getUTCDate()) {
+      return literal;
+    }
+    return replace(literal, `date:${year}-${month}-${Number(day)}`);
+  };
+  const monthNumber = (name: string): number => MONTH_ABBREVIATIONS.indexOf(name.slice(0, 3).toLowerCase()) + 1;
+  return text.replace(MONTH_FIRST_DATE, (date, month, day, year) => replaceDate(date, year, monthNumber(month), day))
+    .replace(DAY_FIRST_DATE, (date, day, month, year) => replaceDate(date, year, monthNumber(month), day))
+    .replace(CHINESE_DATE, (date, year, month, day) => replaceDate(date, year, Number(month), day));
+}
+
 function preservesMarkers(before: string, after: string): boolean {
-  const marks = (text: string): string[] => (text.normalize('NFKC').replaceAll('−', '-').match(
-    /<\/?b\d+>|\[[\d\s,;\-–]+\]|\{[A-Za-z_]\w*\}|[-+]?\d+(?:[.,]\d+)*%?/gu,
-  ) ?? []).map((mark) => mark.replace(/\s+/g, '')).sort();
+  const marks = (text: string): string[] => {
+    const dates: string[] = [];
+    // 英文月份译为数字时，按完整日期核对，避免把月份误报为新增数值或放过交换的月和日。
+    const body = replaceCalendarDates(text.normalize('NFKC').replaceAll('−', '-'), (_literal, date) => {
+      dates.push(date);
+      return ' ';
+    });
+    const other = body.match(/<\/?b\d+>|\[[\d\s,;\-–]+\]|\{[A-Za-z_]\w*\}|[-+]?\d+(?:[.,]\d+)*%?/gu) ?? [];
+    return dates.concat(other.map((mark) => mark.replace(/\s+/g, ''))).sort();
+  };
   return JSON.stringify(marks(before)) === JSON.stringify(marks(after));
 }
 
@@ -61,23 +92,25 @@ function parsePrompt(mode: 'paragraph' | 'batch', source: string): ModelPrompt {
 }
 
 const NUMERIC_LITERAL = new RegExp([
-  `(${/<\/?b\d+>|\{[A-Za-z_]\w*\}|\[\[[^\]\r\n]*\]\]|%%[^%\r\n]*%%/.source})`,
-  /\[[\d\s,;\-–]+\]/.source,
+  `(${/\{[A-Za-z_]\w*\}|\[\[[^\]\r\n]*\]\]|%%[^%\r\n]*%%/.source})`,
+  /<\/?b\d+>|\[[\d\s,;\-–]+\]/.source,
   /(?:\b[A-Z][A-Z\d]*[-‐‑–][ \t]*)?[-+−]?\d+(?:[.,]\d+)*%?/.source,
 ].join('|'), 'gu');
 
 function protectNumbers(prompt: ModelPrompt) {
   const prefix = `ZHIYUE_KEEP_${randomBytes(4).toString('hex')}_`;
   const values = new Map<string, string>();
-  const protect = (input: string): string => input.replace(NUMERIC_LITERAL, (value, existingPlaceholder) => {
-    if (existingPlaceholder) return value;
+  const protect = (value: string): string => {
     const key = `[[${prefix}${values.size}]]`;
     values.set(key, value);
     return key;
-  });
-  // 只替换待译正文。保留段落编号、公式提示和原有占位符，以便引擎回填。
-  const input = prompt.kind === 'paragraph' ? protect(prompt.input) : JSON.stringify(
-    prompt.input.map((entry) => ({ ...entry, input: protect(entry.input) })),
+  };
+  // 重试时用同一个占位符保护完整日期，避免模型补写月份或年份。
+  const protectInput = (input: string): string => replaceCalendarDates(input, protect)
+    .replace(NUMERIC_LITERAL, (value, existingPlaceholder) => existingPlaceholder ? value : protect(value));
+  // 只替换待译正文。原有段落编号和引擎提示不变，所有临时标记在回填前还原。
+  const input = prompt.kind === 'paragraph' ? protectInput(prompt.input) : JSON.stringify(
+    prompt.input.map((entry) => ({ ...entry, input: protectInput(entry.input) })),
   );
   const token = `\\[\\[${prefix}\\d+\\]\\]`;
   const marker = new RegExp(token, 'gu');
@@ -97,13 +130,11 @@ function protectNumbers(prompt: ModelPrompt) {
   };
 }
 
-function checkedOutput(prompt: ModelPrompt, answer: string, restore = (text: string) => text): string {
-  const check = (original: string, reply: string): string => {
-    const output = restore(reply);
-    if (!output.trim() || !preservesMarkers(original, output)) throw new InvalidTranslationReply();
-    return output;
-  };
-  if (prompt.kind === 'paragraph') return check(prompt.input, answer);
+function validParagraph(input: string, output: string): boolean {
+  return !!output.trim() && preservesMarkers(input, output);
+}
+
+function batchOutputs(input: BatchParagraph[], answer: string): Map<number, string> {
   let result: unknown;
   try {
     result = JSON.parse(answer.trim().replace(/^```(?:json)?\s*|\s*```$/gi, ''));
@@ -111,18 +142,64 @@ function checkedOutput(prompt: ModelPrompt, answer: string, restore = (text: str
     if (error instanceof SyntaxError) throw new InvalidTranslationReply();
     throw error;
   }
-  if (!Array.isArray(result) || prompt.input.length !== result.length) throw new InvalidTranslationReply();
+  if (!Array.isArray(result) || input.length !== result.length) throw new InvalidTranslationReply();
+  const ids = new Set(input.map(({ id }) => id));
   const outputs = new Map<number, string>();
   for (const entry of result) {
-    if (!Number.isSafeInteger(entry?.id) || outputs.has(entry.id) ||
-      typeof entry.output !== 'string') throw new InvalidTranslationReply();
+    if (!ids.delete(entry?.id) || typeof entry.output !== 'string') throw new InvalidTranslationReply();
     outputs.set(entry.id, entry.output);
   }
-  return JSON.stringify(prompt.input.map(({ id, input }) => {
-    const output = outputs.get(id);
-    if (output === undefined) throw new InvalidTranslationReply();
-    return { id, output: check(input, output) };
-  }));
+  return outputs;
+}
+
+function checkedOutput(prompt: ModelPrompt, answer: string, restore = (text: string) => text): string {
+  const check = (input: string, reply: string): string => {
+    const output = restore(reply);
+    if (!validParagraph(input, output)) throw new InvalidTranslationReply();
+    return output;
+  };
+  if (prompt.kind === 'paragraph') return check(prompt.input, answer);
+  const outputs = batchOutputs(prompt.input, answer);
+  return JSON.stringify(prompt.input.map(({ id, input }) => ({ id, output: check(input, outputs.get(id)!) })));
+}
+
+function validBatchParagraphs(input: BatchParagraph[], answer: string): Map<number, string> {
+  let outputs: Map<number, string>;
+  try {
+    outputs = batchOutputs(input, answer);
+  } catch (error) {
+    if (!(error instanceof InvalidTranslationReply)) throw error;
+    return new Map();
+  }
+  for (const paragraph of input) {
+    if (!validParagraph(paragraph.input, outputs.get(paragraph.id)!)) outputs.delete(paragraph.id);
+  }
+  return outputs;
+}
+
+async function translateRequest(
+  mode: 'paragraph' | 'batch', source: string, model: TranslationModel, signal: AbortSignal,
+): Promise<string> {
+  const prompt = parsePrompt(mode, source);
+  const answer = await model.complete(mode, source, signal);
+  signal.throwIfAborted();
+  try {
+    return checkedOutput(prompt, answer);
+  } catch (error) {
+    if (!(error instanceof InvalidTranslationReply)) throw error;
+  }
+  // 段落编号能对齐时，只重试校验失败的段落；后续按原编号合并已核对的译文。
+  const accepted = prompt.kind === 'batch' ? validBatchParagraphs(prompt.input, answer) : new Map<number, string>();
+  const pending = prompt.kind === 'batch' ? { ...prompt, input: prompt.input.filter(({ id }) => !accepted.has(id)) }
+    : prompt;
+  const protectedInput = protectNumbers(pending);
+  const retry = await model.complete(mode, protectedInput.text, signal, true);
+  signal.throwIfAborted();
+  const checked = checkedOutput(pending, retry, protectedInput.restore);
+  if (!protectedInput.complete()) throw new InvalidTranslationReply();
+  if (prompt.kind !== 'batch' || pending.kind !== 'batch' || !accepted.size) return checked;
+  const repaired = batchOutputs(pending.input, checked);
+  return JSON.stringify(prompt.input.map(({ id }) => ({ id, output: accepted.get(id) ?? repaired.get(id)! })));
 }
 
 export interface TranslationModel {
@@ -215,21 +292,7 @@ export async function runTranslationWorker(options: TranslationWorkerOptions): P
         event.id === lastRequestId + 1 && typeof event.text === 'string' && event.text.length <= 128_000) {
         lastRequestId++;
         const requestSignal = AbortSignal.any([runSignal, AbortSignal.timeout(120_000)]);
-        const prompt = parsePrompt(event.mode, event.text);
-        const answer = await model.complete(event.mode, event.text, requestSignal);
-        requestSignal.throwIfAborted();
-        let text: string;
-        try {
-          text = checkedOutput(prompt, answer);
-        } catch (error) {
-          if (!(error instanceof InvalidTranslationReply)) throw error;
-          // 重试只改写当前请求的数字和引用。两次调用共用时限，复原后仍核对原文。
-          const protectedInput = protectNumbers(prompt);
-          const retry = await model.complete(event.mode, protectedInput.text, requestSignal, true);
-          requestSignal.throwIfAborted();
-          text = checkedOutput(prompt, retry, protectedInput.restore);
-          if (!protectedInput.complete()) throw new InvalidTranslationReply();
-        }
+        const text = await translateRequest(event.mode, event.text, model, requestSignal);
         child.stdin.write(`${JSON.stringify({ id: event.id, text })}\n`);
       } else {
         throw statusError('PDF 翻译进程返回了无效事件。', 500);

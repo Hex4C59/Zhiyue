@@ -9,6 +9,7 @@ import { createApp } from '../src/server.js';
 import { resolveTranslationPython } from '../src/lib/pdfTranslation.js';
 import { resolvePython } from '../src/lib/python.js';
 import { runTranslationWorker } from '../src/lib/pdfTranslationWorker.js';
+import type { TranslationModel } from '../src/lib/pdfTranslationWorker.js';
 import type { PdfTranslationStatus } from '../src/lib/pdfTranslationTypes.js';
 
 const modelId = 'test/translator';
@@ -246,10 +247,96 @@ test('带上下文提示的单段请求只校验正文，重试后复原数字�
       }
       const header = text.slice(0, text.lastIndexOf('\n') + 1);
       assert.ok(prompt.startsWith(header));
-      assert.ok(prompt.slice(header.length).includes('<b3>'));
-      const [ordinal, identifier, first, second, citation] = prompt.match(/\[\[ZHIYUE_KEEP_[a-f\d]+_\d+\]\]/g) ?? [];
-      assert.ok(ordinal && identifier && first && second && citation);
-      return `第${ordinal}项研究报告了 ${identifier} 的 <b3> 为 ${first}，${second} ${citation}。`;
+      const protectedBody = prompt.slice(header.length);
+      assert.ok(!protectedBody.includes('<b3>'));
+      const [ordinal, identifier, formula, first, second, citation] =
+        protectedBody.match(/\[\[ZHIYUE_KEEP_[a-f\d]+_\d+\]\]/g) ?? [];
+      assert.ok(ordinal && identifier && formula && first && second && citation);
+      return `第${ordinal}项研究报告了 ${identifier} 的 ${formula} 为 ${first}，${second} ${citation}。`;
+    } },
+    signal: AbortSignal.timeout(5000), progress: () => {},
+  });
+  assert.deepEqual(result, { pages: 1, reviewPages: [] });
+});
+
+test('英文日期可以用中文年月日表示，月日互换时仍拒绝译文', async (t) => {
+  const work = await mkdtemp(path.join(os.tmpdir(), 'zhiyue-translation-date-'));
+  t.after(() => rm(work, { recursive: true, force: true }));
+  const script = path.join(work, 'mock.cjs');
+  const input = [
+    { id: 0, input: 'October 15th, 2007' },
+    { id: 1, input: 'On 9 Mar. 2007, the study used 12 samples [4].' },
+  ];
+  const event = { type: 'request', id: 1, mode: 'batch', text: '\n## Here is the input:\n' + JSON.stringify(input) };
+  const output = [
+    { id: 0, output: '2007年10月15日' },
+    { id: 1, output: '2007 年 3 月 9 日，研究使用了 12 个样本 [4]。' },
+  ];
+  const expected = { id: 1, text: JSON.stringify(output) };
+  const finish = { type: 'finish', pages: 1, reviewPages: [] };
+  await writeFile(script, [
+    `console.log(${JSON.stringify(JSON.stringify(event))});`,
+    'process.stdin.once("data", (data) => {',
+    `  require('node:assert/strict').deepEqual(JSON.parse(data), ${JSON.stringify(expected)});`,
+    `  process.stdout.write(${JSON.stringify(`${JSON.stringify(finish)}\n`)}, () => process.exit(0));`,
+    '});',
+  ].join('\n'));
+  const translate = (complete: TranslationModel['complete']) => runTranslationWorker({
+    python: process.execPath, script, source: 'unused.pdf', sourceHash: '', work,
+    model: { ...model, complete }, signal: AbortSignal.timeout(5000), progress: () => {},
+  });
+  const ready = await translate(async (_mode, _text, _signal, retry) => {
+    assert.equal(retry, undefined);
+    return JSON.stringify(output);
+  });
+  assert.deepEqual(ready, { pages: 1, reviewPages: [] });
+
+  const attempts: Array<boolean | undefined> = [];
+  await assert.rejects(translate(async (_mode, text, _signal, retry) => {
+    attempts.push(retry);
+    if (retry) {
+      const protectedInput = JSON.parse(text.split('\n## Here is the input:\n')[1]!);
+      assert.deepEqual(protectedInput.map(({ id }: { id: number }) => id), [1]);
+      assert.match(protectedInput[0].input, /^On \[\[ZHIYUE_KEEP_[a-f0-9]+_\d+\]\], the study used/u);
+      return JSON.stringify([{ id: 1, output: '2007 年 9 月 3 日，研究使用了 12 个样本 [4]。' }]);
+    }
+    return JSON.stringify([output[0], { id: 1, output: '2007 年 9 月 3 日，研究使用了 12 个样本 [4]。' }]);
+  }), /数字或引用不一致/);
+  assert.deepEqual(attempts, [undefined, true]);
+});
+
+test('模型重复引用时只重试受影响段落，并按原顺序合并', async (t) => {
+  const work = await mkdtemp(path.join(os.tmpdir(), 'zhiyue-translation-citation-'));
+  t.after(() => rm(work, { recursive: true, force: true }));
+  const script = path.join(work, 'mock.cjs');
+  const input = [
+    { id: 4, input: 'Categorical descriptors' },
+    { id: 9, input: 'Mixed emotions are common. These are basic emotions <b4>.',
+      formula_placeholders_hint: "{'<b4>': '[31]'}" },
+  ];
+  const header = '\n## Here is the input:\n';
+  const event = { type: 'request', id: 1, mode: 'batch', text: header + JSON.stringify(input) };
+  const good = { id: 4, output: '类别描述' };
+  const expected = { id: 1, text: JSON.stringify([good, { id: 9, output: '混合情绪很常见。这些是基本情绪 <b4>。' }]) };
+  const finish = { type: 'finish', pages: 1, reviewPages: [] };
+  await writeFile(script, [
+    `console.log(${JSON.stringify(JSON.stringify(event))});`,
+    'process.stdin.once("data", (data) => {',
+    `  require('node:assert/strict').deepEqual(JSON.parse(data), ${JSON.stringify(expected)});`,
+    `  process.stdout.write(${JSON.stringify(`${JSON.stringify(finish)}\n`)}, () => process.exit(0));`,
+    '});',
+  ].join('\n'));
+  const result = await runTranslationWorker({
+    python: process.execPath, script, source: 'unused.pdf', sourceHash: '', work,
+    model: { ...model, complete: async (_mode, text, _signal, retry) => {
+      if (!retry) return JSON.stringify([{ id: 9, output: '混合情绪 <b4> 很常见。这些是基本情绪 <b4>。' }, good]);
+      const paragraphs = JSON.parse(text.slice(header.length));
+      assert.deepEqual(paragraphs.map(({ id }: { id: number }) => id), [9]);
+      assert.equal(paragraphs[0].formula_placeholders_hint, input[1].formula_placeholders_hint);
+      assert.ok(!paragraphs[0].input.includes('<b4>'));
+      const token = paragraphs[0].input.match(/\[\[ZHIYUE_KEEP_[a-f\d]+_\d+\]\]/u)?.[0];
+      assert.ok(token);
+      return JSON.stringify([{ id: 9, output: `混合情绪很常见。这些是基本情绪 ${token}。` }]);
     } },
     signal: AbortSignal.timeout(5000), progress: () => {},
   });
