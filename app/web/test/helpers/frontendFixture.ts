@@ -340,7 +340,8 @@ export async function fixture(
           '',
           '![](images/fig1.png)',
           '',
-          '<table><tr><th>Metric</th><th>Score</th></tr><tr><td>AUROC</td><td>0.95</td></tr></table>',
+          '<table><tr><th>Metric</th><th>Score</th></tr>' +
+            '<tr><td>AUROC</td><td>0.95 &#x110000; &#1114112; &#x1F4D6;</td></tr></table>',
         ].join('\n'),
         result: pdfTranslation?.result ?? null,
       };

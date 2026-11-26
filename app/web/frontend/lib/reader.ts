@@ -704,6 +704,119 @@ export function createReader({
     },
     { signal: lifecycle.signal },
   );
+  // 文内参考文献引用（[28] 等）悬停预览与点击跳转/返回正文
+  const citePopover = document.createElement('div');
+  citePopover.className = 'md-cite-popover';
+  citePopover.setAttribute('role', 'tooltip');
+  citePopover.hidden = true;
+  scope.appendChild(citePopover);
+  let highlightedRef: HTMLElement | null = null;
+  let highlightTimer = 0;
+  let returnCite: HTMLElement | null = null;
+
+  const hideCitePopover = (): void => {
+    citePopover.hidden = true;
+  };
+
+  const findReferenceItem = (anchor: HTMLElement): HTMLElement | null => {
+    const refId = anchor.dataset.ref;
+    if (!refId) return null;
+    const article = anchor.closest('.translation-document, .markdown');
+    return article?.querySelector<HTMLElement>(`li[data-ref="${refId}"]`) ?? null;
+  };
+
+  const showCitePopover = (anchor: HTMLElement): void => {
+    const refEl = findReferenceItem(anchor);
+    if (!refEl) return;
+    const text = (refEl.textContent || '').replace(/返回正文\s*↩?$/, '').trim();
+    if (!text) return;
+    citePopover.innerHTML = `<span class="md-cite-popover-id">[${esc(anchor.dataset.ref)}]</span> ${esc(text)}`;
+    citePopover.hidden = false;
+    const rect = anchor.getBoundingClientRect();
+    const popRect = citePopover.getBoundingClientRect();
+    const margin = 10;
+    let left = rect.left + rect.width / 2 - popRect.width / 2;
+    left = Math.max(margin, Math.min(left, view.innerWidth - popRect.width - margin));
+    let top = rect.top - popRect.height - 8;
+    if (top < margin) top = rect.bottom + 8;
+    citePopover.style.left = `${Math.round(left)}px`;
+    citePopover.style.top = `${Math.round(top)}px`;
+  };
+
+  scope.addEventListener(
+    'mouseover',
+    (event) => {
+      const anchor = (event.target as HTMLElement | null)?.closest<HTMLElement>('a.md-cite');
+      if (anchor) showCitePopover(anchor);
+    },
+    { signal: lifecycle.signal },
+  );
+  scope.addEventListener(
+    'mouseout',
+    (event) => {
+      const anchor = (event.target as HTMLElement | null)?.closest<HTMLElement>('a.md-cite');
+      if (anchor) hideCitePopover();
+    },
+    { signal: lifecycle.signal },
+  );
+  scope.addEventListener(
+    'focusin',
+    (event) => {
+      const anchor = (event.target as HTMLElement | null)?.closest<HTMLElement>('a.md-cite');
+      if (anchor) showCitePopover(anchor);
+    },
+    { signal: lifecycle.signal },
+  );
+  scope.addEventListener(
+    'focusout',
+    (event) => {
+      const anchor = (event.target as HTMLElement | null)?.closest<HTMLElement>('a.md-cite');
+      if (anchor) hideCitePopover();
+    },
+    { signal: lifecycle.signal },
+  );
+  scope.addEventListener('scroll', hideCitePopover, { capture: true, passive: true, signal: lifecycle.signal });
+  scope.addEventListener(
+    'click',
+    (event) => {
+      const target = event.target as HTMLElement | null;
+      const backBtn = target?.closest<HTMLElement>('button.md-ref-back');
+      if (backBtn) {
+        event.preventDefault();
+        backBtn.remove();
+        if (returnCite && returnCite.isConnected) {
+          returnCite.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          returnCite.focus({ preventScroll: true });
+        }
+        return;
+      }
+      const anchor = target?.closest<HTMLElement>('a.md-cite');
+      if (!anchor) return;
+      const refEl = findReferenceItem(anchor);
+      if (!refEl) return;
+      event.preventDefault();
+      hideCitePopover();
+      if (highlightedRef) {
+        highlightedRef.classList.remove('md-ref-highlight');
+        highlightedRef.querySelector('button.md-ref-back')?.remove();
+      }
+      view.clearTimeout(highlightTimer);
+      highlightedRef = refEl;
+      returnCite = anchor;
+      refEl.classList.add('md-ref-highlight');
+      const back = document.createElement('button');
+      back.type = 'button';
+      back.className = 'md-ref-back';
+      back.textContent = '返回正文 ↩';
+      refEl.appendChild(back);
+      refEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      highlightTimer = view.setTimeout(() => {
+        refEl.classList.remove('md-ref-highlight');
+      }, 3000);
+    },
+    { signal: lifecycle.signal },
+  );
+
   view.addEventListener(
     'pagehide',
     () => {
@@ -723,6 +836,8 @@ export function createReader({
     render: renderReader,
     dispose: () => {
       ++state.noteEpoch;
+      view.clearTimeout(highlightTimer);
+      citePopover.remove();
       releasePreview();
       lifecycle.abort();
     },

@@ -33,6 +33,9 @@ export const paths: Record<string, string> = {
   trash: 'M4 7h16 M9 7V4h6v3 M6 7l1 13h10l1-13 M10 11v6 M14 11v6',
   user: 'M16 7a4 4 0 1 1-8 0 4 4 0 0 1 8 0 M4 21v-3a8 8 0 0 1 16 0v3',
   settings: 'M20 7h-9 M14 17H5 M17 17a3 3 0 1 0 6 0 3 3 0 0 0-6 0 M7 7a3 3 0 1 0-6 0 3 3 0 0 0 6 0',
+  panelLeft: 'M3 5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z M9 3v18',
+  panelRight: 'M3 5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z M15 3v18',
+  focus: 'M4 9V5a1 1 0 0 1 1-1h4 M15 4h4a1 1 0 0 1 1 1v4 M20 15v4a1 1 0 0 1-1 1h-4 M9 20H5a1 1 0 0 1-1-1v-4',
 };
 
 export const icon = (name: string): string =>
@@ -115,8 +118,32 @@ export function safeURL(raw: unknown, basePath = ''): string {
   return normalized.length ? fileURL(normalized.join('/')) : '';
 }
 
-// 先转义原文再应用行内格式，不接受笔记或模型输出中的原始 HTML。
-function inline(source: string, base = '', resolveAsset?: (raw: string) => string): string {
+const SAFE_INLINE_TAG = /<(sup|sub|strong|em|b|i)>([^<]*)<\/\1>/gi;
+
+interface ReferenceIndex {
+  byNumber: Map<number, string>;
+  byAuthorYear: Map<string, number>;
+}
+
+function decodeHtmlEntities(raw: string): string {
+  return raw
+    .replace(/&#(x[0-9a-f]+|\d+);/gi, (_match, entity: string) => {
+      const code = /^[xX]/.test(entity) ? Number.parseInt(entity.slice(1), 16) : Number(entity);
+      // PDF 提取结果可能含有无效码点。替换该字符，保留其余表格内容。
+      return code > 0 && code <= 0x10ffff && (code < 0xd800 || code > 0xdfff) ? String.fromCodePoint(code) : '\ufffd';
+    })
+    .replace(/&(amp|lt|gt|quot|apos|nbsp);/gi, (_m, name: string) => ({
+      amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ',
+    })[name.toLowerCase()] ?? _m);
+}
+
+// 先转义原文再应用行内格式，仅放行无属性的简单排版标签（sup/sub/strong/em/b/i），其余原始 HTML 一律转义。
+function inline(
+  source: string,
+  base = '',
+  resolveAsset?: (raw: string) => string,
+  refs?: ReferenceIndex,
+): string {
   const slots: string[] = [];
   const token = (html: string): string => {
     const index = slots.push(html) - 1;
@@ -134,6 +161,14 @@ function inline(source: string, base = '', resolveAsset?: (raw: string) => strin
   );
   // 未被公式匹配的转义美元符号还原为普通字符。
   input = input.replace(/\\\$/g, '$');
+  // 从内到外放行 MinerU 输出的简单行内排版标签（如 <strong><sup>1</sup></strong>、<sup>†</sup>），内部文本仍走转义。
+  for (let depth = 0; depth < 3 && SAFE_INLINE_TAG.test(input); depth++) {
+    SAFE_INLINE_TAG.lastIndex = 0;
+    input = input.replace(SAFE_INLINE_TAG, (_match, tag: string, inner: string) => {
+      const lower = tag.toLowerCase();
+      return token(`<${lower}>${esc(inner)}</${lower}>`);
+    });
+  }
   input = input.replace(/(!?)\[([^\]\n]*)\]\(([^\s)]+)(?:\s+"[^"]*")?\)/g,
     (_match, image: string, label: string, raw: string) => {
       const mapped = image && resolveAsset ? resolveAsset(raw) : raw;
@@ -144,14 +179,71 @@ function inline(source: string, base = '', resolveAsset?: (raw: string) => strin
       }
       return token(`<a href="${esc(url)}" target="_blank" rel="noopener noreferrer">${esc(label)}</a>`);
     });
+  // 1. 文内数字引用（如 [28]、[29, 27]、[1–3]）关联到文末对应参考文献。
+  if (refs && refs.byNumber.size > 0) {
+    input = input.replace(/\[(\d{1,3}(?:\s*[,;–—-]\s*\d{1,3})*)\](?!\()/g, (match, inner: string) => {
+      let linked = false;
+      const rendered = inner.replace(/\d{1,3}/g, (numText: string) => {
+        const num = Number(numText);
+        if (!refs.byNumber.has(num)) return esc(numText);
+        linked = true;
+        return `<a href="#ref-${num}" class="md-cite" data-ref="${num}" aria-label="参考文献 ${num}">${num}</a>`;
+      });
+      return linked ? token(`<span class="md-cite-group">[${rendered}]</span>`) : match;
+    });
+  }
+  // 2. 文内作者-年份引用统一转为紧凑的 [N] 脚注形式（与数字引用一致，悬停预览文献、点击跳转）：
+  //    - 括号引用（如 （Busso 等人, 2008）、(Chen 等人, 2022; Wang et al., 2021)）直接替换为 [N]；
+  //    - 叙述性引用（如 Wang 等人 (2021)、Chen 等人 (2023a)）保留作者正文，将年份括号替换为 [N]。
+  if (refs && refs.byAuthorYear.size > 0) {
+    const lookupAuthorYear = (surname: string, rawYear: string): number | undefined => {
+      const year = rawYear.toLowerCase();
+      return refs.byAuthorYear.get(`${surname.toLowerCase()}|${year}`)
+        ?? refs.byAuthorYear.get(`${surname.toLowerCase()}|${year.slice(0, 4)}`);
+    };
+    const citeLink = (id: number): string =>
+      `<a href="#ref-${id}" class="md-cite" data-ref="${id}" aria-label="参考文献 ${id}">${id}</a>`;
+    const authorEntry =
+      /^([A-Z][A-Za-z'-]{1,24})(?:\s*(?:等人|等|et\s+al\.?|\s+(?:and|&|和)\s+[A-Z][A-Za-z'-]{1,24}))?\s*[,，]\s*((?:19|20)\d{2}[a-z]?)$/;
+
+    // 2a. 括号引用：(Busso 等人, 2008) -> [8]
+    input = input.replace(
+      /\s*[(（]\s*([A-Z][^()（）\u0001\u0002]{3,160}?(?:19|20)\d{2}[a-z]?)\s*[)）]/g,
+      (match, inner: string) => {
+        const parts = inner.split(/\s*[;；]\s*/).filter(Boolean);
+        const ids: number[] = [];
+        for (const part of parts) {
+          const m = authorEntry.exec(part.trim());
+          if (!m) return match;
+          const id = lookupAuthorYear(m[1] as string, m[2] as string);
+          if (!id) return match;
+          ids.push(id);
+        }
+        return ids.length ? token(` <span class="md-cite-group">[${ids.map(citeLink).join(', ')}]</span>`) : match;
+      },
+    );
+
+    // 2b. 叙述性引用：Wang 等人 (2021) -> Wang 等人 [45]
+    input = input.replace(
+      /\b([A-Z][A-Za-z'-]{1,24})((?:\s*(?:等人|等|et\s+al\.?|\s+(?:and|&|和)\s+[A-Z][A-Za-z'-]{1,24}))?)\s*[(（]\s*((?:19|20)\d{2}[a-z]?)\s*[)）]/g,
+      (match, surname: string, suffix: string, year: string) => {
+        const id = lookupAuthorYear(surname, year);
+        if (!id) return match;
+        return `${surname}${suffix}${token(` <span class="md-cite-group">[${citeLink(id)}]</span>`)}`;
+      },
+    );
+  }
   input = esc(input)
     .replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>')
     .replace(/\*([^*\n]+)\*/g, '<em>$1</em>')
     .replace(/~~([^~\n]+)~~/g, '<del>$1</del>');
-  return input.replace(/\u0001(\d+)\u0002/g, (_match, index: string) => slots[Number(index)] || '');
+  for (let pass = 0; pass < 4 && input.includes('\u0001'); pass++) {
+    input = input.replace(/\u0001(\d+)\u0002/g, (_match, index: string) => slots[Number(index)] || '');
+  }
+  return input;
 }
 
-/** 仅允许 MinerU 输出的安全表格结构，单元格内容仍经 inline() 转义并渲染行内公式。 */
+/** 仅允许 MinerU 输出的安全表格结构，单元格内容解码实体后仍经 inline() 转义并渲染行内公式。 */
 function renderSafeHtmlTable(raw: string, base: string, resolveAsset?: (raw: string) => string): string {
   const rows: string[] = [];
   for (const rowMatch of raw.matchAll(/<tr\b[^>]*>([\s\S]*?)<\/tr>/gi)) {
@@ -162,7 +254,9 @@ function renderSafeHtmlTable(raw: string, base: string, resolveAsset?: (raw: str
       const colspan = /\bcolspan\s*=\s*["']?(\d{1,2})["']?/i.exec(attrs)?.[1];
       const rowspan = /\browspan\s*=\s*["']?(\d{1,2})["']?/i.exec(attrs)?.[1];
       const attrText = `${colspan ? ` colspan="${colspan}"` : ''}${rowspan ? ` rowspan="${rowspan}"` : ''}`;
-      const plain = (cellMatch[3] ?? '').replace(/<br\s*\/?>/gi, ' ').replace(/<[^>]+>/g, '').trim();
+      const plain = decodeHtmlEntities(
+        (cellMatch[3] ?? '').replace(/<br\s*\/?>/gi, ' ').replace(/<[^>]+>/g, ''),
+      ).trim();
       cells.push(`<${tag}${attrText}>${inline(plain, base, resolveAsset)}</${tag}>`);
     }
     if (cells.length) rows.push(`<tr>${cells.join('')}</tr>`);
@@ -170,16 +264,210 @@ function renderSafeHtmlTable(raw: string, base: string, resolveAsset?: (raw: str
   return rows.length ? `<div class="table-wrap"><table><tbody>${rows.join('')}</tbody></table></div>` : '';
 }
 
+const STANDALONE_IMAGE = /^!\[[^\]]*\]\([^\s)]+(?:\s+"[^"]*")?\)$/;
+const CAPTION_LINE =
+  /^(?:(?:图|表)\s*(?:[IVXLCDM]+|\d+)(?:[.．:：\s]|$)|(?:Fig\.?|Figure|Table)\s*(?:[IVXLCDM]+|\d+)(?:[.．:：\s]|$)|\([a-z]\)\s+\S.{0,40}$)/;
+const REFERENCES_HEADING = /^#{1,6}\s+(?:(?:\d+\.?|[IVX]+\.?)\s+)?(?:references|bibliography|works\s+cited)\s*$/i;
+const REF_ITEM_LINE = /^\s*(?:(\d+)\.|\[(\d+)\])\s+(.+)$/;
+const HEADER_STOP_LINE = /^(?:\*{0,2})(?:摘要|关键词|abstract|summary|keywords?|index\s+terms?)(?:\*{0,2})[\s.:：—–-]/i;
+const DATE_META_LINE = /^(?:(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{1,2}(?:st|nd|rd|th)?,?\s+\d{4}|\d{4}\s*年\s*\d{1,2}\s*月(?:\s*\d{1,2}\s*日)?|\d{4}-\d{2}-\d{2})$/i;
+
+function indexAuthorYear(body: string, num: number, byAuthorYear: Map<string, number>): void {
+  const yearMatch = /\b((?:19|20)\d{2}[a-z]?)\b/.exec(body);
+  if (!yearMatch) return;
+  const year = (yearMatch[1] as string).toLowerCase();
+  // 第一作者片段（截断在第一个逗号、and 或年份前）
+  const head = body.slice(0, yearMatch.index).split(/\s+and\s+/i)[0] ?? '';
+  const commaParts = head.split(',');
+  const firstSegment = (commaParts[0] ?? '').trim();
+  let surname = '';
+  if (commaParts.length >= 2 && /^[A-Z][A-Za-z'-]+$/.test(firstSegment)) {
+    // 形如 "Busso, C."：逗号前即姓氏
+    surname = firstSegment;
+  } else {
+    // 形如 "Carlos Busso"、"Li-Wei Chen"：取最后一个英文单词作为姓氏
+    const words = firstSegment.match(/[A-Za-z][A-Za-z'-]*/g);
+    surname = words?.[words.length - 1] ?? '';
+  }
+  if (!surname || surname.length < 2) return;
+  const exactKey = `${surname.toLowerCase()}|${year}`;
+  if (!byAuthorYear.has(exactKey)) byAuthorYear.set(exactKey, num);
+  const baseKey = `${surname.toLowerCase()}|${year.slice(0, 4)}`;
+  if (!byAuthorYear.has(baseKey)) byAuthorYear.set(baseKey, num);
+}
+
+function extractReferences(lines: string[]): ReferenceIndex {
+  const byNumber = new Map<number, string>();
+  const byAuthorYear = new Map<string, number>();
+  let inRefs = false;
+  let activeNum: number | null = null;
+  let seq = 0;
+  let pending: string[] = [];
+
+  const flushUnnumbered = (): void => {
+    if (!pending.length) return;
+    const body = pending.join(' ').trim();
+    pending = [];
+    if (!body) return;
+    seq += 1;
+    byNumber.set(seq, body);
+    indexAuthorYear(body, seq, byAuthorYear);
+  };
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (/^#{1,6}\s+/.test(trimmed)) {
+      flushUnnumbered();
+      if (REFERENCES_HEADING.test(trimmed)) {
+        inRefs = true;
+        activeNum = null;
+      } else if (inRefs && /^#{1,2}\s+/.test(trimmed)) {
+        inRefs = false;
+        activeNum = null;
+      }
+      continue;
+    }
+    if (!inRefs) continue;
+    if (!trimmed) {
+      flushUnnumbered();
+      continue;
+    }
+    const match = REF_ITEM_LINE.exec(line);
+    if (match) {
+      flushUnnumbered();
+      const num = Number(match[1] ?? match[2]);
+      const body = (match[3] as string).trim();
+      if (Number.isInteger(num) && num > 0 && body) {
+        seq = Math.max(seq, num);
+        byNumber.set(num, body);
+        indexAuthorYear(body, num, byAuthorYear);
+        activeNum = num;
+      }
+    } else if (activeNum !== null) {
+      const merged = `${byNumber.get(activeNum)} ${trimmed}`;
+      byNumber.set(activeNum, merged);
+      indexAuthorYear(merged, activeNum, byAuthorYear);
+    } else {
+      pending.push(trimmed);
+    }
+  }
+  flushUnnumbered();
+  return { byNumber, byAuthorYear };
+}
+
 export function markdown(source: unknown, base = '', resolveAsset?: (raw: string) => string): string {
   const lines = String(source || '')
     .replace(/\r\n?/g, '\n')
     .split('\n');
+  const refs = extractReferences(lines);
   let html = '';
   let paragraph: string[] = [];
   let list = '';
+  let inReferences = false;
+  let refSeq = 0;
+  let startIndex = 0;
+
+  // 若文首为 H1 论文标题紧跟若干短元信息行（作者、单位、日期），合并为居中排版的 paper-header。
+  while (startIndex < lines.length && !(lines[startIndex] as string).trim()) startIndex++;
+  const firstHeading = startIndex < lines.length ? /^#\s+(.+)$/.exec(lines[startIndex] as string) : null;
+  if (firstHeading) {
+    const metaParagraphs: string[] = [];
+    let scan = startIndex + 1;
+    let current: string[] = [];
+    const plainLen = (value: string): number => value.replace(/<[^>]+>/g, '').replace(/[*_`]/g, '').trim().length;
+    const pushMeta = (): boolean => {
+      if (!current.length) return true;
+      const text = current.join(' ').trim();
+      current = [];
+      if (!text) return true;
+      if (plainLen(text) > 420 || HEADER_STOP_LINE.test(text) || /[\u4e00-\u9fff]{12,}/.test(text)) {
+        return false;
+      }
+      metaParagraphs.push(text);
+      return metaParagraphs.length <= 8;
+    };
+    let endMeta = scan;
+    for (; scan < lines.length; scan++) {
+      const raw = lines[scan] as string;
+      const trimmed = raw.trim();
+      if (!trimmed) {
+        if (!pushMeta()) break;
+        endMeta = scan + 1;
+        continue;
+      }
+      if (
+        /^#{1,6}\s+/.test(trimmed) ||
+        /^(`{3,}|~{3,})/.test(trimmed) ||
+        /^(?:\$\$|\\\[|<table\b|!\[|>|[-+*]\s+|\d+\.\s+)/i.test(trimmed) ||
+        HEADER_STOP_LINE.test(trimmed)
+      ) {
+        if (!pushMeta()) break;
+        endMeta = scan;
+        break;
+      }
+      current.push(trimmed);
+      if (plainLen(current.join(' ')) > 420) break;
+    }
+    if (scan >= lines.length && pushMeta()) endMeta = scan;
+    if (metaParagraphs.length > 0 && metaParagraphs.length <= 8) {
+      const metaHtml = metaParagraphs.map((text, idx) => {
+        const cls = idx === 0
+          ? 'paper-authors'
+          : DATE_META_LINE.test(text) ? 'paper-meta paper-date' : 'paper-meta';
+        return `<p class="${cls}">${inline(text, base, resolveAsset)}</p>`;
+      }).join('');
+      html += `<header class="paper-header"><h1>${inline(firstHeading[1] as string, base, resolveAsset)}</h1>${metaHtml}</header>`;
+      startIndex = endMeta;
+    }
+  }
+
+  const nextNonBlankIsRef = (from: number): boolean => {
+    for (let j = from + 1; j < lines.length; j++) {
+      const t = (lines[j] as string).trim();
+      if (!t) continue;
+      if (/^#{1,6}\s+/.test(t) || /^(`{3,}|~{3,})/.test(t) || /^<table\b/i.test(t)) return false;
+      return true;
+    }
+    return false;
+  };
+
+  const flushRefParagraph = (): void => {
+    if (!paragraph.length) return;
+    const body = paragraph.join(' ').trim();
+    paragraph = [];
+    if (!body) return;
+    refSeq += 1;
+    if (list && list !== 'ol') {
+      html += `</${list}>`;
+      list = '';
+    }
+    if (!list) {
+      html += `<ol class="md-references"${refSeq !== 1 ? ` start="${refSeq}"` : ''}>`;
+      list = 'ol';
+    }
+    html += `<li id="ref-${refSeq}" data-ref="${refSeq}" value="${refSeq}">${inline(body, base, resolveAsset)}</li>`;
+  };
+
   const flush = (): void => {
-    if (paragraph.length) {
-      html += `<p>${paragraph.map((line) => inline(line, base, resolveAsset)).join('<br>')}</p>`;
+    if (inReferences && paragraph.length) {
+      flushRefParagraph();
+    } else if (paragraph.length) {
+      if (paragraph.length === 1) {
+        const single = (paragraph[0] as string).trim();
+        if (STANDALONE_IMAGE.test(single)) {
+          html += `<figure class="md-figure">${inline(single, base, resolveAsset)}</figure>`;
+          paragraph = [];
+          if (list) { html += `</${list}>`; list = ''; }
+          return;
+        }
+        if (CAPTION_LINE.test(single)) {
+          html += `<p class="md-caption">${inline(single, base, resolveAsset, inReferences ? undefined : refs)}</p>`;
+          paragraph = [];
+          if (list) { html += `</${list}>`; list = ''; }
+          return;
+        }
+      }
+      html += `<p>${paragraph.map((line) => inline(line, base, resolveAsset, inReferences ? undefined : refs)).join('<br>')}</p>`;
       paragraph = [];
     }
     if (list) {
@@ -187,7 +475,7 @@ export function markdown(source: unknown, base = '', resolveAsset?: (raw: string
       list = '';
     }
   };
-  for (let i = 0; i < lines.length; i++) {
+  for (let i = startIndex; i < lines.length; i++) {
     const line = lines[i] as string;
     if (/^\s*<table\b/i.test(line)) {
       flush();
@@ -249,6 +537,11 @@ export function markdown(source: unknown, base = '', resolveAsset?: (raw: string
     if (head) {
       flush();
       const level = (head[1] as string).length;
+      if (REFERENCES_HEADING.test(line.trim())) {
+        inReferences = true;
+      } else if (inReferences && level <= 2) {
+        inReferences = false;
+      }
       html += `<h${level}>${inline(head[2] as string, base, resolveAsset)}</h${level}>`;
       continue;
     }
@@ -259,7 +552,7 @@ export function markdown(source: unknown, base = '', resolveAsset?: (raw: string
     }
     if (/^>\s?/.test(line)) {
       flush();
-      html += `<blockquote>${inline(line.replace(/^>\s?/, ''), base, resolveAsset)}</blockquote>`;
+      html += `<blockquote>${inline(line.replace(/^>\s?/, ''), base, resolveAsset, inReferences ? undefined : refs)}</blockquote>`;
       continue;
     }
     if (
@@ -282,18 +575,45 @@ export function markdown(source: unknown, base = '', resolveAsset?: (raw: string
       html += '</tbody></table></div>';
       continue;
     }
-    const item = /^\s*(?:([-+*])|\d+\.)\s+(.+)$/.exec(line);
+    if (inReferences) {
+      const refMatch = REF_ITEM_LINE.exec(line);
+      if (refMatch) {
+        flushRefParagraph();
+        const num = Number(refMatch[1] ?? refMatch[2]);
+        const body = (refMatch[3] as string).trim();
+        refSeq = Math.max(refSeq, num);
+        if (list && list !== 'ol') flush();
+        if (!list) {
+          html += `<ol class="md-references"${num !== 1 ? ` start="${num}"` : ''}>`;
+          list = 'ol';
+        }
+        html += `<li id="ref-${num}" data-ref="${num}" value="${num}">${inline(body, base, resolveAsset)}</li>`;
+        continue;
+      }
+      if (!line.trim()) {
+        flushRefParagraph();
+        if (list === 'ol' && nextNonBlankIsRef(i)) continue;
+        flush();
+        continue;
+      }
+      paragraph.push(line);
+      continue;
+    }
+    const item = /^\s*(?:([-+*])|(\d+)\.)\s+(.+)$/.exec(line);
     if (item) {
       const kind = item[1] ? 'ul' : 'ol';
+      const num = item[2] ? Number(item[2]) : null;
       if (paragraph.length || (list && list !== kind)) flush();
       if (!list) {
-        html += `<${kind}>`;
+        html += kind === 'ol' && num && num !== 1 ? `<ol start="${num}">` : `<${kind}>`;
         list = kind;
       }
-      html += `<li>${inline(item[2] as string, base, resolveAsset)}</li>`;
+      html += `<li${num ? ` value="${num}"` : ''}>${inline(item[3] as string, base, resolveAsset, inReferences ? undefined : refs)}</li>`;
       continue;
     }
     if (!line.trim()) {
+      // 参考文献条目之间常有空行；保持在同一个 <ol class="md-references"> 内，避免编号重置。
+      if (inReferences && list === 'ol' && nextNonBlankIsRef(i)) continue;
       flush();
       continue;
     }

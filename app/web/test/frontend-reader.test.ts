@@ -198,7 +198,7 @@ test('翻译完成后自动进入中文精读视图，支持表格、插图、�
   const article = page.$('.translation-document');
   assert.match(article.innerHTML, /Original Paper Title/);
   assert.match(article.innerHTML, /中文正文/);
-  assert.ok(article.querySelector('table'));
+  assert.equal(article.querySelector('table td:last-child')?.textContent, '0.95 � � 📖');
   assert.match(article.querySelector('img').getAttribute('src'), /\/translation\/asset\?key=.*&file=fig1\.png$/);
   assert.match(page.$('.pdf-translation-download').getAttribute('href'), /\/translation\/file\?key=.*&download=1$/);
   click(page.$('[data-reader-mode="split"]'));

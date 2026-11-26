@@ -53,7 +53,7 @@ export interface PdfTranslationOptions {
   root: string;
   python: string;
   library: Pick<Library, 'getPaper' | 'safeFile'>;
-  getModel(): TranslationModel | undefined;
+  getModel(modelId?: string): TranslationModel | undefined;
   emit(event: PdfTranslationEvent): void;
   mineruCommand?: string;
   worker?: typeof runTranslationWorker;
@@ -172,18 +172,6 @@ export class PdfTranslationService {
     return latest;
   }
 
-  private async preferredResult(
-    root: string, id: string, sourceHash: string, keys: string[], configKey?: string,
-  ): Promise<PdfTranslationResult | null> {
-    if (configKey) {
-      const prefix = configPrefix(configKey);
-      const exact = await this.latestResult(root, id, sourceHash, keys.filter((key) => key.startsWith(prefix)));
-      if (exact) return exact;
-      keys = keys.filter((key) => !key.startsWith(prefix));
-    }
-    return this.latestResult(root, id, sourceHash, keys);
-  }
-
   async status(id: string): Promise<PdfTranslationStatus> {
     const source = await this.source(id);
     const root = await realpath(this.options.root);
@@ -196,7 +184,8 @@ export class PdfTranslationService {
     if (keys.length && (await stat(source)).size <= MAX_BYTES) {
       const sourceHash = await this.hash(source);
       configKey = model && translationConfigKey(sourceHash, model);
-      result = await this.preferredResult(root, id, sourceHash, keys, configKey);
+      // 阅读器展示同一原文的最新成品，默认模型只影响下一次提交。
+      result = await this.latestResult(root, id, sourceHash, keys);
     }
     return {
       engineAvailable: existsSync(this.mineru),
@@ -252,8 +241,14 @@ export class PdfTranslationService {
     if (!existsSync(this.mineru)) {
       throw statusError('请先安装 MinerU 解析环境（详见项目 README）。', 503);
     }
-    const model = this.options.getModel();
-    if (!model) throw statusError('请先在「模型与密钥」中配置 Pi 模型。', 409);
+    const requested = typeof approvedModel === 'string' && approvedModel.trim() ? approvedModel.trim() : undefined;
+    const model = requested ? this.options.getModel(requested) : this.options.getModel();
+    if (!model) {
+      if (requested && this.options.getModel()) {
+        throw statusError('所选翻译模型不可用，请重新选择模型后重试。', 409);
+      }
+      throw statusError('请先在「模型与密钥」中配置 Pi 模型。', 409);
+    }
     if (approvedModel !== model.id) throw statusError('默认模型已变化，请确认当前模型后重试。', 409);
     const source = await this.source(id);
     const root = await realpath(this.options.root);
@@ -261,10 +256,14 @@ export class PdfTranslationService {
     const configKey = translationConfigKey(sourceHash, model);
     const prefix = configPrefix(configKey);
     const keys = await this.resultKeys(root, id);
-    const result = await this.preferredResult(root, id, sourceHash, keys, configKey);
-    const matching = result?.key.startsWith(prefix) ? result : null;
-    const status = { engineAvailable: true, model: model.id, result, updateAvailable: !!result && !matching };
-    if (matching && !regenerate) return { ...status, job: null };
+    if (!regenerate) {
+      const cached = await this.latestResult(root, id, sourceHash, keys.filter((key) => key.startsWith(prefix)));
+      if (cached) return { engineAvailable: true, model: model.id, result: cached, updateAvailable: false, job: null };
+    }
+    const result = await this.latestResult(root, id, sourceHash, keys);
+    const status = {
+      engineAvailable: true, model: model.id, result, updateAvailable: !!result && !result.key.startsWith(prefix),
+    };
     if (this.closed) throw statusError('应用正在退出。', 503);
     if (this.active) {
       const { job, configKey: runningConfigKey } = this.active;
@@ -275,7 +274,7 @@ export class PdfTranslationService {
     const job: PdfTranslationJob = {
       id: randomUUID(), paperId: id, key, status: 'running', percent: 0, stage: '准备翻译',
     };
-    const minCompletedAt = matching ? Date.parse(matching.completedAt) + 1 : 0;
+    const minCompletedAt = result ? Date.parse(result.completedAt) + 1 : 0;
     const controller = new AbortController();
     const done = this.run(root, source, sourceHash, model, job, controller.signal, minCompletedAt);
     this.active = { job, configKey, controller, done };

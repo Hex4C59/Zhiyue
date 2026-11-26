@@ -95,9 +95,9 @@ flowchart LR
 
 [翻译服务](app/web/src/lib/pdfTranslation.ts) 按已索引的 L 编号定位 PDF，以原文 SHA-256、模型指纹和修订号计算配置摘要。应用同一时间运行一份翻译。[解析入口](app/web/python/parse_pdf_mineru.py) 在临时目录调用本机 `mineru-kit parse`（MinerU 4.x 离线解析，不启用远程服务）将原文 PDF 解析为结构化 Markdown 与裁剪插图（原生诊断输出重定向至 stderr，进度事件走独立 stdout JSON 通道）。
 
-[翻译工作器](app/web/src/lib/pdfTranslationWorker.ts) 按结构将 Markdown 切分为标题、表格（HTML/管道）、独立公式、代码块、插图与正文块：论文大标题、章节标题、表格、独立公式与插图均原样保留不翻译，仅将英文正文与图表标题按预算分批并发发送给 Pi 默认模型（`ModelRuntime.completeSimple`）。若批量回复格式未对齐，自动降级为逐段独立翻译；单段重试仍异常时回退保留原文，避免个别段落导致整篇失败。
+[翻译工作器](app/web/src/lib/pdfTranslationWorker.ts) 移除解析器标注的页边噪声，按标题、元信息、表格、独立公式、代码、插图、正文、参考文献切块。英文章节标题、论文元信息、表格、公式块、插图和参考文献保留原文。正文与图表标题按预算分批并发发送给阅读器所选模型，未选择时沿用 Pi 默认模型。每批附上限长的论文题名与短摘录以统一术语。同篇论文的请求共用 Pi 模型运行时的会话标识。若批量回复格式未对齐，自动降级为逐段独立翻译。单段重试仍异常时回退保留原文。
 
-校验后在短时库写锁内复核原文哈希，将 `zh.md`、`result.json` 与 `images/` 原子发布到 `.zhiyue/data/translations/<L 编号>/<译本键>/`。前端阅读器在「中文精读」或宽屏「左右对照」模式下加载 Markdown（通过白名单 HTML 表格解析与 KaTeX 渲染公式，插图经 `/api/papers/:id/translation/asset` 读取），并支持导出中文 Markdown。
+校验后在短时库写锁内复核原文哈希，将 `zh.md`、`result.json` 与 `images/` 原子发布到 `.zhiyue/data/translations/<L 编号>/<译本键>/`。重新生成期间继续展示已有译本，成功后读取同一原文的最新译本。前端在「中文精读」或宽屏「左右对照」模式下加载 Markdown（通过白名单 HTML 表格解析与 KaTeX 渲染公式，插图经 `/api/papers/:id/translation/asset` 读取），支持引用跳转与导出中文 Markdown。
 
 ### 事件推送、断线恢复与停止
 
@@ -153,6 +153,7 @@ flowchart LR
 | 图片附件 | 上传文件的原始字节，按 base64 图像块发送；模型不支持图片时报错 | 提交时 |
 | 其他附件 | `extract.py` 提取的文本：PDF 未指定页时取前 8 页，单项文本上限 10 万字符；Office 取正文 XML；同时附上传文件的绝对路径 | 提交时 |
 | 工具结果 | `library_search` 最多 20 条（编号、题名、年份、DOI、相对路径、笔记入口）；`read_paper_pages` 每次最多 12 页逐页文本，单次输出上限约 800 KB；`read_library_doc` 单次最多 12 万字符；`search_paper_text` 最多 20 条命中；`paper_outline` 最多 200 条书签；`render_paper_page` 返回一页 PNG（base64） | 调用时 |
+| 中文精读翻译 | MinerU 在本机解析，发送正文、图表标题与术语上下文（论文题名最多 240 字符、摘录最多 700 字符） | 提交翻译或重新生成后，分批发给所选模型 |
 
 选中文献只决定首轮提示，不限制读取范围：`read_paper_pages` 接受任何已索引的 L 编号，库内全部文献都在模型可达范围内；会话历史中出现过的页文本会随后续轮次再次发送。PDF 原件、全库索引、其他会话内容、`~/.pi/agent` 中的凭据不会被自动发送。
 

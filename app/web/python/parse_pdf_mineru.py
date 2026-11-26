@@ -18,6 +18,13 @@ WIRE = sys.stdout
 IMAGE_EXTS = {'.png', '.jpg', '.jpeg', '.webp', '.gif'}
 IMAGE_LINK = re.compile(r'!\[([^\]]*)\]\(([^)\r\n]+)\)')
 DATA_IMAGE = re.compile(r'data:image/(png|jpeg|webp|gif);base64,([A-Za-z0-9+/=\s]+)')
+# MinerU 4.x（docvortex）偶尔在正文中输出带内联样式的页眉/页脚/页码/版权脚注 HTML，需在切块前剔除。
+DOCVORTEX_PAGE_NOISE = re.compile(
+    r'(?:<small>\s*)?<span\b[^>]*class="[^"]*docvortex-page-(?:header|footer|number|footnote)[^"]*"[^>]*>'
+    r'[\s\S]*?</span>(?:\s*</small>)?',
+    re.IGNORECASE,
+)
+UNICODE_BULLET = re.compile(r'^([ \t]*)[•·▪●◦−]\s+(?=\S)')
 # 略短于 Node 侧 20 分钟解析超时，保证超时由本脚本报告为可读错误。
 PARSE_TIMEOUT = 1140
 
@@ -50,6 +57,29 @@ def _failure_hint(proc: subprocess.CompletedProcess[str]) -> str:
         if lines[index].startswith(('错误', 'Error', 'error')):
             return ' '.join(lines[index:])[:200]
     return lines[-1][:200] if lines else f'退出码 {proc.returncode}'
+
+
+def _clean_markdown(text: str) -> str:
+    """清理 MinerU 4.x 页面装饰 HTML 噪声，并将 Unicode 项目符号规范为标准 Markdown 列表。"""
+    cleaned = DOCVORTEX_PAGE_NOISE.sub('', text)
+    lines: list[str] = []
+    in_fence = False
+    in_math = False
+    for line in cleaned.replace('\r\n', '\n').replace('\r', '\n').split('\n'):
+        stripped = line.strip()
+        if stripped.startswith(('```', '~~~')):
+            in_fence = not in_fence
+            lines.append(line)
+            continue
+        if not in_fence and stripped.startswith('$$'):
+            if stripped == '$$' or not stripped[2:].endswith('$$'):
+                in_math = not in_math
+            lines.append(line)
+            continue
+        if not in_fence and not in_math:
+            line = UNICODE_BULLET.sub(r'\1- ', line)
+        lines.append(line)
+    return re.sub(r'\n{3,}', '\n\n', '\n'.join(lines)).strip() + '\n'
 
 
 def _collect_images(text: str, md_dir: Path, images_out: Path) -> tuple[str, int]:
@@ -160,7 +190,8 @@ def parse_pdf(args):
     images_out = parsed_dir / 'images'
     images_out.mkdir(parents=True, exist_ok=True)
 
-    text, image_count = _collect_images(raw_text, md_file.parent, images_out)
+    text = _clean_markdown(raw_text)
+    text, image_count = _collect_images(text, md_file.parent, images_out)
     (parsed_dir / 'source.md').write_text(text, encoding='utf-8')
     send('parsed', markdown=str(parsed_dir / 'source.md'), images=image_count)
 

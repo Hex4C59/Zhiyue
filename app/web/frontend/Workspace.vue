@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, provide, computed, watch } from 'vue';
+import { onBeforeUnmount, onMounted, provide, computed, ref, watch } from 'vue';
 import { initializePanelResizing } from './lib/layout';
 import type { PanelLayout } from './lib/layout';
 import Sidebar from './components/Sidebar.vue';
@@ -11,11 +11,67 @@ import ImportPaperDialog from './components/ImportPaperDialog.vue';
 import Icon from './components/Icon.vue';
 import type { WorkspaceApi } from './lib/workspace';
 
+const COLLAPSE_STORAGE_KEY = 'zhiyue.panelCollapse';
+interface CollapseState {
+  sidebar: boolean;
+  papers: boolean;
+  assistant: boolean;
+}
+function loadCollapseState(): CollapseState {
+  try {
+    const raw = window.localStorage.getItem(COLLAPSE_STORAGE_KEY);
+    if (!raw) return { sidebar: false, papers: false, assistant: false };
+    const parsed = JSON.parse(raw) as Partial<CollapseState>;
+    return {
+      sidebar: parsed.sidebar === true,
+      papers: parsed.papers === true,
+      assistant: parsed.assistant === true,
+    };
+  } catch {
+    return { sidebar: false, papers: false, assistant: false };
+  }
+}
+
 const props = defineProps<{ workspace: WorkspaceApi }>();
 provide('workspace', props.workspace);
 const workspace = props.workspace;
 const state = workspace.state;
 const noteCount = computed(() => state.papers.filter((paper) => paper.notes?.length).length);
+const initialCollapse = loadCollapseState();
+const sidebarCollapsed = ref(initialCollapse.sidebar);
+const papersCollapsed = ref(initialCollapse.papers);
+const assistantCollapsed = ref(initialCollapse.assistant);
+const focusMode = computed(() => sidebarCollapsed.value && papersCollapsed.value && assistantCollapsed.value);
+
+function saveCollapseState(): void {
+  try {
+    window.localStorage.setItem(COLLAPSE_STORAGE_KEY, JSON.stringify({
+      sidebar: sidebarCollapsed.value,
+      papers: papersCollapsed.value,
+      assistant: assistantCollapsed.value,
+    }));
+  } catch { /* 存储不可用时仅在当前会话生效。 */ }
+}
+
+function togglePapers(): void {
+  papersCollapsed.value = !papersCollapsed.value;
+  if (!papersCollapsed.value) sidebarCollapsed.value = false;
+  saveCollapseState();
+}
+
+function toggleAssistant(): void {
+  assistantCollapsed.value = !assistantCollapsed.value;
+  saveCollapseState();
+}
+
+function toggleFocusMode(): void {
+  const next = !focusMode.value;
+  sidebarCollapsed.value = next;
+  papersCollapsed.value = next;
+  assistantCollapsed.value = next;
+  saveCollapseState();
+}
+
 function afterImport(id?: string): void {
   workspace.setView('library');
   if (id) workspace.selectPaper(id);
@@ -54,6 +110,10 @@ onMounted(() => {
       ) return;
       event.preventDefault();
       workspace.setView('library');
+      if (papersCollapsed.value) {
+        papersCollapsed.value = false;
+        saveCollapseState();
+      }
       workspace.setPanel('list');
       document.querySelector<HTMLElement>('#search')?.focus();
     },
@@ -68,12 +128,49 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="shell" data-framework="vue">
+  <div class="shell" :class="{ 'sidebar-collapsed': sidebarCollapsed && state.view === 'library' }" data-framework="vue">
     <Sidebar />
     <main class="main">
       <header class="topbar">
         <h1 id="page-title">{{ state.view === 'library' ? '文献' : '下载任务' }}</h1>
         <div class="top-actions">
+          <div v-if="state.view === 'library'" class="layout-toggles" role="group" aria-label="面板显示与专注模式">
+            <button
+              id="toggle-papers-panel"
+              type="button"
+              class="icon-button layout-toggle"
+              :class="{ active: !papersCollapsed }"
+              :aria-pressed="!papersCollapsed"
+              :aria-label="papersCollapsed ? '展开左侧文献列表' : '收起左侧文献列表'"
+              :title="papersCollapsed ? '展开左侧文献列表' : '收起左侧文献列表'"
+              @click="togglePapers"
+            >
+              <Icon name="panelLeft" />
+            </button>
+            <button
+              id="toggle-assistant-panel"
+              type="button"
+              class="icon-button layout-toggle"
+              :class="{ active: !assistantCollapsed }"
+              :aria-pressed="!assistantCollapsed"
+              :aria-label="assistantCollapsed ? '展开右侧研究助手' : '收起右侧研究助手'"
+              :title="assistantCollapsed ? '展开右侧研究助手' : '收起右侧研究助手'"
+              @click="toggleAssistant"
+            >
+              <Icon name="panelRight" />
+            </button>
+            <button
+              id="toggle-focus-mode"
+              type="button"
+              class="button subtle focus-toggle"
+              :class="{ active: focusMode }"
+              :aria-pressed="focusMode"
+              :title="focusMode ? '退出专注阅读模式，恢复左右侧栏' : '专注阅读：同时收起左侧栏与研究助手'"
+              @click="toggleFocusMode"
+            >
+              <Icon name="focus" /><span>{{ focusMode ? '退出专注' : '专注模式' }}</span>
+            </button>
+          </div>
           <span id="library-summary" class="muted"
             >{{ state.papers.length }} 篇文献 · {{ noteCount }} 篇有笔记</span
           >
@@ -103,6 +200,7 @@ onBeforeUnmount(() => {
         id="library-view"
         v-show="state.view === 'library'"
         class="library-layout"
+        :class="{ 'papers-collapsed': papersCollapsed, 'assistant-collapsed': assistantCollapsed }"
         :data-panel="state.panel"
       >
         <PaperList /><ReaderPane /><AssistantPane />

@@ -429,7 +429,7 @@ export async function createApp({
     piClient,
   });
   const translations = new PdfTranslationService({
-    root, python, library, emit, getModel: () => chats.pi.translationModel(), ...translation,
+    root, python, library, emit, getModel: (modelId?: string) => chats.pi.translationModel(modelId), ...translation,
   });
   const uploads = new UploadService(stateDir);
   const ui = new UiStateStore(path.join(stateDir, 'ui.json'));

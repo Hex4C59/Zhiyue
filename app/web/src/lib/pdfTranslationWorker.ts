@@ -5,9 +5,9 @@ import path from 'node:path';
 import { createInterface } from 'node:readline';
 import { statusError } from './errors.js';
 
-export const PDF_TRANSLATION_REVISION = 'mineru-md-zh-CN-1';
+export const PDF_TRANSLATION_REVISION = 'mineru-md-zh-CN-2';
 
-export type MarkdownBlockKind = 'heading' | 'table' | 'math' | 'code' | 'image' | 'prose';
+export type MarkdownBlockKind = 'heading' | 'meta' | 'reference' | 'table' | 'math' | 'code' | 'image' | 'prose';
 
 export interface MarkdownBlock {
   kind: MarkdownBlockKind;
@@ -17,7 +17,13 @@ export interface MarkdownBlock {
 export interface TranslationModel {
   id: string;
   fingerprint: string;
-  complete(mode: 'paragraph' | 'batch', text: string, signal: AbortSignal, retry?: boolean): Promise<string>;
+  complete(
+    mode: 'paragraph' | 'batch',
+    text: string,
+    signal: AbortSignal,
+    retry?: boolean,
+    context?: string,
+  ): Promise<string>;
 }
 
 export interface TranslationOutput {
@@ -48,35 +54,102 @@ export function validTranslationOutput(value: unknown): value is TranslationOutp
     typeof images === 'number' && Number.isSafeInteger(images) && images >= 0;
 }
 
+const DOCVORTEX_PAGE_NOISE =
+  /(?:<small>\s*)?<span\b[^>]*class="[^"]*docvortex-page-(?:header|footer|number|footnote)[^"]*"[^>]*>[\s\S]*?<\/span>(?:\s*<\/small>)?/gi;
+const REFERENCES_HEADING = /^#{1,6}\s+(?:(?:\d+\.?|[IVX]+\.?)\s+)?(?:references|bibliography|works\s+cited)\s*$/i;
+const POST_REFERENCES_HEADING =
+  /^#{1,2}\s+(?:(?:appendix|appendices|supplementary|acknowledg|about\s+the\s+authors|biography)\b|[A-Z]\.\s+)/i;
+const ABSTRACT_OR_KEYWORDS = /^(?:\*{0,2})(?:abstract|summary|keywords?|index\s+terms?)(?:\*{0,2})[\s.:—–-]/i;
+const RUNNING_HEADER_AUTHOR = /^[A-Z][A-Za-z.'-]+(?:\s+[A-Z][A-Za-z.'-]+){0,3}\s+et\s+al\.?$/;
+
+function normalizeHeadingLevel(line: string): string {
+  const trimmed = line.trimEnd();
+  const match = /^(#{2,3})\s+(\d+\.\d+(?:\.\d+)?)\.?(?:\s+(.*))$/.exec(trimmed);
+  if (!match) return trimmed;
+  const num = match[2] as string;
+  const rest = match[3] as string;
+  const depth = num.split('.').length;
+  const hashes = depth >= 3 ? '####' : '###';
+  return `${hashes} ${num}. ${rest}`;
+}
+
+function isRunningHeaderNoise(text: string): boolean {
+  const single = text.trim();
+  if (!single || single.includes('\n') || single.length > 80) return false;
+  return RUNNING_HEADER_AUTHOR.test(single);
+}
+
 /**
  * 将 MinerU 输出的 Markdown 切分为结构块：
- * - 论文大标题与章节标题（heading）、表格（table）、独立公式（math）、代码块（code）、纯图片（image）原样保留不翻译；
+ * - 论文大标题与章节标题（heading）、头部作者/机构元信息（meta）、参考文献区（reference）、
+ *   表格（table）、独立公式（math）、代码块（code）、纯图片（image）原样保留不翻译；
  * - 正文段落与图表说明（prose）送入模型翻译。
  */
 export function splitMarkdownBlocks(source: string): MarkdownBlock[] {
-  const lines = source.replace(/\r\n?/g, '\n').split('\n');
+  const cleaned = source.replace(DOCVORTEX_PAGE_NOISE, '').replace(/\r\n?/g, '\n');
+  const lines = cleaned.split('\n');
   const blocks: MarkdownBlock[] = [];
   let prose: string[] = [];
+  let inFrontMatter = false;
+  let seenBodyHeading = false;
+  let inReferences = false;
+
+  const pushMeta = (text: string): void => {
+    const prev = blocks[blocks.length - 1];
+    // 合并被 PDF 换行拆断的作者名单行（上一行以逗号或 and 结尾）
+    if (prev?.kind === 'meta' && /(?:,|(?:\s+and))\s*$/i.test(prev.text)) {
+      prev.text = `${prev.text} ${text}`;
+      return;
+    }
+    blocks.push({ kind: 'meta', text });
+  };
 
   const flushProse = (): void => {
     const text = prose.join('\n').trim();
-    if (text) blocks.push({ kind: 'prose', text });
     prose = [];
+    if (!text) return;
+    if (inReferences) {
+      blocks.push({ kind: 'reference', text });
+      return;
+    }
+    if (inFrontMatter) {
+      const plainLen = text.replace(/<[^>]+>/g, '').replace(/[*_`]/g, '').trim().length;
+      if (ABSTRACT_OR_KEYWORDS.test(text) || plainLen > 420) {
+        inFrontMatter = false;
+      } else {
+        pushMeta(text);
+        return;
+      }
+    }
+    if (isRunningHeaderNoise(text)) return;
+    blocks.push({ kind: 'prose', text });
   };
 
   for (let i = 0; i < lines.length; i++) {
-    const line = lines[i] as string;
-    const trimmed = line.trim();
+    const rawLine = lines[i] as string;
+    const trimmed = rawLine.trim();
 
     if (!trimmed) {
       flushProse();
       continue;
     }
 
-    // 1. 标题（论文大标题与所有章节标题均保留英文原文）
+    // 1. 标题（论文大标题与所有章节标题均保留英文原文，并按编号深度规范 H2/H3/H4 层级）
     if (/^#{1,6}\s+/.test(trimmed)) {
       flushProse();
-      blocks.push({ kind: 'heading', text: line.trimEnd() });
+      const normalized = normalizeHeadingLevel(rawLine);
+      if (/^#\s+/.test(normalized) && !seenBodyHeading && blocks.length === 0) {
+        inFrontMatter = true;
+      } else {
+        inFrontMatter = false;
+        seenBodyHeading = true;
+      }
+      if (REFERENCES_HEADING.test(normalized)) {
+        inReferences = true;
+      } else if (inReferences && POST_REFERENCES_HEADING.test(normalized)) {
+        inReferences = false;
+      }
+      blocks.push({ kind: 'heading', text: normalized });
       continue;
     }
 
@@ -86,7 +159,7 @@ export function splitMarkdownBlocks(source: string): MarkdownBlock[] {
       flushProse();
       const marker = fence[1] as string;
       const closeRe = new RegExp(`^\\s*${marker[0]}{${marker.length},}\\s*$`);
-      const chunk = [line];
+      const chunk = [rawLine];
       while (i + 1 < lines.length) {
         i++;
         chunk.push(lines[i] as string);
@@ -102,7 +175,7 @@ export function splitMarkdownBlocks(source: string): MarkdownBlock[] {
       const isDollar = trimmed.startsWith('$$');
       const closing = isDollar ? '$$' : '\\]';
       const rest = trimmed.slice(2);
-      const chunk = [line];
+      const chunk = [rawLine];
       if (!(rest.length > 0 && rest.endsWith(closing))) {
         while (i + 1 < lines.length) {
           i++;
@@ -117,7 +190,7 @@ export function splitMarkdownBlocks(source: string): MarkdownBlock[] {
     // 4. HTML 表格（MinerU 默认输出 <table>...</table>）
     if (/^<table\b/i.test(trimmed)) {
       flushProse();
-      const chunk = [line];
+      const chunk = [rawLine];
       if (!/<\/table>/i.test(trimmed)) {
         while (i + 1 < lines.length) {
           i++;
@@ -131,12 +204,12 @@ export function splitMarkdownBlocks(source: string): MarkdownBlock[] {
 
     // 5. Markdown 管道表格
     if (
-      line.includes('|') &&
+      rawLine.includes('|') &&
       i + 1 < lines.length &&
       /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$/.test(lines[i + 1] as string)
     ) {
       flushProse();
-      const chunk = [line, lines[++i] as string];
+      const chunk = [rawLine, lines[++i] as string];
       while (i + 1 < lines.length && (lines[i + 1] as string).includes('|') && (lines[i + 1] as string).trim()) {
         chunk.push(lines[++i] as string);
       }
@@ -151,7 +224,9 @@ export function splitMarkdownBlocks(source: string): MarkdownBlock[] {
       continue;
     }
 
-    prose.push(line);
+    // 将 MinerU 输出的 Unicode 列表符（如 − / •）转为标准 Markdown 列表
+    const normalizedLine = rawLine.replace(/^([ \t]*)[•·▪●◦−]\s+(?=\S)/, '$1- ');
+    prose.push(normalizedLine);
   }
   flushProse();
   return blocks;
@@ -194,20 +269,37 @@ function parseBatchReply(expectedIds: number[], reply: string): Map<number, stri
   return remaining.size === 0 ? outputs : null;
 }
 
-async function translateSingle(text: string, model: TranslationModel, signal: AbortSignal): Promise<string> {
+function buildDocumentContext(blocks: MarkdownBlock[]): string | undefined {
+  const title = blocks.find((b) => b.kind === 'heading' && /^#\s+/.test(b.text))?.text.replace(/^#\s+/, '').trim();
+  const abstractBlock = blocks.find((b) => b.kind === 'prose' && ABSTRACT_OR_KEYWORDS.test(b.text))?.text.trim()
+    ?? blocks.find((b) => b.kind === 'prose' && b.text.length >= 120)?.text.trim();
+  const parts: string[] = [];
+  if (title) parts.push(`Title: ${title.slice(0, 240)}`);
+  if (abstractBlock) parts.push(`Excerpt: ${abstractBlock.slice(0, 700)}`);
+  return parts.length ? parts.join('\n') : undefined;
+}
+
+async function translateSingle(
+  text: string,
+  model: TranslationModel,
+  signal: AbortSignal,
+  context?: string,
+  onError?: (message: string) => void,
+): Promise<string> {
   try {
-    const reply = await model.complete('paragraph', text, signal);
+    const reply = await model.complete('paragraph', text, signal, false, context);
     signal.throwIfAborted();
     return reply.trim() || text;
   } catch (error) {
     if (signal.aborted) throw error;
-    // 单段重试一次；仍失败时保留原文，不拖垮整篇翻译。
+    // 单段重试一次；仍失败时保留原文，不拖垮整篇翻译，同时记录具体错误供全篇失败时提示。
     try {
-      const retry = await model.complete('paragraph', text, signal, true);
+      const retry = await model.complete('paragraph', text, signal, true, context);
       signal.throwIfAborted();
       return retry.trim() || text;
     } catch (retryError) {
       if (signal.aborted) throw retryError;
+      if (retryError instanceof Error && retryError.message) onError?.(retryError.message);
       return text;
     }
   }
@@ -230,6 +322,8 @@ export async function translateMarkdownBlocks(
     return { markdown: blocks.map((b) => b.text).join('\n\n') + '\n', translatedCount: 0 };
   }
 
+  const docContext = buildDocumentContext(blocks);
+
   // 按字符与条数预算组装批次
   const batches: Array<Array<{ id: number; index: number; text: string }>> = [];
   let current: Array<{ id: number; index: number; text: string }> = [];
@@ -249,6 +343,8 @@ export async function translateMarkdownBlocks(
   let completed = 0;
   let translatedCount = 0;
   let cursor = 0;
+  let lastError = '';
+  const recordError = (message: string): void => { if (message) lastError = message; };
 
   const runWorker = async (): Promise<void> => {
     while (cursor < batches.length) {
@@ -256,7 +352,7 @@ export async function translateMarkdownBlocks(
       const batch = batches[cursor++]!;
       if (batch.length === 1) {
         const item = batch[0]!;
-        const translated = await translateSingle(item.text, model, signal);
+        const translated = await translateSingle(item.text, model, signal, docContext, recordError);
         results[item.index] = translated;
         if (translated !== item.text) translatedCount++;
         completed += 1;
@@ -265,11 +361,12 @@ export async function translateMarkdownBlocks(
       }
       let mapped: Map<number, string> | null = null;
       try {
-        const reply = await model.complete('batch', buildBatchPrompt(batch), signal);
+        const reply = await model.complete('batch', buildBatchPrompt(batch), signal, false, docContext);
         signal.throwIfAborted();
         mapped = parseBatchReply(batch.map((item) => item.id), reply);
       } catch (error) {
         if (signal.aborted) throw error;
+        if (error instanceof Error && error.message) recordError(error.message);
       }
       if (mapped) {
         for (const item of batch) {
@@ -283,7 +380,7 @@ export async function translateMarkdownBlocks(
         // 批量 JSON 未对齐时降级为逐段独立翻译，单段异常回退原文。
         for (const item of batch) {
           signal.throwIfAborted();
-          const translated = await translateSingle(item.text, model, signal);
+          const translated = await translateSingle(item.text, model, signal, docContext, recordError);
           results[item.index] = translated;
           if (translated !== item.text) translatedCount++;
           completed += 1;
@@ -295,7 +392,7 @@ export async function translateMarkdownBlocks(
 
   await Promise.all(Array.from({ length: Math.min(CONCURRENCY, batches.length) }, () => runWorker()));
   if (translatedCount === 0) {
-    throw statusError('模型未能返回有效中文译文，请检查模型配置后重试。', 502);
+    throw statusError(lastError || '模型未能返回有效中文译文，请检查模型配置后重试。', 502);
   }
   return { markdown: results.join('\n\n') + '\n', translatedCount };
 }

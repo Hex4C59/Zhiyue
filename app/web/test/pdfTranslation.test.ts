@@ -19,6 +19,8 @@ const model: TranslationModel = {
   complete: async () => '',
 };
 
+const alternate: TranslationModel = { ...model, id: 'custom/sol', fingerprint: 'custom/sol' };
+
 const gate = () => {
   let resolve!: () => void;
   return { promise: new Promise<void>((done) => { resolve = done; }), resolve };
@@ -93,6 +95,81 @@ test('Markdown 切块保留英文标题、HTML/管道表格、独立公式与插
   assert.match(markdown, /!\[\]\(images\/fig1\.png\)/);
 });
 
+test('切块自动清洗 docvortex 噪声、规范层级与列表、跳过作者元信息与参考文献并传递上下文', async () => {
+  const source = [
+    '# IEMOCAP: Interactive emotional dyadic motion capture database',
+    '',
+    'Carlos Busso, Murtaza Bulut,',
+    '',
+    'Emily Mower and',
+    '',
+    'Shrikanth S. Narayanan',
+    '',
+    'University of Southern California',
+    '',
+    'Abstract. Emotion is expressed through speech and gestures.',
+    '',
+    '## 1. Introduction',
+    '',
+    '<small><span class="docvortex-page-footnote" data-block-type="page_footnote" style="color:#6b7280">c 2008 Kluwer.</span></small>',
+    '',
+    '− Database must contain natural dialogues.',
+    '',
+    'Carlos Busso et al.',
+    '',
+    '## 3.1. Material selection',
+    '',
+    '## 3.1.2. Detailed setup',
+    '',
+    'Actors performed scripted and spontaneous scenes.',
+    '',
+    '## References',
+    '',
+    '1. Busso, C., 2008. IEMOCAP database.',
+    '',
+    '## Appendix',
+    '',
+    'Supplementary notes for the dataset.',
+  ].join('\n');
+
+  const blocks = splitMarkdownBlocks(source);
+  assert.deepEqual(
+    blocks.map((b) => b.kind),
+    ['heading', 'meta', 'meta', 'prose', 'heading', 'prose', 'heading', 'heading', 'prose', 'heading', 'reference', 'heading', 'prose'],
+  );
+  assert.equal(blocks[1]?.text, 'Carlos Busso, Murtaza Bulut, Emily Mower and Shrikanth S. Narayanan');
+  assert.equal(blocks[5]?.text, '- Database must contain natural dialogues.');
+  assert.equal(blocks[6]?.text, '### 3.1. Material selection');
+  assert.equal(blocks[7]?.text, '#### 3.1.2. Detailed setup');
+
+  const contexts: Array<string | undefined> = [];
+  const { markdown, translatedCount } = await translateMarkdownBlocks(
+    blocks,
+    {
+      ...model,
+      complete: async (mode, text, _signal, _retry, context) => {
+        contexts.push(context);
+        if (mode === 'batch') {
+          const items = JSON.parse(text.slice(text.indexOf('['))) as Array<{ id: number; text: string }>;
+          return JSON.stringify(items.map(({ id, text: src }) => ({ id, output: `译:${src}` })));
+        }
+        return `译:${text}`;
+      },
+    },
+    AbortSignal.timeout(5000),
+  );
+
+  assert.equal(translatedCount, 4);
+  assert.ok(contexts[0]?.includes('IEMOCAP'));
+  assert.ok(contexts[0]?.includes('Emotion is expressed'));
+  assert.doesNotMatch(markdown, /docvortex-page-footnote/);
+  assert.doesNotMatch(markdown, /Carlos Busso et al\./);
+  assert.match(markdown, /Carlos Busso, Murtaza Bulut, Emily Mower and Shrikanth S\. Narayanan/);
+  assert.match(markdown, /1\. Busso, C\., 2008\. IEMOCAP database\./);
+  assert.doesNotMatch(markdown, /译:1\. Busso/);
+  assert.match(markdown, /译:Supplementary notes for the dataset\./);
+});
+
 test('批量 JSON 格式错误时自动降级为逐段翻译，顽固单段异常安全回退原文', async () => {
   const blocks = splitMarkdownBlocks([
     'First paragraph about methods.',
@@ -155,7 +232,7 @@ test('译本发布、Markdown 读取、图片资产边界、重新生成与取�
   const server = await createApp({
     root, connectPi: false,
     translation: {
-      getModel: () => model,
+      getModel: (id) => !id || id === modelId ? model : id === alternate.id ? alternate : undefined,
       mineruCommand: process.execPath,
       worker: async ({ work, signal }) => {
         runs++;
@@ -199,23 +276,35 @@ test('译本发布、Markdown 读取、图片资产边界、重新生成与取�
   assert.equal(exported.status, 200);
   assert.match(await exported.text(), /旧版中文精读/);
 
-  // 重新生成
-  const regenRes = await post(route, { model: modelId, regenerate: true });
+  // 当前有默认模型的译本。换用另一模型重新生成时展示旧译本，发布后改为新版。
+  const regenRes = await post(route, { model: alternate.id, regenerate: true });
   assert.equal(regenRes.status, 202);
   const started = await regenRes.json() as PdfTranslationStatus;
   assert.ok(started.job);
   const newKey = started.job.key;
   assert.notEqual(newKey, oldKey);
+  assert.equal(started.result?.key, oldKey);
+  assert.equal((await get()).result?.key, oldKey);
   publish.resolve();
   const ready = await waitFor(get, (state) => ['completed', 'failed'].includes(state.job?.status ?? ''));
   assert.equal(ready.job?.status, 'completed', ready.job?.error);
   assert.equal(ready.result?.key, newKey);
+  assert.equal(ready.result?.model, alternate.id);
+  assert.equal(ready.model, modelId);
   const newMd = await (await fetch(`${route}/markdown?key=${newKey}`)).json() as PdfTranslationMarkdown;
   assert.match(newMd.text, /新版中文精读/);
 
-  // 取消与失败均保留上次成功的译本
+  // 缓存仍按请求的模型匹配，缓存命中不改变阅读器当前展示的译本。
+  const defaultCached = await post(route, { model: modelId });
+  assert.equal(defaultCached.status, 200);
+  assert.equal((await defaultCached.json() as PdfTranslationStatus).result?.key, oldKey);
+  assert.equal((await get()).result?.key, newKey);
+  assert.equal(runs, 1);
+
+  // 切回默认模型再生成，取消与失败均保留上次成功的译本。
   operation = 'cancel';
   const cancelStart = await (await post(route, { model: modelId, regenerate: true })).json() as PdfTranslationStatus;
+  assert.equal(cancelStart.result?.key, newKey);
   assert.equal((await post(`${route}/cancel`, { jobId: cancelStart.job?.id })).status, 202);
   assert.equal((await waitFor(get, (s) => s.job?.status === 'cancelled')).result?.key, newKey);
 
