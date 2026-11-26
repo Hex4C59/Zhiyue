@@ -8,7 +8,7 @@ import test from 'node:test';
 import { createApp } from '../src/server.js';
 import { resolveTranslationPython } from '../src/lib/pdfTranslation.js';
 import { resolvePython } from '../src/lib/python.js';
-import { runTranslationWorker } from '../src/lib/pdfTranslationWorker.js';
+import { PDF_TRANSLATION_REVISION, runTranslationWorker } from '../src/lib/pdfTranslationWorker.js';
 import type { TranslationModel } from '../src/lib/pdfTranslationWorker.js';
 import type { PdfTranslationStatus } from '../src/lib/pdfTranslationTypes.js';
 
@@ -29,6 +29,14 @@ async function waitFor<T>(read: () => Promise<T>, condition: (value: T) => boole
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
   throw new Error('翻译任务状态等待超时。');
+}
+
+function makeReaderPdf(python: string, source: string, metadata: string, title: string): void {
+  const rendered = spawnSync(python, [path.resolve('app/desktop/test/fixtures/make_pdf.py'), source,
+    metadata, title, 'A. Example', '10.1000/example', '2026'], {
+    encoding: 'utf8', windowsHide: true, timeout: 5000,
+  });
+  assert.equal(rendered.status, 0, rendered.stderr || rendered.error?.message);
 }
 
 test('更新译本时旧键仍可预览、导出，成功后按当前指纹命中缓存', { timeout: 30_000 }, async (t) => {
@@ -52,11 +60,7 @@ test('更新译本时旧键仍可预览、导出，成功后按当前指纹命�
     { literature_id: 'L001', file: 'papers/a.pdf' }, { literature_id: 'L002', file: 'papers/b.pdf' },
   ] }));
   const source = path.join(root, 'papers/a.pdf');
-  const rendered = spawnSync(python, [path.resolve('app/desktop/test/fixtures/make_pdf.py'), source,
-    path.join(root, 'fixture.json'), 'Cached PDF fixture', 'A. Example', '10.1000/example', '2026'], {
-    encoding: 'utf8', windowsHide: true, timeout: 5000,
-  });
-  assert.equal(rendered.status, 0, rendered.stderr || rendered.error?.message);
+  makeReaderPdf(python, source, path.join(root, 'fixture.json'), 'Cached PDF fixture');
   const original = await readFile(source);
   const sourceHash = sha256(original);
   const oldKey = sha256(JSON.stringify([sourceHash, model.fingerprint, 'babeldoc-0.7.1-zh-CN-2']));
@@ -190,6 +194,144 @@ test('更新译本时旧键仍可预览、导出，成功后按当前指纹命�
   for (const key of [oldKey, ready.result.key]) {
     assert.equal((await fetch(`${route()}/file?key=${key}`)).status, 404);
   }
+});
+
+test('当前配置已命中缓存时可重新生成，失败或取消保留上次成功的译本', { timeout: 30_000 }, async (t) => {
+  const python = resolvePython();
+  if (spawnSync(python, ['-c', 'import pypdf, pdfplumber, pypdfium2'], { windowsHide: true }).status !== 0) {
+    return t.skip('译本发布和预览需要文献库 Python 依赖。');
+  }
+  const root = await mkdtemp(path.join(os.tmpdir(), 'zhiyue-pdf-regenerate-'));
+  const publish = gate();
+  let app: Awaited<ReturnType<typeof createApp>> | undefined;
+  t.after(async () => {
+    publish.resolve();
+    await app?.close();
+    await rm(root, { recursive: true, force: true });
+  });
+  const papers = path.join(root, 'papers');
+  const source = path.join(papers, 'a.pdf');
+  const regenerated = path.join(root, 'generated.pdf');
+  await mkdir(papers);
+  await mkdir(path.join(root, '.zhiyue/catalog'), { recursive: true });
+  await writeFile(path.join(root, '.zhiyue/catalog/文献索引.json'), JSON.stringify({ records: [
+    { literature_id: 'L001', file: 'papers/a.pdf' }, { literature_id: 'L002', file: 'papers/b.pdf' },
+  ] }));
+  makeReaderPdf(python, source, path.join(root, 'source.json'), 'Current translation fixture');
+  makeReaderPdf(python, regenerated, path.join(root, 'generated.json'), 'Regenerated translation fixture');
+  const original = await readFile(source);
+  const nextPdf = await readFile(regenerated);
+  const sourceHash = sha256(original);
+  const oldKey = sha256(JSON.stringify([sourceHash, model.fingerprint, PDF_TRANSLATION_REVISION]));
+  const oldTime = '2999-01-01T00:00:00.000Z';
+  const baseDir = path.join(root, '.zhiyue/data/translations/L001');
+  const oldDir = path.join(baseDir, oldKey);
+  await mkdir(oldDir, { recursive: true });
+  await writeFile(path.join(oldDir, 'zh.pdf'), original);
+  await writeFile(path.join(oldDir, 'result.json'), JSON.stringify({
+    key: oldKey, sourceHash, model: modelId, completedAt: oldTime, pages: 2, reviewPages: [],
+  }));
+  await writeFile(path.join(papers, 'b.pdf'), original);
+  let runs = 0;
+  let operation: 'publish' | 'cancel' | 'fail' = 'publish';
+  const listen = async (): Promise<string> => {
+    const server = await createApp({ root, connectPi: false, translation: {
+      getModel: () => model, enginePython: process.execPath,
+      worker: async ({ work, signal }) => {
+        runs++;
+        if (operation === 'fail') throw new Error('合成重新生成任务失败');
+        if (operation === 'cancel') {
+          signal.throwIfAborted();
+          await new Promise<void>((resolve) => signal.addEventListener('abort', () => resolve(), { once: true }));
+          signal.throwIfAborted();
+        }
+        await publish.promise;
+        await mkdir(path.join(work, 'result'));
+        await writeFile(path.join(work, 'result/zh.pdf'), nextPdf);
+        return { pages: 2, reviewPages: [] };
+      },
+    } });
+    app = server;
+    await new Promise<void>((resolve) => server.server.listen(0, '127.0.0.1', resolve));
+    const address = server.server.address();
+    assert.ok(address && typeof address === 'object');
+    return `http://127.0.0.1:${address.port}/api/papers`;
+  };
+  let base = await listen();
+  const route = (id = 'L001') => `${base}/${id}/translation`;
+  const post = (url: string, body: unknown) => fetch(url, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  });
+  const submit = async (regenerate: boolean, code: number) => {
+    const response = await post(route(), { model: modelId, regenerate });
+    assert.equal(response.status, code);
+    return response.json() as Promise<PdfTranslationStatus>;
+  };
+  const get = async () => (await fetch(route())).json() as Promise<PdfTranslationStatus>;
+  const exportPdf = (key: string) => fetch(`${route()}/file?key=${key}&download=1`);
+
+  assert.equal((await post(route(), { model: modelId, regenerate: 'true' })).status, 400);
+  assert.equal((await post(route(), { model: 'test/outdated', regenerate: true })).status, 409);
+  const cached = await submit(false, 200);
+  assert.equal(cached.result?.key, oldKey);
+  assert.equal(cached.updateAvailable, false);
+  assert.equal(runs, 0);
+
+  const started = await submit(true, 202);
+  assert.ok(started.job);
+  const newKey = started.job.key;
+  assert.match(newKey, /^[0-9a-f]{64}$/);
+  assert.notEqual(newKey, oldKey);
+  assert.equal(started.result?.key, oldKey);
+  assert.equal((await submit(true, 202)).job?.id, started.job.id);
+  assert.equal((await post(route('L002'), { model: modelId, regenerate: true })).status, 409);
+  assert.equal((await exportPdf(newKey)).status, 404);
+  assert.equal((await get()).result?.key, oldKey);
+  const preview = await fetch(`${base}/L001/preview?page=2&translation=${oldKey}`);
+  assert.equal(preview.status, 200);
+  assert.equal(preview.headers.get('x-pdf-pages'), '2');
+  const layer = await fetch(`${base}/L001/text-layer?page=2&translation=${oldKey}`);
+  assert.equal(layer.status, 200);
+  assert.match((await layer.json()).text, /Current translation fixture/);
+  assert.deepEqual(Buffer.from(await (await exportPdf(oldKey)).arrayBuffer()), original);
+
+  publish.resolve();
+  const ready = await waitFor(get, (state) => ['completed', 'failed'].includes(state.job?.status ?? ''));
+  assert.equal(ready.job?.status, 'completed', ready.job?.error);
+  assert.equal(ready.result?.key, newKey);
+  assert.ok(ready.result && Date.parse(ready.result.completedAt) > Date.parse(oldTime));
+  assert.equal(ready.updateAvailable, false);
+  assert.equal((await submit(false, 200)).result?.key, newKey);
+  assert.equal(runs, 1);
+  const newLayer = await fetch(`${base}/L001/text-layer?page=2&translation=${newKey}`);
+  assert.equal(newLayer.status, 200);
+  assert.match((await newLayer.json()).text, /Regenerated translation fixture/);
+  assert.deepEqual(Buffer.from(await (await exportPdf(newKey)).arrayBuffer()), nextPdf);
+  assert.deepEqual(Buffer.from(await (await exportPdf(oldKey)).arrayBuffer()), original);
+
+  await app?.close();
+  base = await listen();
+  assert.equal((await get()).result?.key, newKey);
+  assert.equal((await submit(false, 200)).result?.key, newKey);
+  operation = 'cancel';
+  const again = await submit(true, 202);
+  assert.ok(again.job);
+  assert.notEqual(again.job.key, newKey);
+  assert.equal((await post(`${route()}/cancel`, { jobId: again.job.id })).status, 202);
+  assert.equal((await waitFor(get, (state) => state.job?.status === 'cancelled')).result?.key, newKey);
+
+  operation = 'fail';
+  assert.equal((await submit(true, 202)).result?.key, newKey);
+  const failed = await waitFor(get, (state) => state.job?.status === 'failed');
+  assert.match(failed.job?.error ?? '', /合成重新生成任务失败/);
+  assert.equal(failed.result?.key, newKey);
+  assert.deepEqual((await readdir(baseDir)).sort(), [oldKey, newKey].sort());
+  assert.deepEqual(await readdir(path.join(root, '.zhiyue/tmp')), []);
+  assert.deepEqual(await readFile(source), original);
+  await writeFile(source, '%PDF-1.7\nreplacement PDF\n%%EOF');
+  assert.equal((await get()).result, null);
+  assert.equal((await exportPdf(oldKey)).status, 404);
+  assert.equal((await exportPdf(newKey)).status, 404);
 });
 
 test('模型重试后仍改变段落内数值时停止发布', async (t) => {

@@ -352,6 +352,7 @@ pre,code,kbd,samp { font-family:var(--font-mono); }
   padding:4px 12px; background:var(--toolbar); border-bottom:1px solid var(--line); font-size:11px;
 }
 .pdf-translation-bar:empty { display:none; }
+.pdf-translation-bar .segmented,.pdf-translation-bar .button,.pdf-translation-download { white-space:nowrap; }
 .pdf-translation-bar .button { padding:4px 8px; font-size:11px; }
 .pdf-translation-bar progress { width:90px; height:8px; accent-color:var(--accent); }
 .pdf-translation-detail { color:var(--muted); min-width:0; overflow-wrap:anywhere; }

@@ -19,7 +19,11 @@ const active = computed(() => isActive(job.value));
 const submitted = ref<Pick<PdfTranslationJob, 'id' | 'key'> | null>(null);
 const download = computed(() => result.value ? `${base.value}/file?key=${result.value.key}&download=1` : '');
 const reviewPages = computed(() => result.value?.reviewPages ?? []);
-const startLabel = computed(() => result.value ? '更新译本' : job.value?.status === 'failed' ? '重试翻译' : '翻译成中文');
+const startLabel = computed(() => {
+  if (result.value) return '重新生成中文';
+  return job.value?.status === 'failed' ? '重试翻译' : '翻译成中文';
+});
+const progressJob = computed(() => (active.value || submitted.value) ? job.value : null);
 let version = 0;
 let disposed = false;
 let poll: ReturnType<typeof setInterval> | undefined;
@@ -53,12 +57,14 @@ async function refresh(): Promise<void> {
 }
 
 async function start(): Promise<void> {
-  if (busy.value || active.value || submitted.value || !status.value?.engineAvailable || !status.value.model) return;
+  const model = status.value?.model;
+  if (busy.value || active.value || submitted.value || !status.value?.engineAvailable || !model) return;
+  const request = result.value ? { model, regenerate: true } : { model };
   busy.value = true;
   failure.value = '';
   ++version;
   try {
-    const update = await workspace.api<PdfTranslationStatus>(base.value, json('POST', { model: status.value.model }));
+    const update = await workspace.api<PdfTranslationStatus>(base.value, json('POST', request));
     if (current()) {
       submitted.value = update.job && { id: update.job.id, key: update.job.key };
       apply(update);
@@ -119,20 +125,21 @@ onBeforeUnmount(() => {
           @click="state.pdfTranslation = result.key">中文</button>
       </div>
       <a class="pdf-translation-download" :href="download" download>导出中文 PDF</a>
-      <span v-if="state.pdfTranslation && reviewPages.length" class="pdf-translation-detail"
-        :title="`需核对的物理页：${reviewPages.join('、')}`">
-        {{ reviewPages.includes(state.pdfPage) ? '本页需核对' : `${reviewPages.length} 页需核对` }}
-      </span>
     </template>
-    <template v-if="(active || submitted) && job">
-      <progress :value="job.percent" max="100" aria-label="PDF 翻译进度" />
-      <span class="pdf-translation-detail" role="status">{{ job.stage }} · {{ job.percent }}%</span>
-      <button v-if="job.status === 'running'" type="button" class="button subtle" :disabled="busy"
+    <template v-if="progressJob">
+      <progress :value="progressJob.percent" max="100" aria-label="PDF 翻译进度" />
+      <span class="pdf-translation-detail" role="status">{{ progressJob.stage }} · {{ progressJob.percent }}%</span>
+      <button v-if="progressJob.status === 'running'" type="button" class="button subtle" :disabled="busy"
         @click="cancel">取消</button>
     </template>
-    <template v-else-if="status && (!result || status.updateAvailable)">
-      <button type="button" class="button subtle" :disabled="busy || !status.engineAvailable || !status.model"
-        @click="start">{{ busy ? '正在提交…' : startLabel }}</button>
+    <button v-else-if="status" type="button" class="button subtle"
+      :disabled="busy || !status.engineAvailable || !status.model"
+      @click="start">{{ busy ? '正在提交…' : startLabel }}</button>
+    <span v-if="state.pdfTranslation && reviewPages.length" class="pdf-translation-detail"
+      :title="`需核对的物理页：${reviewPages.join('、')}`">
+      {{ reviewPages.includes(state.pdfPage) ? '本页需核对' : `${reviewPages.length} 页需核对` }}
+    </span>
+    <template v-if="status && !progressJob">
       <span v-if="!status.engineAvailable" class="pdf-translation-detail">请按 README 安装翻译运行环境</span>
       <span v-else-if="!status.model" class="pdf-translation-detail">请在「模型与密钥」中配置模型</span>
       <span v-else class="pdf-translation-detail" :title="`可提取的英文正文将发送给 ${status.model}`">

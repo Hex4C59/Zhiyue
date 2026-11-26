@@ -1,6 +1,6 @@
 import { createReadStream, existsSync } from 'node:fs';
 import { lstat, mkdir, mkdtemp, readdir, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises';
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import { appPaths } from './appPaths.js';
@@ -16,11 +16,15 @@ import type {
 
 const HASH = /^[0-9a-f]{64}$/;
 const MAX_BYTES = 100 * 1024 * 1024;
+const CONFIG_PREFIX_LENGTH = 40;
 
-function translationKey(sourceHash: string, model: TranslationModel): string {
+function translationConfigKey(sourceHash: string, model: TranslationModel): string {
   return createHash('sha256').update(JSON.stringify([sourceHash, model.fingerprint, PDF_TRANSLATION_REVISION]))
     .digest('hex');
 }
+
+// 首次译本的完整摘要仍可使用。重新生成只替换后缀，文件地址和当前配置都可独立识别。
+const configPrefix = (key: string): string => key.slice(0, CONFIG_PREFIX_LENGTH);
 
 export function resolveTranslationPython(): string {
   if (process.env.ZHIYUE_TRANSLATION_PYTHON) return path.resolve(process.env.ZHIYUE_TRANSLATION_PYTHON);
@@ -41,6 +45,7 @@ export interface PdfTranslationOptions {
 
 interface ActiveTranslation {
   job: PdfTranslationJob;
+  configKey: string;
   controller: AbortController;
   done: Promise<void>;
 }
@@ -134,22 +139,33 @@ export class PdfTranslationService {
     }
   }
 
-  private async preferredResult(
-    root: string, id: string, sourceHash: string, keys: string[], preferred?: string,
+  private async latestResult(
+    root: string, id: string, sourceHash: string, keys: string[],
   ): Promise<PdfTranslationResult | null> {
-    if (preferred) {
-      const exact = await this.resultAt(root, id, preferred);
-      if (exact?.sourceHash === sourceHash) return exact;
-    }
     let latest: PdfTranslationResult | null = null;
+    let latestTime = -Infinity;
     for (const key of keys) {
-      if (key === preferred) continue;
       const result = await this.resultAt(root, id, key);
-      if (result?.sourceHash === sourceHash && (!latest || Date.parse(result.completedAt) > Date.parse(latest.completedAt))) {
+      if (result?.sourceHash !== sourceHash) continue;
+      const time = Date.parse(result.completedAt);
+      if (!latest || time > latestTime || (time === latestTime && key > latest.key)) {
         latest = result;
+        latestTime = time;
       }
     }
     return latest;
+  }
+
+  private async preferredResult(
+    root: string, id: string, sourceHash: string, keys: string[], configKey?: string,
+  ): Promise<PdfTranslationResult | null> {
+    if (configKey) {
+      const prefix = configPrefix(configKey);
+      const exact = await this.latestResult(root, id, sourceHash, keys.filter((key) => key.startsWith(prefix)));
+      if (exact) return exact;
+      keys = keys.filter((key) => !key.startsWith(prefix));
+    }
+    return this.latestResult(root, id, sourceHash, keys);
   }
 
   async status(id: string): Promise<PdfTranslationStatus> {
@@ -160,19 +176,19 @@ export class PdfTranslationService {
     const job = lastJob ? { ...lastJob } : null;
     const keys = await this.resultKeys(root, id);
     const model = this.options.getModel();
-    let preferred: string | undefined;
+    let configKey: string | undefined;
     let result: PdfTranslationResult | null = null;
     if (keys.length && (await stat(source)).size <= MAX_BYTES) {
       const sourceHash = await this.hash(source);
-      preferred = model && translationKey(sourceHash, model);
-      result = await this.preferredResult(root, id, sourceHash, keys, preferred);
+      configKey = model && translationConfigKey(sourceHash, model);
+      result = await this.preferredResult(root, id, sourceHash, keys, configKey);
     }
     return {
       engineAvailable: existsSync(this.engine),
       model: model?.id ?? null,
       job,
       result,
-      updateAvailable: !!(result && preferred && result.key !== preferred),
+      updateAvailable: !!(result && configKey && !result.key.startsWith(configPrefix(configKey))),
     };
   }
 
@@ -191,7 +207,7 @@ export class PdfTranslationService {
     this.options.emit({ type: 'pdfTranslation', job: { ...job } });
   }
 
-  async start(id: string, approvedModel: unknown): Promise<PdfTranslationStatus> {
+  async start(id: string, approvedModel: unknown, regenerate = false): Promise<PdfTranslationStatus> {
     if (!existsSync(this.engine)) {
       throw statusError('请先安装 PDF 翻译运行环境，安装方法见项目 README。', 503);
     }
@@ -201,29 +217,36 @@ export class PdfTranslationService {
     const source = await this.source(id);
     const root = await realpath(this.options.root);
     const sourceHash = await this.hash(source);
-    const key = translationKey(sourceHash, model);
+    const configKey = translationConfigKey(sourceHash, model);
+    const prefix = configPrefix(configKey);
     const keys = await this.resultKeys(root, id);
-    const result = await this.preferredResult(root, id, sourceHash, keys, key);
-    const status = { engineAvailable: true, model: model.id, result, updateAvailable: !!result && result.key !== key };
-    if (result?.key === key) return { ...status, job: null };
+    const result = await this.preferredResult(root, id, sourceHash, keys, configKey);
+    const matching = result?.key.startsWith(prefix) ? result : null;
+    const status = { engineAvailable: true, model: model.id, result, updateAvailable: !!result && !matching };
+    if (matching && !regenerate) return { ...status, job: null };
     if (this.closed) throw statusError('应用正在退出。', 503);
     if (this.active) {
-      const active = this.active.job;
-      if (active.paperId === id && active.key === key) return { ...status, job: { ...active } };
-      throw statusError(`正在处理 ${active.paperId}，请等当前翻译完成。`, 409);
+      const { job, configKey: runningConfigKey } = this.active;
+      if (job.paperId === id && runningConfigKey === configKey) return { ...status, job: { ...job } };
+      throw statusError(`正在处理 ${job.paperId}，请等当前翻译完成。`, 409);
     }
+    const key = regenerate ? prefix + randomBytes(12).toString('hex') : configKey;
     const job: PdfTranslationJob = {
       id: randomUUID(), paperId: id, key, status: 'running', percent: 0, stage: '准备翻译',
     };
+    // 即使时钟回拨，新译本也应排在已选中的同配置结果之后。
+    const minCompletedAt = matching ? Date.parse(matching.completedAt) + 1 : 0;
     const controller = new AbortController();
-    const done = this.run(root, source, sourceHash, model, job, controller.signal);
-    this.active = { job, controller, done };
+    const done = this.run(root, source, sourceHash, model, job, controller.signal, minCompletedAt);
+    this.active = { job, configKey, controller, done };
     this.notify(job, {});
     return { ...status, job: { ...job } };
   }
 
-  private async run(root: string, source: string, sourceHash: string, model: TranslationModel,
-    job: PdfTranslationJob, signal: AbortSignal): Promise<void> {
+  private async run(
+    root: string, source: string, sourceHash: string, model: TranslationModel,
+    job: PdfTranslationJob, signal: AbortSignal, minCompletedAt: number,
+  ): Promise<void> {
     const { key } = job;
     let terminal: Partial<PdfTranslationJob>;
     let work: string | undefined;
@@ -242,9 +265,8 @@ export class PdfTranslationService {
       signal.throwIfAborted();
       const resultDir = path.join(work, 'result');
       await checkPath(root, path.join(resultDir, 'zh.pdf'), false);
-      const result: PdfTranslationResult = {
-        key, sourceHash, model: model.id, completedAt: new Date().toISOString(), ...output,
-      };
+      const completedAt = new Date(Math.max(Date.now(), minCompletedAt)).toISOString();
+      const result: PdfTranslationResult = { key, sourceHash, model: model.id, completedAt, ...output };
       await writeFile(path.join(resultDir, 'result.json'), JSON.stringify(result), { flag: 'wx' });
       const currentSource = await this.source(job.paperId);
       signal.throwIfAborted();

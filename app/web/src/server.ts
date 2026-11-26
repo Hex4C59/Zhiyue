@@ -459,8 +459,9 @@ export async function createApp({
         const action = translationRoute[2];
         if (method === 'GET' && !action) return json(res, await translations.status(id));
         if (method === 'POST' && !action) {
-          const { model } = await readJson(req);
-          const status = await translations.start(id, model);
+          const { model, regenerate } = await readJson(req);
+          if (regenerate !== undefined && typeof regenerate !== 'boolean') throw error('重新生成标志必须为布尔值。');
+          const status = await translations.start(id, model, regenerate);
           return json(res, status, status.job ? 202 : 200);
         }
         if (method === 'POST' && action === 'cancel') {
