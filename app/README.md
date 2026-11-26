@@ -84,14 +84,14 @@ npm run desktop:build
 - `ZHIYUE_SIGN_THUMBPRINT`：Windows Authenticode 证书指纹（可选）。
 - `ZHIYUE_SIGN_TIMESTAMP_URL`：代码签名时间戳地址（可选）。
 
-发布前把 `app/desktop/src-tauri/tauri.conf.json` 和 `package.json` 的版本改成同一版本，提交后打标签：
+发布前把 `app/desktop/src-tauri/tauri.conf.json`、`package.json` 和 `app/web/package.json` 的版本改成同一版本，提交后打标签：
 
 ```powershell
 git tag v0.1.1
 git push origin v0.1.1
 ```
 
-工作流会校验标签与 `tauri.conf.json` 版本一致。Release 必须保持为正式发布（不要勾选 Draft 或 Pre-release），`latest.json` 才会通过下面的固定地址访问：
+工作流会校验标签与三处清单版本一致，并在打包前运行类型检查、`npm test` 和 `npm run test:downloads`。常规推送和 PR 由 [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) 执行同类检查。Release 必须保持为正式发布（不要勾选 Draft 或 Pre-release），`latest.json` 才会通过下面的固定地址访问：
 
 ```text
 https://github.com/Hex4C59/Zhiyue/releases/latest/download/latest.json

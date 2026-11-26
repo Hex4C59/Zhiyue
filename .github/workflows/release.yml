@@ -35,6 +35,8 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.13'
+          cache: pip
+          cache-dependency-path: app/downloader/requirements.txt
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
@@ -44,9 +46,13 @@ jobs:
         run: |
           $config = Get-Content app/desktop/src-tauri/tauri.conf.json -Raw | ConvertFrom-Json
           $package = Get-Content package.json -Raw | ConvertFrom-Json
+          $webPackage = Get-Content app/web/package.json -Raw | ConvertFrom-Json
           $version = [string]$config.version
           if ([string]$package.version -ne $version) {
             throw "package.json 版本 $($package.version) 与 tauri.conf.json 版本 $version 不一致。"
+          }
+          if ([string]$webPackage.version -ne $version) {
+            throw "app/web/package.json 版本 $($webPackage.version) 与 tauri.conf.json 版本 $version 不一致。"
           }
           if ($env:GITHUB_REF_NAME -ne "v$version") {
             throw "标签 $env:GITHUB_REF_NAME 与 tauri.conf.json 版本 $version 不一致。"
@@ -54,11 +60,20 @@ jobs:
           "VERSION=$version" >> $env:GITHUB_ENV
           "TAG=$env:GITHUB_REF_NAME" >> $env:GITHUB_ENV
 
-      - name: Install dependencies
+      - name: Install Node dependencies
         run: npm ci
+
+      - name: Install Python dependencies
+        run: python -m pip install --only-binary=:all: -r app/downloader/requirements.txt
 
       - name: Type check
         run: npm run typecheck
+
+      - name: Run web and server tests
+        run: npm test
+
+      - name: Run downloader tests
+        run: npm run test:downloads
 
       - name: Require update signing key
         if: env.TAURI_SIGNING_PRIVATE_KEY == ''
