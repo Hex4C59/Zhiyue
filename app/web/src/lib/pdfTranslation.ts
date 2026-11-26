@@ -1,6 +1,7 @@
 import { createReadStream, existsSync } from 'node:fs';
 import { lstat, mkdir, mkdtemp, readdir, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
+import { spawnSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
 import { appPaths } from './appPaths.js';
@@ -8,13 +9,14 @@ import { errorMessage, statusError } from './errors.js';
 import type { Library } from './library.js';
 import { libraryPaths } from './paths.js';
 import { downloaderScript, runCli } from './python.js';
-import { PDF_TRANSLATION_REVISION, runTranslationWorker, validTranslationPages } from './pdfTranslationWorker.js';
+import { PDF_TRANSLATION_REVISION, runTranslationWorker, validTranslationOutput } from './pdfTranslationWorker.js';
 import type { TranslationModel } from './pdfTranslationWorker.js';
 import type {
-  PdfTranslationEvent, PdfTranslationJob, PdfTranslationResult, PdfTranslationStatus,
-} from './pdfTranslationTypes.js';
+  PdfTranslationEvent, PdfTranslationJob, PdfTranslationMarkdown, PdfTranslationResult, PdfTranslationStatus,
+} from '../../shared/pdfTranslation.js';
 
 const HASH = /^[0-9a-f]{64}$/;
+const SAFE_ASSET = /^[A-Za-z0-9._-]{1,180}$/;
 const MAX_BYTES = 100 * 1024 * 1024;
 const CONFIG_PREFIX_LENGTH = 40;
 
@@ -23,14 +25,28 @@ function translationConfigKey(sourceHash: string, model: TranslationModel): stri
     .digest('hex');
 }
 
-// 首次译本的完整摘要仍可使用。重新生成只替换后缀，文件地址和当前配置都可独立识别。
 const configPrefix = (key: string): string => key.slice(0, CONFIG_PREFIX_LENGTH);
 
-export function resolveTranslationPython(): string {
-  if (process.env.ZHIYUE_TRANSLATION_PYTHON) return path.resolve(process.env.ZHIYUE_TRANSLATION_PYTHON);
+/**
+ * 定位本机离线解析用的 `mineru-kit`：优先环境变量 ZHIYUE_MINERU_CMD，其次 %LOCALAPPDATA%\Zhiyue\mineru\venv，
+ * 最后回退 PATH。MinerU 4.x 的 `mineru` 命令依赖后台服务且默认远程解析，不用于此处。
+ */
+export function resolveMineruCommand(): string {
+  if (process.env.ZHIYUE_MINERU_CMD) return path.resolve(process.env.ZHIYUE_MINERU_CMD);
   const appData = process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local');
-  return path.join(appData, 'Zhiyue', 'translation', 'venv',
-    process.platform === 'win32' ? 'Scripts/python.exe' : 'bin/python');
+  const bundled = path.join(
+    appData, 'Zhiyue', 'mineru', 'venv',
+    process.platform === 'win32' ? 'Scripts/mineru-kit.exe' : 'bin/mineru-kit',
+  );
+  if (existsSync(bundled)) return bundled;
+  const probe = spawnSync(process.platform === 'win32' ? 'where.exe' : 'which', ['mineru-kit'], {
+    encoding: 'utf8', windowsHide: true,
+  });
+  if (probe.status === 0) {
+    const first = probe.stdout.split(/\r?\n/).map((s) => s.trim()).find(Boolean);
+    if (first && existsSync(first)) return first;
+  }
+  return bundled;
 }
 
 export interface PdfTranslationOptions {
@@ -39,7 +55,7 @@ export interface PdfTranslationOptions {
   library: Pick<Library, 'getPaper' | 'safeFile'>;
   getModel(): TranslationModel | undefined;
   emit(event: PdfTranslationEvent): void;
-  enginePython?: string;
+  mineruCommand?: string;
   worker?: typeof runTranslationWorker;
 }
 
@@ -67,8 +83,8 @@ async function checkPath(root: string, target: string, directory: boolean): Prom
 }
 
 export class PdfTranslationService {
-  private readonly engine: string;
-  private readonly script = path.join(appPaths().sourceLibDir, 'translate_pdf.py');
+  private readonly mineru: string;
+  private readonly script = path.join(appPaths().pythonDir, 'parse_pdf_mineru.py');
   private readonly worker: typeof runTranslationWorker;
   private active?: ActiveTranslation;
   private readonly lastJobs = new Map<string, PdfTranslationJob>();
@@ -76,7 +92,7 @@ export class PdfTranslationService {
   private hashCache?: { file: string; stamp: string; hash: string };
 
   constructor(private readonly options: PdfTranslationOptions) {
-    this.engine = options.enginePython || resolveTranslationPython();
+    this.mineru = options.mineruCommand || resolveMineruCommand();
     this.worker = options.worker ?? runTranslationWorker;
   }
 
@@ -114,13 +130,13 @@ export class PdfTranslationService {
     const manifest = path.join(dir, 'result.json');
     try {
       await checkPath(root, manifest, false);
-      await checkPath(root, path.join(dir, 'zh.pdf'), false);
+      await checkPath(root, path.join(dir, 'zh.md'), false);
       if ((await stat(manifest)).size > 16_384) throw statusError('译本记录过大。', 500);
       const result = JSON.parse(await readFile(manifest, 'utf8')) as PdfTranslationResult;
       if (!result || typeof result.sourceHash !== 'string' || !HASH.test(result.sourceHash) ||
         result.key !== key || typeof result.model !== 'string' ||
         typeof result.completedAt !== 'string' || Number.isNaN(Date.parse(result.completedAt)) ||
-        !validTranslationPages(result)) throw statusError('译本记录无效。', 500);
+        !validTranslationOutput(result)) throw statusError('译本记录无效。', 500);
       return result;
     } catch (error) {
       if (missing(error)) return null;
@@ -171,7 +187,6 @@ export class PdfTranslationService {
   async status(id: string): Promise<PdfTranslationStatus> {
     const source = await this.source(id);
     const root = await realpath(this.options.root);
-    // 先拍下任务状态。磁盘查询期间发布的新结果不能让旧的查询误报为已完成。
     const lastJob = this.lastJobs.get(id);
     const job = lastJob ? { ...lastJob } : null;
     const keys = await this.resultKeys(root, id);
@@ -184,7 +199,7 @@ export class PdfTranslationService {
       result = await this.preferredResult(root, id, sourceHash, keys, configKey);
     }
     return {
-      engineAvailable: existsSync(this.engine),
+      engineAvailable: existsSync(this.mineru),
       model: model?.id ?? null,
       job,
       result,
@@ -192,13 +207,39 @@ export class PdfTranslationService {
     };
   }
 
-  async file(id: string, key: string): Promise<string> {
+  private async verifiedResult(id: string, key: string): Promise<{ root: string; dir: string; result: PdfTranslationResult }> {
     if (!HASH.test(key)) throw statusError('译本编号无效。', 400);
     const source = await this.source(id);
     const root = await realpath(this.options.root);
     const result = await this.resultAt(root, id, key);
     if (!result || result.sourceHash !== await this.hash(source)) throw statusError('当前原文没有该译本。', 404);
-    return path.join(this.resultBase(root, id), key, 'zh.pdf');
+    return { root, dir: path.join(this.resultBase(root, id), key), result };
+  }
+
+  async file(id: string, key: string): Promise<string> {
+    const { dir } = await this.verifiedResult(id, key);
+    return path.join(dir, 'zh.md');
+  }
+
+  async markdown(id: string, key: string): Promise<PdfTranslationMarkdown> {
+    const { dir, result } = await this.verifiedResult(id, key);
+    const text = await readFile(path.join(dir, 'zh.md'), 'utf8');
+    return { key, text, result };
+  }
+
+  async asset(id: string, key: string, filename: string): Promise<string> {
+    if (!SAFE_ASSET.test(filename) || filename === '.' || filename === '..') {
+      throw statusError('图片文件名无效。', 400);
+    }
+    const { root, dir } = await this.verifiedResult(id, key);
+    const target = path.join(dir, 'images', filename);
+    try {
+      await checkPath(root, target, false);
+    } catch (error) {
+      if (missing(error)) throw statusError('图片不存在。', 404);
+      throw error;
+    }
+    return target;
   }
 
   private notify(job: PdfTranslationJob, patch: Partial<PdfTranslationJob>): void {
@@ -208,8 +249,8 @@ export class PdfTranslationService {
   }
 
   async start(id: string, approvedModel: unknown, regenerate = false): Promise<PdfTranslationStatus> {
-    if (!existsSync(this.engine)) {
-      throw statusError('请先安装 PDF 翻译运行环境，安装方法见项目 README。', 503);
+    if (!existsSync(this.mineru)) {
+      throw statusError('请先安装 MinerU 解析环境（详见项目 README）。', 503);
     }
     const model = this.options.getModel();
     if (!model) throw statusError('请先在「模型与密钥」中配置 Pi 模型。', 409);
@@ -234,7 +275,6 @@ export class PdfTranslationService {
     const job: PdfTranslationJob = {
       id: randomUUID(), paperId: id, key, status: 'running', percent: 0, stage: '准备翻译',
     };
-    // 即使时钟回拨，新译本也应排在已选中的同配置结果之后。
     const minCompletedAt = matching ? Date.parse(matching.completedAt) + 1 : 0;
     const controller = new AbortController();
     const done = this.run(root, source, sourceHash, model, job, controller.signal, minCompletedAt);
@@ -255,7 +295,8 @@ export class PdfTranslationService {
       await checkPath(root, tmp, true);
       work = await mkdtemp(path.join(tmp, 'translate-'));
       const output = await this.worker({
-        python: this.engine, script: this.script, source, sourceHash, work, model, signal,
+        python: this.options.python, mineru: this.mineru, script: this.script,
+        source, sourceHash, work, model, signal,
         progress: (percent, stage) => {
           if (!signal.aborted && (percent > job.percent || job.stage !== stage)) {
             this.notify(job, { percent: Math.max(percent, job.percent), stage });
@@ -264,7 +305,7 @@ export class PdfTranslationService {
       });
       signal.throwIfAborted();
       const resultDir = path.join(work, 'result');
-      await checkPath(root, path.join(resultDir, 'zh.pdf'), false);
+      await checkPath(root, path.join(resultDir, 'zh.md'), false);
       const completedAt = new Date(Math.max(Date.now(), minCompletedAt)).toISOString();
       const result: PdfTranslationResult = { key, sourceHash, model: model.id, completedAt, ...output };
       await writeFile(path.join(resultDir, 'result.json'), JSON.stringify(result), { flag: 'wx' });
@@ -290,7 +331,6 @@ export class PdfTranslationService {
         this.active = undefined;
       }
     }
-    // 终态发出时，译本已原子发布或取消已收尾，可以立即重试。
     this.notify(job, terminal);
   }
 

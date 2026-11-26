@@ -15,7 +15,7 @@ Zhiyue 是面向个人研究者的 Windows 桌面文献工作台。用户可导�
 | 窗口、托盘、启动、运行中故障与退出 | `run`、`resolve_launch`、`spawn_sidecar`、`watch_sidecar` 和 `stop_sidecar` 管理 Tauri 窗口与 Node 子进程：关闭窗口隐藏到托盘，握手失败或握手后崩溃在启动页显示原因，退出和更新前终止 Node 进程树，作业对象在桌面进程被强制结束时兜底。更新由 `check_updates` 处理。完整状态见“桌面进程的生命周期”。[lib.rs](app/desktop/src-tauri/src/lib.rs) · [update.rs](app/desktop/src-tauri/src/update.rs) |
 | 面板结构、表单、选择状态、样式 | `Workspace.vue` 装配各面板，`createWorkspace` 持有响应式状态并消费 HTTP/SSE。PDF 阅读器的页节点与缩放由 `createReader` 管理。[Workspace.vue](app/web/frontend/Workspace.vue) · [workspace.ts](app/web/frontend/lib/workspace.ts) · [reader.ts](app/web/frontend/lib/reader.ts) · [styles.css](app/web/public/css/styles.css) |
 | API、附件、静态资源与事件 | `createApp` 装配 `Library`、`JobManager` 和 `AssistantService`，集中注册 `/api/` 路由。`checkRequest` 校验本机请求，`emit` 向 SSE 连接推送任务和聊天事件。[server.ts](app/web/src/server.ts) |
-| 文献列表、分类、阅读标记、PDF 预览 | `Library.getLibrary` 将索引、分类目录、笔记与用户阅读状态组合成界面数据。`safeFile` 校验可读文件，`previewPaper` 调用 `render.py` 并缓存页图和文字层。[library.ts](app/web/src/lib/library.ts) · [preview.ts](app/web/src/lib/preview.ts) · [render.py](app/web/src/lib/render.py) |
+| 文献列表、分类、阅读标记、PDF 预览 | `Library.getLibrary` 将索引、分类目录、笔记与用户阅读状态组合成界面数据。`safeFile` 校验可读文件，`previewPaper` 调用 `render.py` 并缓存页图和文字层。[library.ts](app/web/src/lib/library.ts) · [preview.ts](app/web/src/lib/preview.ts) · [render.py](app/web/python/render.py) |
 | 导入、下载、归档 | `JobManager` 管理排队、日志和子进程。`run.py:main` 也供独立 CLI 使用，派发批次、渠道、核验与归档操作。新增下载渠道从 `workflow.download` 和 `providers/` 入手，编号与版本规则在 `archiving.archive`。[jobs.ts](app/web/src/lib/jobs.ts) · [run.py](app/downloader/run.py) · [workflow.py](app/downloader/workflow.py) · [归档逻辑](app/downloader/archiving.py) · [CLI 说明](app/downloader/README.md) |
 | 助手消息、文献工具、模型与密钥 | `ChatService` 持有聊天、活动回答和草稿。`AssistantService` 注册 `dynamicTools` 并提供 Pi 设置接口（模型、密钥、思考强度、上下文压缩）。`PiClient` 在 Node 进程内加载 SDK、管理模型和会话，并把 SDK 事件转成应用事件（正文与推理增量分开）。[chat.ts](app/web/src/lib/chat.ts) · [assistants.ts](app/web/src/lib/assistants.ts) · [pi.ts](app/web/src/lib/pi.ts) |
 | 界面状态（上次会话、当前文献、栏宽） | `UiStateStore` 读写 `.zhiyue/data/ui.json`，`GET /api/ui` 读取、`PATCH /api/ui` 按字段白名单更新；`initializePanelResizing` 接收 `widths` 并通过 `onSave` 回报。[uiState.ts](app/web/src/lib/uiState.ts) · [layout.ts](app/web/frontend/lib/layout.ts) · [server.ts](app/web/src/server.ts) |
@@ -91,15 +91,13 @@ flowchart LR
 3. `PiClient.runTurn` 把 SDK 消息增量和结束状态转成通知。`ChatService.notification` 在内存更新增量，经 `GET /api/events` 发送 `delta`。消息或回答完成时写入聊天记录并推送 `message`。`createWorkspace` 内的 `receive` 合并事件，`syncChat` 用 HTTP 补查状态。停止请求进入 `ChatService.interrupt`，调用 SDK 的 `abort`。若轮次仍在启动，则等 ID 返回再中断。未配置模型或生成失败时，`finish` 记录失败状态。停止只作用于本轮模型调用，已入队任务继续执行，见下文“事件推送、断线恢复与停止”。[pi.ts](app/web/src/lib/pi.ts) · [chat.ts](app/web/src/lib/chat.ts) · [workspace.ts](app/web/frontend/lib/workspace.ts) · [会话与停止测试](app/web/test/chat.test.ts) · [Pi 适配测试](app/web/test/pi.test.ts)
 4. 如果模型调用 `draft_note` 或 `draft_document`，`createNoteDraft` / `createDocumentDraft` 先把草稿存在会话并发送预览事件。用户在界面选择保存或丢弃后，客户端调用 `POST /api/note-drafts/:id`，由 `resolveNoteDraft` 处理。保存时用独占创建写入 `notes/`、`synthesis/` 或 `outputs/`，同名时另加序号。工作区随后刷新相关笔记。已保存的笔记在阅读区可删除：`POST /api/notes/delete` 经 `Library.deleteNote` 把文件移到 `.zhiyue/trash/notes/`（带时间戳前缀，不直接抹除），并返回刷新后的索引。[chat.ts](app/web/src/lib/chat.ts) · [library.ts](app/web/src/lib/library.ts) · [server.ts](app/web/src/server.ts) · [草稿测试](app/web/test/chat.test.ts)
 
-### PDF 翻译
+### PDF 翻译（MinerU 结构化中文精读）
 
-[翻译服务](app/web/src/lib/pdfTranslation.ts) 按已索引的 L 编号定位 PDF，以原文 SHA-256、模型指纹和排版修订号计算配置摘要。应用同一时间运行一份翻译。Python 进程在临时目录对原文副本作版式解析和回填，经标准输入输出交换译文和进度。Node 用 `ModelRuntime.completeSimple` 向用户确认的 Pi 默认模型发送待译文本和翻译提示。BabelDOC 的 LLM 回调发送批量和带提示的单段请求。批量回复校验段落编号，两类回复都核对正文中的公式占位符、数字和引用。英文日期译成中文后，按完整年月日核对。段落编号能对齐时，只重试校验失败的段落；重试临时保护日期、数字、引用和行内标签，还原后再次核对并按原顺序合并。原生库诊断流向 stderr，JSON 事件使用独立的输出流。
+[翻译服务](app/web/src/lib/pdfTranslation.ts) 按已索引的 L 编号定位 PDF，以原文 SHA-256、模型指纹和修订号计算配置摘要。应用同一时间运行一份翻译。[解析入口](app/web/python/parse_pdf_mineru.py) 在临时目录调用本机 `mineru-kit parse`（MinerU 4.x 离线解析，不启用远程服务）将原文 PDF 解析为结构化 Markdown 与裁剪插图（原生诊断输出重定向至 stderr，进度事件走独立 stdout JSON 通道）。
 
-[书目识别模块](app/web/src/lib/pdf_references.py) 在 BabelDOC 版面钩子中按原页字框和基线确定阅读顺序，划分数字编号或作者年份条目的排版区域。译文按原物理页和栏位回填，可在该区域内换行。输出校验用 PDF 用户坐标对齐裁切和旋转后的字框，检查起行、编号或作者年份、续行及重叠越界。
+[翻译工作器](app/web/src/lib/pdfTranslationWorker.ts) 按结构将 Markdown 切分为标题、表格（HTML/管道）、独立公式、代码块、插图与正文块：论文大标题、章节标题、表格、独立公式与插图均原样保留不翻译，仅将英文正文与图表标题按预算分批并发发送给 Pi 默认模型（`ModelRuntime.completeSimple`）。若批量回复格式未对齐，自动降级为逐段独立翻译；单段重试仍异常时回退保留原文，避免个别段落导致整篇失败。
 
-[排版微调模块](app/web/src/lib/pdf_reference_fit.py) 在原文居中明确且译文字形可独立定位时，按原中心平移单行粗体编号章节标题。轻微越栏的书目行最多横向压缩 12%。两类调整均保留基线和文字顺序，并核对调整后的字形与邻近内容。已确认书目无法安全分条或回填时，从原文快照恢复该页内容和文字层，并记入 `reviewPages`。译本须保有可复制的中文。
-
-译本键的前 40 个十六进制字符与配置摘要对应。普通首次生成以完整摘要为键，重新生成保留前缀并更换随机后缀。校验后在短时库写锁内复核原文哈希，将译本原子发布到 `.zhiyue/data/translations/<L 编号>/<译本键>/`。状态查询优先选择同源同配置的最新译本，其次选择其他同源结果中最新的一份。旧译本仍可按原键预览和导出。普通提交命中缓存返回 `200`，显式重新生成绕过成品缓存，创建或复用任务返回 `202`。阅读区用任务 ID 和译本键匹配 SSE 与 HTTP 补查结果，完成后切换到新译本。取消后等待模型调用和进程退出，再清理工作目录。BabelDOC 0.7.1 作为独立运行环境安装，桌面资源包含翻译和书目脚本，发布命令使用随包或用户指定的库工具 Python。
+校验后在短时库写锁内复核原文哈希，将 `zh.md`、`result.json` 与 `images/` 原子发布到 `.zhiyue/data/translations/<L 编号>/<译本键>/`。前端阅读器在「中文精读」或宽屏「左右对照」模式下加载 Markdown（通过白名单 HTML 表格解析与 KaTeX 渲染公式，插图经 `/api/papers/:id/translation/asset` 读取），并支持导出中文 Markdown。
 
 ### 事件推送、断线恢复与停止
 
@@ -158,7 +156,7 @@ flowchart LR
 
 选中文献只决定首轮提示，不限制读取范围：`read_paper_pages` 接受任何已索引的 L 编号，库内全部文献都在模型可达范围内；会话历史中出现过的页文本会随后续轮次再次发送。PDF 原件、全库索引、其他会话内容、`~/.pi/agent` 中的凭据不会被自动发送。
 
-模型服务由用户在 Pi 中配置，其网络、计费和留存策略取决于该服务商，应用不对发送内容做额外过滤或脱敏。本机另存两份记录：`.zhiyue/data/pi-sessions/` 的 SDK 会话文件按 Pi 的格式保存消息与工具结果；`.zhiyue/data/pi/chats.json` 保存用户文字、回答和笔记草稿正文，附件的记录只有 id、名称、类型和大小，不含提取文本或图片字节。[chat.ts](app/web/src/lib/chat.ts) · [pi.ts](app/web/src/lib/pi.ts) · [附件提取](app/web/src/lib/extract.py)
+模型服务由用户在 Pi 中配置，其网络、计费和留存策略取决于该服务商，应用不对发送内容做额外过滤或脱敏。本机另存两份记录：`.zhiyue/data/pi-sessions/` 的 SDK 会话文件按 Pi 的格式保存消息与工具结果；`.zhiyue/data/pi/chats.json` 保存用户文字、回答和笔记草稿正文，附件的记录只有 id、名称、类型和大小，不含提取文本或图片字节。[chat.ts](app/web/src/lib/chat.ts) · [pi.ts](app/web/src/lib/pi.ts) · [附件提取](app/web/python/extract.py)
 
 ### 文献工具的影响与确认点
 

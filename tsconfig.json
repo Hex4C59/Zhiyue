@@ -20,6 +20,7 @@
   },
   "include": [
     "app/web/src/**/*.ts",
+    "app/web/shared/**/*.ts",
     "app/web/test/**/*.ts",
     "app/desktop/test/**/*.ts",
     "app/web/vite.config.ts",

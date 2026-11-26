@@ -98,7 +98,7 @@ export function safeURL(raw: unknown, basePath = ''): string {
   }
   if (value.startsWith('#')) return value;
   if (/^[a-z][a-z\d+.-]*:/i.test(value)) return '';
-  if (/^\/api\/(file\?|uploads\/)/.test(value)) return value;
+  if (/^\/api\/(file\?|uploads\/|papers\/L\d+\/translation\/asset\?)/.test(value)) return value;
   // Markdown 相对资源仍通过后端路径校验读取。
   const dir = basePath.replace(/\\/g, '/').split('/').slice(0, -1).join('/');
   const local = value.replace(/\\/g, '/');
@@ -116,7 +116,7 @@ export function safeURL(raw: unknown, basePath = ''): string {
 }
 
 // 先转义原文再应用行内格式，不接受笔记或模型输出中的原始 HTML。
-function inline(source: string, base = ''): string {
+function inline(source: string, base = '', resolveAsset?: (raw: string) => string): string {
   const slots: string[] = [];
   const token = (html: string): string => {
     const index = slots.push(html) - 1;
@@ -136,7 +136,8 @@ function inline(source: string, base = ''): string {
   input = input.replace(/\\\$/g, '$');
   input = input.replace(/(!?)\[([^\]\n]*)\]\(([^\s)]+)(?:\s+"[^"]*")?\)/g,
     (_match, image: string, label: string, raw: string) => {
-      const url = safeURL(raw, base);
+      const mapped = image && resolveAsset ? resolveAsset(raw) : raw;
+      const url = safeURL(mapped, base);
       if (!url) return token(esc(label));
       if (image) {
         return token(`<img src="${esc(url)}" alt="${esc(label)}" loading="lazy" referrerpolicy="no-referrer">`);
@@ -150,7 +151,26 @@ function inline(source: string, base = ''): string {
   return input.replace(/\u0001(\d+)\u0002/g, (_match, index: string) => slots[Number(index)] || '');
 }
 
-export function markdown(source: unknown, base = ''): string {
+/** 仅允许 MinerU 输出的安全表格结构，单元格内容仍经 inline() 转义并渲染行内公式。 */
+function renderSafeHtmlTable(raw: string, base: string, resolveAsset?: (raw: string) => string): string {
+  const rows: string[] = [];
+  for (const rowMatch of raw.matchAll(/<tr\b[^>]*>([\s\S]*?)<\/tr>/gi)) {
+    const cells: string[] = [];
+    for (const cellMatch of (rowMatch[1] ?? '').matchAll(/<(th|td)\b([^>]*)>([\s\S]*?)<\/\1>/gi)) {
+      const tag = (cellMatch[1] ?? 'td').toLowerCase();
+      const attrs = cellMatch[2] ?? '';
+      const colspan = /\bcolspan\s*=\s*["']?(\d{1,2})["']?/i.exec(attrs)?.[1];
+      const rowspan = /\browspan\s*=\s*["']?(\d{1,2})["']?/i.exec(attrs)?.[1];
+      const attrText = `${colspan ? ` colspan="${colspan}"` : ''}${rowspan ? ` rowspan="${rowspan}"` : ''}`;
+      const plain = (cellMatch[3] ?? '').replace(/<br\s*\/?>/gi, ' ').replace(/<[^>]+>/g, '').trim();
+      cells.push(`<${tag}${attrText}>${inline(plain, base, resolveAsset)}</${tag}>`);
+    }
+    if (cells.length) rows.push(`<tr>${cells.join('')}</tr>`);
+  }
+  return rows.length ? `<div class="table-wrap"><table><tbody>${rows.join('')}</tbody></table></div>` : '';
+}
+
+export function markdown(source: unknown, base = '', resolveAsset?: (raw: string) => string): string {
   const lines = String(source || '')
     .replace(/\r\n?/g, '\n')
     .split('\n');
@@ -159,7 +179,7 @@ export function markdown(source: unknown, base = ''): string {
   let list = '';
   const flush = (): void => {
     if (paragraph.length) {
-      html += `<p>${paragraph.map((line) => inline(line, base)).join('<br>')}</p>`;
+      html += `<p>${paragraph.map((line) => inline(line, base, resolveAsset)).join('<br>')}</p>`;
       paragraph = [];
     }
     if (list) {
@@ -169,6 +189,19 @@ export function markdown(source: unknown, base = ''): string {
   };
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i] as string;
+    if (/^\s*<table\b/i.test(line)) {
+      flush();
+      const tableLines = [line];
+      if (!/<\/table>/i.test(line)) {
+        while (i + 1 < lines.length) {
+          i++;
+          tableLines.push(lines[i] as string);
+          if (/<\/table>/i.test(lines[i] as string)) break;
+        }
+      }
+      html += renderSafeHtmlTable(tableLines.join('\n'), base, resolveAsset);
+      continue;
+    }
     const delimiter = /^\s*(\$\$|\\\[)/.exec(line);
     const environment = /^\s*\\begin\{((?:equation|align|alignat|gather)\*?|CD)\}/.exec(line);
     if (delimiter || environment) {
@@ -216,7 +249,7 @@ export function markdown(source: unknown, base = ''): string {
     if (head) {
       flush();
       const level = (head[1] as string).length;
-      html += `<h${level}>${inline(head[2] as string, base)}</h${level}>`;
+      html += `<h${level}>${inline(head[2] as string, base, resolveAsset)}</h${level}>`;
       continue;
     }
     if (/^\s*([-*_])(?:\s*\1){2,}\s*$/.test(line)) {
@@ -226,7 +259,7 @@ export function markdown(source: unknown, base = ''): string {
     }
     if (/^>\s?/.test(line)) {
       flush();
-      html += `<blockquote>${inline(line.replace(/^>\s?/, ''), base)}</blockquote>`;
+      html += `<blockquote>${inline(line.replace(/^>\s?/, ''), base, resolveAsset)}</blockquote>`;
       continue;
     }
     if (
@@ -236,17 +269,17 @@ export function markdown(source: unknown, base = ''): string {
     ) {
       flush();
       const cells = (text: string): string[] => text.trim().replace(/^\||\|$/g, '').split('|');
-      html += `<table><thead><tr>${cells(line)
-        .map((cell) => `<th>${inline(cell.trim(), base)}</th>`)
+      html += `<div class="table-wrap"><table><thead><tr>${cells(line)
+        .map((cell) => `<th>${inline(cell.trim(), base, resolveAsset)}</th>`)
         .join('')}</tr></thead><tbody>`;
       i++;
       while (i + 1 < lines.length && (lines[i + 1] as string).includes('|') && (lines[i + 1] as string).trim()) {
         i++;
         html += `<tr>${cells(lines[i] as string)
-          .map((cell) => `<td>${inline(cell.trim(), base)}</td>`)
+          .map((cell) => `<td>${inline(cell.trim(), base, resolveAsset)}</td>`)
           .join('')}</tr>`;
       }
-      html += '</tbody></table>';
+      html += '</tbody></table></div>';
       continue;
     }
     const item = /^\s*(?:([-+*])|\d+\.)\s+(.+)$/.exec(line);
@@ -257,7 +290,7 @@ export function markdown(source: unknown, base = ''): string {
         html += `<${kind}>`;
         list = kind;
       }
-      html += `<li>${inline(item[2] as string, base)}</li>`;
+      html += `<li>${inline(item[2] as string, base, resolveAsset)}</li>`;
       continue;
     }
     if (!line.trim()) {

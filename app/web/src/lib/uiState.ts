@@ -1,13 +1,9 @@
 import fs from 'node:fs';
 import { Store } from './store.js';
 import { statusError } from './errors.js';
+import type { UiState } from '../../shared/contracts.js';
 
-/** 需要跨启动保留的界面状态；比浏览器存储更可靠，因为本地服务每次启动会换端口。 */
-export interface UiState {
-  chatId: string | null;
-  paperId: string | null;
-  panelWidths: Record<string, number>;
-}
+export type { UiState };
 
 const empty: UiState = { chatId: null, paperId: null, panelWidths: {} };
 const CHAT_ID = /^[A-Za-z0-9-]{1,64}$/;

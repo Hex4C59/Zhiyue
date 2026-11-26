@@ -26,6 +26,7 @@ const ROOT = repoRoot();
 const APP = path.join(ROOT, 'app');
 const OUT = path.join(APP, 'desktop/src-tauri/resources/runtime');
 const SERVER_BUILD = path.join(ROOT, 'build/app/web/src');
+const SHARED_BUILD = path.join(ROOT, 'build/app/web/shared');
 const EXCLUDED = new Set(['.venv', 'tests', '__pycache__', '.pytest_cache']);
 const PYTHON_VERSION = '3.13.11';
 const PYTHON_URL = `https://www.python.org/ftp/python/${PYTHON_VERSION}/python-${PYTHON_VERSION}-embed-amd64.zip`;
@@ -156,16 +157,18 @@ if (existsSync(nodeLicense)) await cp(nodeLicense, path.join(nodeDirectory, 'LIC
 
 await preparePython();
 
-// 服务端随包分发 tsc 产物，源码目录里的 .ts 不进入安装包。
-if (!existsSync(path.join(SERVER_BUILD, 'server.js'))) {
-  throw new Error('缺少服务端构建产物，请先运行 npm run build:node。');
+// 服务端与共享模块随包分发 tsc 产物，源码目录里的 .ts 不进入安装包。
+if (!existsSync(path.join(SERVER_BUILD, 'server.js')) || !existsSync(path.join(SHARED_BUILD, 'pdfScales.js'))) {
+  throw new Error('缺少服务端或共享模块构建产物，请先运行 npm run build:node。');
 }
 await cp(SERVER_BUILD, path.join(OUT, 'app/web/src'), { recursive: true });
-// Python 辅助脚本不参与 tsc，随编译产物一起放入运行时目录。
-const pythonHelpers = ['extract.py', 'render.py', 'translate_pdf.py', 'pdf_references.py', 'pdf_reference_fit.py'];
-for (const helper of pythonHelpers) {
-  await cp(path.join(APP, 'web/src/lib', helper), path.join(OUT, 'app/web/src/lib', helper));
-}
+await cp(SHARED_BUILD, path.join(OUT, 'app/web/shared'), { recursive: true });
+// Python 辅助脚本集中在 app/web/python，随编译产物整目录放入运行时。
+const webPythonDir = path.join(APP, 'web/python');
+await cp(webPythonDir, path.join(OUT, 'app/web/python'), {
+  recursive: true,
+  filter: filter(webPythonDir),
+});
 for (const entry of ['dist', 'public']) {
   const source = path.join(APP, 'web', entry);
   await cp(source, path.join(OUT, 'app/web', entry), { recursive: true });
@@ -211,7 +214,10 @@ const requiredFiles = [
   'python/Lib/site-packages/pdfplumber/__init__.py',
   'python/Lib/site-packages/pypdfium2/__init__.py',
   'app/web/src/server.js',
-  ...pythonHelpers.map((helper) => `app/web/src/lib/${helper}`),
+  'app/web/shared/pdfScales.js',
+  'app/web/python/extract.py',
+  'app/web/python/render.py',
+  'app/web/python/parse_pdf_mineru.py',
   'app/web/src/lib/piTerminalPrefill.js',
   'app/web/dist/app.js',
   'app/web/public/index.html',
@@ -220,6 +226,7 @@ const requiredFiles = [
   'app/templates/library-AGENTS.md',
   'app/templates/skills/paper-experiments/SKILL.md',
   'app/templates/skills/paper-reading/SKILL.md',
+  'app/templates/skills/paper-translation/SKILL.md',
   'node_modules/@earendil-works/pi-coding-agent/dist/index.js',
   'node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js',
 ];

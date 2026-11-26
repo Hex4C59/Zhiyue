@@ -281,10 +281,12 @@ test('安装布局首次启动自动创建文献库，并能离线导入一篇�
     await fsp.readFile(path.join(runtimeDir, 'app/templates/library-AGENTS.md')),
     'AGENTS.md 应来自打包模板',
   );
-  // 随包技能整体复制：逐个比对模板目录下的每个技能，新增技能不必再改测试。
+  // 先核对随包技能清单，再逐项比对首次启动复制的文件和模板。
   const skillTemplates = await fsp.readdir(path.join(runtimeDir, 'app/templates/skills'), { withFileTypes: true });
   const skillNames = skillTemplates.filter((entry) => entry.isDirectory()).map((entry) => entry.name);
-  assert.deepEqual(skillNames.sort(), ['paper-experiments', 'paper-reading'], '随包技能清单变化时同步更新本断言');
+  assert.deepEqual(
+    skillNames.sort(), ['paper-experiments', 'paper-reading', 'paper-translation'], '随包技能应与预设清单一致',
+  );
   for (const name of skillNames) {
     assert.deepEqual(
       await fsp.readFile(path.join(library, '.zhiyue/skills', name, 'SKILL.md')),

@@ -1,6 +1,6 @@
 import { markRaw } from 'vue';
-import { DEFAULT_PDF_PREVIEW_SCALE, MAX_PDF_PREVIEW_SCALE, PDF_PREVIEW_SCALES } from '../../src/lib/pdfScales.js';
-import type { PDFPreviewScale } from '../../src/lib/pdfScales.js';
+import { DEFAULT_PDF_PREVIEW_SCALE, MAX_PDF_PREVIEW_SCALE, PDF_PREVIEW_SCALES } from '../../shared/pdfScales.js';
+import type { PDFPreviewScale } from '../../shared/pdfScales.js';
 import { bindPDFSelection } from './pdfSelection';
 import { authorText, endpoint, esc, fileURL, icon, markdown, readKey, readLabels, titleOf } from './content';
 import type { Paper, PDFPageData, PDFSession, TextLayerData, WorkspaceState } from './types';
@@ -143,8 +143,7 @@ export function createReader({
     let url = '';
     try {
       const base = `/api/papers/${endpoint(session.paper.literature_id)}`;
-      const suffix = session.translation ? `&translation=${encodeURIComponent(session.translation)}` : '';
-      const query = `?page=${page}&scale=${scale}${suffix}`;
+      const query = `?page=${page}&scale=${scale}`;
       const options = { signal: controller.signal };
       const textPromise = session.images.has(page) ? undefined : api<TextLayerData>(
         `${base}/text-layer${query}`, options,
@@ -397,11 +396,11 @@ export function createReader({
       }
     });
   }
-  async function loadPDFPreview(paper: Paper, epoch: number): Promise<void> {
-    const root = $('#reader-content');
+  async function loadPDFPreview(paper: Paper, epoch: number, container: HTMLElement = $('#reader-content')): Promise<void> {
+    const root = container;
     const session: PDFSession = {
       paper,
-      translation: state.pdfTranslation,
+      translation: '',
       epoch,
       root,
       disposed: false,
@@ -542,6 +541,33 @@ export function createReader({
       }
     }
   }
+  function loadTranslationMarkdown(paper: Paper, key: string, target: HTMLElement, epoch: number): void {
+    if (!key) {
+      target.innerHTML = '<div class="empty"><p>尚未生成中文精读，请点击上方「翻译成中文」。</p></div>';
+      return;
+    }
+    target.innerHTML = '<div class="loading"><span class="busy-spinner"></span>正在加载中文精读…</div>';
+    const assetBase = `/api/papers/${endpoint(paper.literature_id)}/translation/asset?key=${encodeURIComponent(key)}&file=`;
+    const resolveAsset = (raw: string): string => {
+      const normalized = raw.replace(/\\/g, '/').replace(/^\.\//, '');
+      const name = normalized.startsWith('images/') ? normalized.slice('images/'.length) : normalized;
+      if (!name || name.includes('/')) return raw;
+      return `${assetBase}${encodeURIComponent(name)}`;
+    };
+    api<{ text?: string }>(
+      `/api/papers/${endpoint(paper.literature_id)}/translation/markdown?key=${encodeURIComponent(key)}`,
+    )
+      .then((data) => {
+        if (epoch !== state.noteEpoch) return;
+        target.innerHTML = `<article class="translation-document markdown">${markdown(data.text, '', resolveAsset)}</article>`;
+      })
+      .catch((error: Error) => {
+        if (epoch === state.noteEpoch) {
+          target.innerHTML = `<div class="empty"><p class="error-text">${esc(error.message)}</p><button id="retry-translation" class="button subtle">重试</button></div>`;
+        }
+      });
+  }
+
   function renderReader(): void {
     const paper = currentPaper();
     const epoch = ++state.noteEpoch;
@@ -549,15 +575,15 @@ export function createReader({
       releasePreview();
       $('#reader-header').innerHTML = [
         `<div class="reader-empty-header"><span class="reader-header-mark">${icon('book')}</span>`,
-        '<span>阅读空间</span></div><span class="reader-header-badge">原文 · 笔记 · 研读</span>',
+        '<span>阅读空间</span></div><span class="reader-header-badge">原文 · 精读 · 笔记</span>',
       ].join('');
       $('#reader-toolbar').hidden = true;
       $('#reader-content').innerHTML = [
         '<div class="empty reader-empty"><div class="reader-empty-card">',
         `<div class="reader-empty-art"><span>${icon('book')}</span></div>`,
         '<h2>选择一篇文献，开始阅读</h2>',
-        '<p>原文、笔记与 AI 助手，在这里汇成你的研究思路。</p>',
-        '<div class="reader-empty-tags"><span>原文 PDF</span><span>阅读笔记</span><span>AI 研读</span></div>',
+        '<p>原文、中文精读、笔记与 AI 助手，在这里汇成你的研究思路。</p>',
+        '<div class="reader-empty-tags"><span>原文 PDF</span><span>中文精读</span><span>阅读笔记</span></div>',
         '</div></div>',
       ].join('');
       return;
@@ -577,21 +603,38 @@ export function createReader({
     const deleteNote = state.readerMode === 'note' && noteSelected
       ? `<button id="delete-note" class="icon-button danger" aria-label="删除当前笔记" title="删除当前笔记" ${state.noteDeleting ? 'disabled' : ''}>${icon('trash')}</button>`
       : '';
-    const pdfLabel = state.pdfTranslation ? '中文 PDF' : '原文 PDF';
-    const pdfURL = state.pdfTranslation
-      ? `/api/papers/${endpoint(paper.literature_id)}/translation/file?key=${encodeURIComponent(state.pdfTranslation)}`
-      : fileURL(paper.file || '');
+    const hasTranslation = !!state.pdfTranslation;
+    const pdfURL = fileURL(paper.file || '');
+    const showPdfControls = (state.readerMode === 'pdf' || state.readerMode === 'split') && !!paper.file && !state.pdfBrowser;
     $('#reader-toolbar').hidden = false;
     $('#reader-toolbar').innerHTML =
-      `<div class="segmented"><button data-reader-mode="pdf" class="${state.readerMode === 'pdf' ? 'active' : ''}">${pdfLabel}</button><button data-reader-mode="note" class="${state.readerMode === 'note' ? 'active' : ''}">阅读笔记 <small>${notes.length}</small></button></div>${state.readerMode === 'pdf' && paper.file ? `<select id="pdf-renderer" aria-label="PDF显示方式"><option value="preview" ${!state.pdfBrowser ? 'selected' : ''}>连续阅读</option><option value="browser" ${state.pdfBrowser ? 'selected' : ''}>浏览器阅读器</option></select>` : ''}${state.readerMode === 'note' && notes.length ? `<select id="note-select" aria-label="选择笔记">${notes.map((note) => `<option value="${esc(note.path)}" ${note.path === noteSelected ? 'selected' : ''}>${esc(note.title || note.path.split(/[\\/]/).pop())}</option>`).join('')}</select>${deleteNote}` : ''}${paper.file ? `<a class="open-original" href="${esc(state.readerMode === 'pdf' ? pdfURL : fileURL(paper.file))}" target="_blank" rel="noopener noreferrer">单独打开${icon('external')}</a>` : ''}${state.readerMode === 'pdf' && paper.file && !state.pdfBrowser ? '<div id="pdf-controls" class="pdf-controls" role="group" aria-label="PDF翻页与缩放"></div>' : ''}`;
+      `<div class="segmented" role="group" aria-label="阅读模式">`
+      + `<button data-reader-mode="pdf" class="${state.readerMode === 'pdf' ? 'active' : ''}">原文 PDF</button>`
+      + `<button data-reader-mode="translation" class="${state.readerMode === 'translation' ? 'active' : ''}" ${!hasTranslation ? 'disabled' : ''}>中文精读</button>`
+      + `<button data-reader-mode="split" class="reader-split-toggle ${state.readerMode === 'split' ? 'active' : ''}" ${!hasTranslation ? 'disabled' : ''}>左右对照</button>`
+      + `<button data-reader-mode="note" class="${state.readerMode === 'note' ? 'active' : ''}">阅读笔记 <small>${notes.length}</small></button>`
+      + `</div>`
+      + `${state.readerMode === 'pdf' && paper.file ? `<select id="pdf-renderer" aria-label="PDF显示方式"><option value="preview" ${!state.pdfBrowser ? 'selected' : ''}>连续阅读</option><option value="browser" ${state.pdfBrowser ? 'selected' : ''}>浏览器阅读器</option></select>` : ''}`
+      + `${state.readerMode === 'note' && notes.length ? `<select id="note-select" aria-label="选择笔记">${notes.map((note) => `<option value="${esc(note.path)}" ${note.path === noteSelected ? 'selected' : ''}>${esc(note.title || note.path.split(/[\\/]/).pop())}</option>`).join('')}</select>${deleteNote}` : ''}`
+      + `${paper.file ? `<a class="open-original" href="${esc(pdfURL)}" target="_blank" rel="noopener noreferrer">单独打开${icon('external')}</a>` : ''}`
+      + `${showPdfControls ? '<div id="pdf-controls" class="pdf-controls" role="group" aria-label="PDF翻页与缩放"></div>' : ''}`;
     if (state.readerMode === 'pdf') {
       if (!paper.file) {
         $('#reader-content').innerHTML = '<div class="empty"><p>该条目尚无可用原文文件。</p></div>';
       } else if (state.pdfBrowser) {
-        const source = state.pdfTranslation ? `${pdfURL}#page=${state.pdfPage}` : pdfURL;
         $('#reader-content').innerHTML =
-          `<iframe class="pdf-frame" title="${esc(`${titleOf(paper)} ${pdfLabel}`)}" src="${esc(source)}"></iframe>`;
+          `<iframe class="pdf-frame" title="${esc(`${titleOf(paper)} 原文 PDF`)}" src="${esc(pdfURL)}"></iframe>`;
       } else loadPDFPreview(paper, epoch);
+    } else if (state.readerMode === 'translation') {
+      loadTranslationMarkdown(paper, state.pdfTranslation, $('#reader-content'), epoch);
+    } else if (state.readerMode === 'split') {
+      $('#reader-content').innerHTML =
+        '<div class="reader-split"><div id="reader-split-pdf" class="reader-split-pane reader-split-pdf"></div><div id="reader-split-translation" class="reader-split-pane reader-split-translation"></div></div>';
+      const pdfPane = $('#reader-split-pdf');
+      const translationPane = $('#reader-split-translation');
+      if (paper.file) void loadPDFPreview(paper, epoch, pdfPane);
+      else pdfPane.innerHTML = '<div class="empty"><p>该条目尚无可用原文文件。</p></div>';
+      loadTranslationMarkdown(paper, state.pdfTranslation, translationPane, epoch);
     } else if (notes.length) {
       state.notePath = notes.some((note) => note.path === state.notePath) ? state.notePath : notes[0]?.path ?? '';
       $('#reader-content').innerHTML =
@@ -622,7 +665,7 @@ export function createReader({
       if (button.id === 'pdf-fit') zoomPDF(100 - state.pdfZoom);
       if (button.id === 'copy-pdf-page') copyPDFPageText();
       if (button.id === 'delete-note') void confirmDeleteNote();
-      if (['retry-preview', 'retry-note'].includes(button.id)) renderReader();
+      if (['retry-preview', 'retry-note', 'retry-translation'].includes(button.id)) renderReader();
       if (button.dataset.pdfRetry && state.pdfSession) {
         const page = Number(button.dataset.pdfRetry);
         state.pdfSession.errors.delete(page);

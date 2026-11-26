@@ -6,7 +6,7 @@ export interface AppPaths {
   webRoot: string;
   publicDir: string;
   distDir: string;
-  sourceLibDir: string;
+  pythonDir: string;
   templatesDir: string;
 }
 
@@ -33,7 +33,7 @@ export function appPaths(): AppPaths {
       webRoot,
       publicDir: path.join(webRoot, 'public'),
       distDir: path.join(webRoot, 'dist'),
-      sourceLibDir: path.join(webRoot, 'src', 'lib'),
+      pythonDir: path.join(webRoot, 'python'),
       templatesDir: path.join(path.dirname(webRoot), 'templates'),
     };
   }

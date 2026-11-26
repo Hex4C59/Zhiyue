@@ -9,7 +9,9 @@ import type { WorkspaceApi } from '../lib/workspace';
 const workspace = inject('workspace') as WorkspaceApi;
 const state = workspace.state;
 const scope = ref<HTMLElement | null>(null);
-const pdfPaper = computed(() => state.readerMode === 'pdf' ? workspace.currentPaper.value : undefined);
+const pdfPaper = computed(() =>
+  state.readerMode !== 'note' ? workspace.currentPaper.value : undefined,
+);
 const visibleNoteCount = computed(() => {
   const paper = workspace.currentPaper.value;
   if (!paper || state.readerMode !== 'note') return null;

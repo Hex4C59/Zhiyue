@@ -1,207 +1,127 @@
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { createApp } from '../src/server.js';
-import { resolveTranslationPython } from '../src/lib/pdfTranslation.js';
-import { resolvePython } from '../src/lib/python.js';
-import { PDF_TRANSLATION_REVISION, runTranslationWorker } from '../src/lib/pdfTranslationWorker.js';
+import {
+  PDF_TRANSLATION_REVISION, splitMarkdownBlocks, translateMarkdownBlocks,
+} from '../src/lib/pdfTranslationWorker.js';
 import type { TranslationModel } from '../src/lib/pdfTranslationWorker.js';
-import type { PdfTranslationStatus } from '../src/lib/pdfTranslationTypes.js';
+import type { PdfTranslationMarkdown, PdfTranslationStatus } from '../shared/pdfTranslation.js';
 
-const modelId = 'test/translator';
-const model = { id: modelId, fingerprint: modelId, complete: async () => '' };
-const sha256 = (bytes: string | Buffer) => createHash('sha256').update(bytes).digest('hex');
+const sha256 = (value: Buffer | string) => createHash('sha256').update(value).digest('hex');
+const modelId = 'test/luna';
+const model: TranslationModel = {
+  id: modelId,
+  fingerprint: JSON.stringify([modelId, 'openai', 'https://api.example.invalid']),
+  complete: async () => '',
+};
 
-function gate() {
+const gate = () => {
   let resolve!: () => void;
-  const promise = new Promise<void>((done) => { resolve = done; });
-  return { promise, resolve };
+  return { promise: new Promise<void>((done) => { resolve = done; }), resolve };
+};
+
+async function waitFor<T>(read: () => Promise<T>, ready: (value: T) => boolean): Promise<T> {
+  for (let i = 0; i < 80; i++) {
+    const value = await read();
+    if (ready(value)) return value;
+    await new Promise((done) => setTimeout(done, 25));
+  }
+  throw new Error('等待翻译任务终态超时');
 }
 
-async function waitFor<T>(read: () => Promise<T>, condition: (value: T) => boolean): Promise<T> {
-  for (let count = 0; count < 100; count++) {
-    const state = await read();
-    if (condition(state)) return state;
-    await new Promise((resolve) => setTimeout(resolve, 20));
-  }
-  throw new Error('翻译任务状态等待超时。');
-}
+test('Markdown 切块保留英文标题、HTML/管道表格、独立公式与插图，仅翻译正文与图注', async () => {
+  const source = [
+    '# A Survey of Deep Learning',
+    '',
+    '## 1. Introduction',
+    '',
+    'Deep learning has transformed computer vision [1–3].',
+    '',
+    '$$',
+    'E = mc^2',
+    '$$',
+    '',
+    '![](images/fig1.png)',
+    '',
+    'Fig. 1. Overview of the architecture.',
+    '',
+    '<table><tr><th>Model</th><th>Acc</th></tr><tr><td>ResNet</td><td>95.2%</td></tr></table>',
+    '',
+    '| Dataset | Size |',
+    '| --- | --- |',
+    '| ImageNet | 1.2M |',
+  ].join('\n');
 
-function makeReaderPdf(python: string, source: string, metadata: string, title: string): void {
-  const rendered = spawnSync(python, [path.resolve('app/desktop/test/fixtures/make_pdf.py'), source,
-    metadata, title, 'A. Example', '10.1000/example', '2026'], {
-    encoding: 'utf8', windowsHide: true, timeout: 5000,
-  });
-  assert.equal(rendered.status, 0, rendered.stderr || rendered.error?.message);
-}
+  const blocks = splitMarkdownBlocks(source);
+  assert.deepEqual(
+    blocks.map((b) => b.kind),
+    ['heading', 'heading', 'prose', 'math', 'image', 'prose', 'table', 'table'],
+  );
 
-test('更新译本时旧键仍可预览、导出，成功后按当前指纹命中缓存', { timeout: 30_000 }, async (t) => {
-  const python = resolvePython();
-  if (spawnSync(python, ['-c', 'import pypdf, pdfplumber, pypdfium2'], { windowsHide: true }).status !== 0) {
-    return t.skip('译本发布和预览需要文献库 Python 依赖。');
-  }
-  const root = await mkdtemp(path.join(os.tmpdir(), 'zhiyue-translation-'));
-  const apps: Awaited<ReturnType<typeof createApp>>[] = [];
-  const stopped = gate();
-  const publish = gate();
-  t.after(async () => {
-    stopped.resolve();
-    publish.resolve();
-    await Promise.all(apps.map((app) => app.close()));
-    await rm(root, { recursive: true, force: true });
-  });
-  await mkdir(path.join(root, '.zhiyue/catalog'), { recursive: true });
-  await mkdir(path.join(root, 'papers'));
-  await writeFile(path.join(root, '.zhiyue/catalog/文献索引.json'), JSON.stringify({ records: [
-    { literature_id: 'L001', file: 'papers/a.pdf' }, { literature_id: 'L002', file: 'papers/b.pdf' },
-  ] }));
-  const source = path.join(root, 'papers/a.pdf');
-  makeReaderPdf(python, source, path.join(root, 'fixture.json'), 'Cached PDF fixture');
-  const original = await readFile(source);
-  const sourceHash = sha256(original);
-  const oldKey = sha256(JSON.stringify([sourceHash, model.fingerprint, 'babeldoc-0.7.1-zh-CN-2']));
-  const old = Buffer.concat([original, Buffer.from('\n% previous translation\n')]);
-  const translated = Buffer.concat([original, Buffer.from('\n% updated translation\n')]);
-  const baseDir = path.join(root, '.zhiyue/data/translations/L001');
-  for (const [key, completedAt] of [['a'.repeat(64), '2000-01-01T00:00:00Z'], [oldKey, '2999-01-01T00:00:00Z']]) {
-    const cached = path.join(baseDir, key);
-    await mkdir(cached, { recursive: true });
-    await writeFile(path.join(cached, 'result.json'), JSON.stringify({
-      key, sourceHash, completedAt, model: modelId, pages: 2, reviewPages: [],
-    }));
-    await writeFile(path.join(cached, 'zh.pdf'), old);
-  }
-  await writeFile(path.join(root, 'papers/b.pdf'), original);
-  let runs = 0;
-  let operation: 'cancel' | 'fail' | 'publish' = 'cancel';
-  let currentModel = model;
-  const waiting = gate();
-  const start = async (): Promise<string> => {
-    const app = await createApp({ root, connectPi: false, translation: {
-      getModel: () => currentModel, enginePython: process.execPath,
-      worker: async ({ work, signal, progress }) => {
-        runs++;
-        progress(50, '翻译与排版');
-        if (operation === 'fail') throw new Error('合成更新任务失败');
-        if (operation === 'cancel') {
-          waiting.resolve();
-          if (!signal.aborted) {
-            await new Promise<void>((resolve) => signal.addEventListener('abort', () => resolve(), { once: true }));
-          }
-          await stopped.promise;
-          signal.throwIfAborted();
+  const sent: string[] = [];
+  const { markdown, translatedCount } = await translateMarkdownBlocks(
+    blocks,
+    {
+      ...model,
+      complete: async (mode, text) => {
+        sent.push(mode);
+        if (mode === 'batch') {
+          const items = JSON.parse(text.slice(text.indexOf('['))) as Array<{ id: number; text: string }>;
+          return JSON.stringify(items.map(({ id, text: src }) => ({
+            id,
+            output: src.includes('Fig. 1') ? '图 1. 整体架构概览。' : '深度学习改变了计算机视觉 [1–3]。',
+          })));
         }
-        await publish.promise;
-        await mkdir(path.join(work, 'result'));
-        await writeFile(path.join(work, 'result', 'zh.pdf'), translated);
-        return { pages: 2, reviewPages: [2] };
+        return text;
       },
-    } });
-    apps.push(app);
-    await new Promise<void>((resolve) => app.server.listen(0, '127.0.0.1', resolve));
-    const address = app.server.address();
-    assert.ok(address && typeof address === 'object');
-    return `http://127.0.0.1:${address.port}/api/papers`;
-  };
-  let base = await start();
-  const route = (id = 'L001') => `${base}/${id}/translation`;
-  const get = async () => (await fetch(route())).json() as Promise<PdfTranslationStatus>;
-  const post = (url: string, body: unknown) => fetch(url, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
-  });
-  const submit = async (code = 202) => {
-    const response = await post(route(), { model: modelId });
-    assert.equal(response.status, code);
-    return response.json() as Promise<PdfTranslationStatus>;
-  };
-  const exported = async (key: string, expected: Buffer) => {
-    const response = await fetch(`${route()}/file?key=${key}&download=1`);
-    assert.equal(response.status, 200);
-    assert.match(String(response.headers.get('content-disposition')), /^attachment/);
-    assert.deepEqual(Buffer.from(await response.arrayBuffer()), expected);
-  };
-  assert.equal((await post(route(), { model: 'test/different' })).status, 409);
-  assert.equal((await fetch(`${route()}/file?key=arbitrary.pdf`)).status, 400);
-  assert.equal((await get()).result?.key, oldKey);
-  assert.equal((await get()).updateAvailable, true);
+    },
+    AbortSignal.timeout(5000),
+  );
 
-  const first = await submit();
-  assert.ok(first.job);
-  assert.equal(first.result?.key, oldKey);
-  assert.equal((await submit()).job?.id, first.job.id);
-  await waiting.promise;
-  const preview = await fetch(`${base}/L001/preview?page=2&translation=${oldKey}`);
-  assert.equal(preview.status, 200);
-  assert.equal(preview.headers.get('x-pdf-pages'), '2');
-  assert.equal(Buffer.from(await preview.arrayBuffer()).subarray(1, 4).toString(), 'PNG');
-  const layer = await fetch(`${base}/L001/text-layer?page=2&translation=${oldKey}`);
-  assert.equal(layer.status, 200);
-  assert.match((await layer.json()).text, /Cached PDF fixture/);
-  await exported(oldKey, old);
-  try {
-    const stopping = await post(`${route()}/cancel`, { jobId: first.job.id });
-    assert.equal(stopping.status, 202);
-    const status = await stopping.json() as PdfTranslationStatus;
-    assert.equal(status.job?.status, 'cancelling');
-    assert.equal(status.result?.key, oldKey);
-    assert.equal((await post(route('L002'), { model: modelId })).status, 409);
-  } finally { stopped.resolve(); }
-  await waitFor(get, (state) => state.job?.status === 'cancelled');
-  assert.equal((await get()).result?.key, oldKey);
-  await exported(oldKey, old);
-
-  operation = 'fail';
-  assert.equal((await submit()).result?.key, oldKey);
-  const failed = await waitFor(get, (state) => state.job?.status === 'failed');
-  assert.match(failed.job?.error ?? '', /合成更新任务失败/);
-  assert.equal(failed.result?.key, oldKey);
-  await exported(oldKey, old);
-
-  operation = 'publish';
-  const updating = await submit();
-  assert.equal(updating.result?.key, oldKey);
-  assert.notEqual(updating.job?.key, oldKey);
-  await exported(oldKey, old);
-  publish.resolve();
-  const ready = await waitFor(get, (state) => state.job?.status === 'completed' || state.job?.status === 'failed');
-  assert.equal(ready.job?.status, 'completed', ready.job?.error);
-  assert.ok(ready.result);
-  assert.equal(ready.result.key, updating.job?.key);
-  assert.deepEqual(ready.result.reviewPages, [2]);
-  assert.equal(ready.updateAvailable, false);
-  assert.equal((await submit(200)).job, null);
-  assert.equal(runs, 3);
-  await exported(ready.result.key, translated);
-  await exported(oldKey, old);
-  assert.deepEqual(await readdir(path.join(root, '.zhiyue/tmp')), []);
-  assert.deepEqual(await readFile(source), original);
-  currentModel = { ...model, fingerprint: 'same-id-new-config' };
-  assert.equal((await get()).updateAvailable, true);
-  assert.equal((await get()).result?.key, oldKey);
-  currentModel = model;
-
-  await apps[0]?.close();
-  base = await start();
-  assert.equal((await get()).result?.key, ready.result.key);
-  assert.equal((await submit(200)).result?.key, ready.result.key);
-  assert.equal((await fetch(`${route('L002')}/file?key=${ready.result.key}`)).status, 404);
-  await writeFile(source, '%PDF-1.7\nreplacement PDF\n%%EOF');
-  assert.equal((await get()).result, null);
-  for (const key of [oldKey, ready.result.key]) {
-    assert.equal((await fetch(`${route()}/file?key=${key}`)).status, 404);
-  }
+  assert.equal(translatedCount, 2);
+  assert.deepEqual(sent, ['batch']);
+  assert.match(markdown, /^# A Survey of Deep Learning/m);
+  assert.match(markdown, /^## 1\. Introduction/m);
+  assert.match(markdown, /深度学习改变了计算机视觉 \[1–3\]。/);
+  assert.match(markdown, /图 1\. 整体架构概览。/);
+  assert.match(markdown, /<table><tr><th>Model<\/th>/);
+  assert.match(markdown, /\| ImageNet \| 1\.2M \|/);
+  assert.match(markdown, /!\[\]\(images\/fig1\.png\)/);
 });
 
-test('当前配置已命中缓存时可重新生成，失败或取消保留上次成功的译本', { timeout: 30_000 }, async (t) => {
-  const python = resolvePython();
-  if (spawnSync(python, ['-c', 'import pypdf, pdfplumber, pypdfium2'], { windowsHide: true }).status !== 0) {
-    return t.skip('译本发布和预览需要文献库 Python 依赖。');
-  }
-  const root = await mkdtemp(path.join(os.tmpdir(), 'zhiyue-pdf-regenerate-'));
+test('批量 JSON 格式错误时自动降级为逐段翻译，顽固单段异常安全回退原文', async () => {
+  const blocks = splitMarkdownBlocks([
+    'First paragraph about methods.',
+    '',
+    'Second paragraph with tricky text.',
+  ].join('\n'));
+  const calls: Array<{ mode: string; retry?: boolean }> = [];
+  const { markdown, translatedCount } = await translateMarkdownBlocks(
+    blocks,
+    {
+      ...model,
+      complete: async (mode, text, _signal, retry) => {
+        calls.push({ mode, retry });
+        if (mode === 'batch') return 'not valid json';
+        if (text.includes('Second')) throw new Error('model transient error');
+        return '第一段关于方法。';
+      },
+    },
+    AbortSignal.timeout(5000),
+  );
+  assert.equal(translatedCount, 1);
+  assert.match(markdown, /第一段关于方法。/);
+  assert.match(markdown, /Second paragraph with tricky text\./);
+  assert.equal(calls.some((c) => c.mode === 'batch'), true);
+  assert.equal(calls.some((c) => c.mode === 'paragraph' && c.retry === true), true);
+});
+
+test('译本发布、Markdown 读取、图片资产边界、重新生成与取消/失败回滚', async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'zhiyue-md-translation-'));
   const publish = gate();
   let app: Awaited<ReturnType<typeof createApp>> | undefined;
   t.after(async () => {
@@ -211,374 +131,98 @@ test('当前配置已命中缓存时可重新生成，失败或取消保留上�
   });
   const papers = path.join(root, 'papers');
   const source = path.join(papers, 'a.pdf');
-  const regenerated = path.join(root, 'generated.pdf');
+  const original = Buffer.from('%PDF-1.4\nsynthetic paper\n%%EOF');
+  const sourceHash = sha256(original);
   await mkdir(papers);
   await mkdir(path.join(root, '.zhiyue/catalog'), { recursive: true });
-  await writeFile(path.join(root, '.zhiyue/catalog/文献索引.json'), JSON.stringify({ records: [
-    { literature_id: 'L001', file: 'papers/a.pdf' }, { literature_id: 'L002', file: 'papers/b.pdf' },
-  ] }));
-  makeReaderPdf(python, source, path.join(root, 'source.json'), 'Current translation fixture');
-  makeReaderPdf(python, regenerated, path.join(root, 'generated.json'), 'Regenerated translation fixture');
-  const original = await readFile(source);
-  const nextPdf = await readFile(regenerated);
-  const sourceHash = sha256(original);
-  const oldKey = sha256(JSON.stringify([sourceHash, model.fingerprint, PDF_TRANSLATION_REVISION]));
-  const oldTime = '2999-01-01T00:00:00.000Z';
-  const baseDir = path.join(root, '.zhiyue/data/translations/L001');
-  const oldDir = path.join(baseDir, oldKey);
-  await mkdir(oldDir, { recursive: true });
-  await writeFile(path.join(oldDir, 'zh.pdf'), original);
-  await writeFile(path.join(oldDir, 'result.json'), JSON.stringify({
-    key: oldKey, sourceHash, model: modelId, completedAt: oldTime, pages: 2, reviewPages: [],
+  await writeFile(source, original);
+  await writeFile(path.join(root, '.zhiyue/catalog/文献索引.json'), JSON.stringify({
+    records: [{ literature_id: 'L001', file: 'papers/a.pdf' }],
   }));
-  await writeFile(path.join(papers, 'b.pdf'), original);
+
+  const oldKey = sha256(JSON.stringify([sourceHash, model.fingerprint, PDF_TRANSLATION_REVISION]));
+  const oldTime = '2026-01-01T00:00:00.000Z';
+  const oldDir = path.join(root, '.zhiyue/data/translations/L001', oldKey);
+  await mkdir(path.join(oldDir, 'images'), { recursive: true });
+  await writeFile(path.join(oldDir, 'zh.md'), '# Old Title\n\n旧版中文精读。\n![](images/fig1.png)\n');
+  await writeFile(path.join(oldDir, 'images/fig1.png'), Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
+  await writeFile(path.join(oldDir, 'result.json'), JSON.stringify({
+    key: oldKey, sourceHash, model: modelId, completedAt: oldTime, sections: 1, images: 1,
+  }));
+
   let runs = 0;
   let operation: 'publish' | 'cancel' | 'fail' = 'publish';
-  const listen = async (): Promise<string> => {
-    const server = await createApp({ root, connectPi: false, translation: {
-      getModel: () => model, enginePython: process.execPath,
+  const server = await createApp({
+    root, connectPi: false,
+    translation: {
+      getModel: () => model,
+      mineruCommand: process.execPath,
       worker: async ({ work, signal }) => {
         runs++;
-        if (operation === 'fail') throw new Error('合成重新生成任务失败');
+        if (operation === 'fail') throw new Error('合成翻译任务失败');
         if (operation === 'cancel') {
           signal.throwIfAborted();
           await new Promise<void>((resolve) => signal.addEventListener('abort', () => resolve(), { once: true }));
           signal.throwIfAborted();
         }
         await publish.promise;
-        await mkdir(path.join(work, 'result'));
-        await writeFile(path.join(work, 'result/zh.pdf'), nextPdf);
-        return { pages: 2, reviewPages: [] };
+        const resultDir = path.join(work, 'result');
+        await mkdir(path.join(resultDir, 'images'), { recursive: true });
+        await writeFile(path.join(resultDir, 'zh.md'), '# New Title\n\n新版中文精读。\n');
+        await writeFile(path.join(resultDir, 'images/fig2.png'), Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
+        return { sections: 2, images: 1 };
       },
-    } });
-    app = server;
-    await new Promise<void>((resolve) => server.server.listen(0, '127.0.0.1', resolve));
-    const address = server.server.address();
-    assert.ok(address && typeof address === 'object');
-    return `http://127.0.0.1:${address.port}/api/papers`;
-  };
-  let base = await listen();
-  const route = (id = 'L001') => `${base}/${id}/translation`;
+    },
+  });
+  app = server;
+  await new Promise<void>((resolve) => server.server.listen(0, '127.0.0.1', resolve));
+  const address = server.server.address();
+  assert.ok(address && typeof address === 'object');
+  const route = `http://127.0.0.1:${address.port}/api/papers/L001/translation`;
   const post = (url: string, body: unknown) => fetch(url, {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
   });
-  const submit = async (regenerate: boolean, code: number) => {
-    const response = await post(route(), { model: modelId, regenerate });
-    assert.equal(response.status, code);
-    return response.json() as Promise<PdfTranslationStatus>;
-  };
-  const get = async () => (await fetch(route())).json() as Promise<PdfTranslationStatus>;
-  const exportPdf = (key: string) => fetch(`${route()}/file?key=${key}&download=1`);
+  const get = async () => (await fetch(route)).json() as Promise<PdfTranslationStatus>;
 
-  assert.equal((await post(route(), { model: modelId, regenerate: 'true' })).status, 400);
-  assert.equal((await post(route(), { model: 'test/outdated', regenerate: true })).status, 409);
-  const cached = await submit(false, 200);
-  assert.equal(cached.result?.key, oldKey);
-  assert.equal(cached.updateAvailable, false);
+  // 缓存命中返回 200
+  const cachedRes = await post(route, { model: modelId });
+  assert.equal(cachedRes.status, 200);
   assert.equal(runs, 0);
 
-  const started = await submit(true, 202);
+  // 读取旧译本 Markdown、导出和图片资产（并验证拒绝路径穿越）
+  const md = await (await fetch(`${route}/markdown?key=${oldKey}`)).json() as PdfTranslationMarkdown;
+  assert.match(md.text, /旧版中文精读/);
+  const assetOk = await fetch(`${route}/asset?key=${oldKey}&file=fig1.png`);
+  assert.equal(assetOk.status, 200);
+  assert.equal((await fetch(`${route}/asset?key=${oldKey}&file=../result.json`)).status, 400);
+  const exported = await fetch(`${route}/file?key=${oldKey}&download=1`);
+  assert.equal(exported.status, 200);
+  assert.match(await exported.text(), /旧版中文精读/);
+
+  // 重新生成
+  const regenRes = await post(route, { model: modelId, regenerate: true });
+  assert.equal(regenRes.status, 202);
+  const started = await regenRes.json() as PdfTranslationStatus;
   assert.ok(started.job);
   const newKey = started.job.key;
-  assert.match(newKey, /^[0-9a-f]{64}$/);
   assert.notEqual(newKey, oldKey);
-  assert.equal(started.result?.key, oldKey);
-  assert.equal((await submit(true, 202)).job?.id, started.job.id);
-  assert.equal((await post(route('L002'), { model: modelId, regenerate: true })).status, 409);
-  assert.equal((await exportPdf(newKey)).status, 404);
-  assert.equal((await get()).result?.key, oldKey);
-  const preview = await fetch(`${base}/L001/preview?page=2&translation=${oldKey}`);
-  assert.equal(preview.status, 200);
-  assert.equal(preview.headers.get('x-pdf-pages'), '2');
-  const layer = await fetch(`${base}/L001/text-layer?page=2&translation=${oldKey}`);
-  assert.equal(layer.status, 200);
-  assert.match((await layer.json()).text, /Current translation fixture/);
-  assert.deepEqual(Buffer.from(await (await exportPdf(oldKey)).arrayBuffer()), original);
-
   publish.resolve();
   const ready = await waitFor(get, (state) => ['completed', 'failed'].includes(state.job?.status ?? ''));
   assert.equal(ready.job?.status, 'completed', ready.job?.error);
   assert.equal(ready.result?.key, newKey);
-  assert.ok(ready.result && Date.parse(ready.result.completedAt) > Date.parse(oldTime));
-  assert.equal(ready.updateAvailable, false);
-  assert.equal((await submit(false, 200)).result?.key, newKey);
-  assert.equal(runs, 1);
-  const newLayer = await fetch(`${base}/L001/text-layer?page=2&translation=${newKey}`);
-  assert.equal(newLayer.status, 200);
-  assert.match((await newLayer.json()).text, /Regenerated translation fixture/);
-  assert.deepEqual(Buffer.from(await (await exportPdf(newKey)).arrayBuffer()), nextPdf);
-  assert.deepEqual(Buffer.from(await (await exportPdf(oldKey)).arrayBuffer()), original);
+  const newMd = await (await fetch(`${route}/markdown?key=${newKey}`)).json() as PdfTranslationMarkdown;
+  assert.match(newMd.text, /新版中文精读/);
 
-  await app?.close();
-  base = await listen();
-  assert.equal((await get()).result?.key, newKey);
-  assert.equal((await submit(false, 200)).result?.key, newKey);
+  // 取消与失败均保留上次成功的译本
   operation = 'cancel';
-  const again = await submit(true, 202);
-  assert.ok(again.job);
-  assert.notEqual(again.job.key, newKey);
-  assert.equal((await post(`${route()}/cancel`, { jobId: again.job.id })).status, 202);
-  assert.equal((await waitFor(get, (state) => state.job?.status === 'cancelled')).result?.key, newKey);
+  const cancelStart = await (await post(route, { model: modelId, regenerate: true })).json() as PdfTranslationStatus;
+  assert.equal((await post(`${route}/cancel`, { jobId: cancelStart.job?.id })).status, 202);
+  assert.equal((await waitFor(get, (s) => s.job?.status === 'cancelled')).result?.key, newKey);
 
   operation = 'fail';
-  assert.equal((await submit(true, 202)).result?.key, newKey);
-  const failed = await waitFor(get, (state) => state.job?.status === 'failed');
-  assert.match(failed.job?.error ?? '', /合成重新生成任务失败/);
+  await post(route, { model: modelId, regenerate: true });
+  const failed = await waitFor(get, (s) => s.job?.status === 'failed');
+  assert.match(failed.job?.error ?? '', /合成翻译任务失败/);
   assert.equal(failed.result?.key, newKey);
-  assert.deepEqual((await readdir(baseDir)).sort(), [oldKey, newKey].sort());
   assert.deepEqual(await readdir(path.join(root, '.zhiyue/tmp')), []);
-  assert.deepEqual(await readFile(source), original);
-  await writeFile(source, '%PDF-1.7\nreplacement PDF\n%%EOF');
-  assert.equal((await get()).result, null);
-  assert.equal((await exportPdf(oldKey)).status, 404);
-  assert.equal((await exportPdf(newKey)).status, 404);
-});
-
-test('模型重试后仍改变段落内数值时停止发布', async (t) => {
-  const work = await mkdtemp(path.join(os.tmpdir(), 'zhiyue-translation-pipe-'));
-  t.after(() => rm(work, { recursive: true, force: true }));
-  const script = path.join(work, 'mock.cjs');
-  const event = { type: 'request', id: 1, mode: 'batch',
-    text: '## Translation\n## Here is the input:\n' + JSON.stringify([{ id: 7, input: 'Result <b1> is 12 [3].' }]) };
-  await writeFile(script, `console.log(${JSON.stringify(JSON.stringify(event))}); process.stdin.resume();`);
-  const attempts: Array<boolean | undefined> = [];
-  await assert.rejects(runTranslationWorker({
-    python: process.execPath, script, source: 'unused.pdf', sourceHash: '', work,
-    model: { ...model, complete: async (_mode, _text, _signal, retry) => {
-      attempts.push(retry);
-      return JSON.stringify([{ id: 7, output: '结果 <b1> 是 21 [3]。' }]);
-    } },
-    signal: AbortSignal.timeout(5000), progress: () => {},
-  }), /数字或引用不一致/);
-  assert.deepEqual(attempts, [undefined, true]);
-});
-
-test('带上下文提示的单段请求只校验正文，重试后复原数字、编号和引用', async (t) => {
-  const work = await mkdtemp(path.join(os.tmpdir(), 'zhiyue-translation-pipe-'));
-  t.after(() => rm(work, { recursive: true, force: true }));
-  const script = path.join(work, 'mock.cjs');
-  const text = [
-    '## Context / Hints',
-    '1. The most recent title is: Results in 2025',
-    "2. Formula placeholder hint:\n{'<b3>': 'x + 1'}",
-    '',
-    '## Output',
-    '',
-    'Output ONLY the translated zh-CN text. No explanations, no backticks, no extra text.',
-    '',
-    'Now translate the following text:',
-    '',
-    'The 4th study of COVID- 19 reported a <b3> of 12, 15 [5].',
-  ].join('\n');
-  const event = { type: 'request', id: 1, mode: 'batch', text };
-  const output = '第4项研究报告了 COVID- 19 的 <b3> 为 12， 15 [5]。';
-  const finish = { type: 'finish', pages: 1, reviewPages: [] };
-  await writeFile(script, [
-    `console.log(${JSON.stringify(JSON.stringify(event))});`,
-    `process.stdin.once('data', (data) => {`,
-    `  require('node:assert/strict').deepEqual(JSON.parse(data), ${JSON.stringify({ id: 1, text: output })});`,
-    `  process.stdout.write(${JSON.stringify(`${JSON.stringify(finish)}\n`)}, () => process.exit(0));`,
-    `});`,
-  ].join('\n'));
-  const result = await runTranslationWorker({
-    python: process.execPath, script, source: 'unused.pdf', sourceHash: '', work,
-    model: { ...model, complete: async (_mode, prompt, _signal, retry) => {
-      if (!retry) {
-        assert.equal(prompt, text);
-        return '第四项研究报告了新冠肺炎的 <b3> 为 12，15 [5]。';
-      }
-      const header = text.slice(0, text.lastIndexOf('\n') + 1);
-      assert.ok(prompt.startsWith(header));
-      const protectedBody = prompt.slice(header.length);
-      assert.ok(!protectedBody.includes('<b3>'));
-      const [ordinal, identifier, formula, first, second, citation] =
-        protectedBody.match(/\[\[ZHIYUE_KEEP_[a-f\d]+_\d+\]\]/g) ?? [];
-      assert.ok(ordinal && identifier && formula && first && second && citation);
-      return `第${ordinal}项研究报告了 ${identifier} 的 ${formula} 为 ${first}，${second} ${citation}。`;
-    } },
-    signal: AbortSignal.timeout(5000), progress: () => {},
-  });
-  assert.deepEqual(result, { pages: 1, reviewPages: [] });
-});
-
-test('英文日期可以用中文年月日表示，月日互换时仍拒绝译文', async (t) => {
-  const work = await mkdtemp(path.join(os.tmpdir(), 'zhiyue-translation-date-'));
-  t.after(() => rm(work, { recursive: true, force: true }));
-  const script = path.join(work, 'mock.cjs');
-  const input = [
-    { id: 0, input: 'October 15th, 2007' },
-    { id: 1, input: 'On 9 Mar. 2007, the study used 12 samples [4].' },
-  ];
-  const event = { type: 'request', id: 1, mode: 'batch', text: '\n## Here is the input:\n' + JSON.stringify(input) };
-  const output = [
-    { id: 0, output: '2007年10月15日' },
-    { id: 1, output: '2007 年 3 月 9 日，研究使用了 12 个样本 [4]。' },
-  ];
-  const expected = { id: 1, text: JSON.stringify(output) };
-  const finish = { type: 'finish', pages: 1, reviewPages: [] };
-  await writeFile(script, [
-    `console.log(${JSON.stringify(JSON.stringify(event))});`,
-    'process.stdin.once("data", (data) => {',
-    `  require('node:assert/strict').deepEqual(JSON.parse(data), ${JSON.stringify(expected)});`,
-    `  process.stdout.write(${JSON.stringify(`${JSON.stringify(finish)}\n`)}, () => process.exit(0));`,
-    '});',
-  ].join('\n'));
-  const translate = (complete: TranslationModel['complete']) => runTranslationWorker({
-    python: process.execPath, script, source: 'unused.pdf', sourceHash: '', work,
-    model: { ...model, complete }, signal: AbortSignal.timeout(5000), progress: () => {},
-  });
-  const ready = await translate(async (_mode, _text, _signal, retry) => {
-    assert.equal(retry, undefined);
-    return JSON.stringify(output);
-  });
-  assert.deepEqual(ready, { pages: 1, reviewPages: [] });
-
-  const attempts: Array<boolean | undefined> = [];
-  await assert.rejects(translate(async (_mode, text, _signal, retry) => {
-    attempts.push(retry);
-    if (retry) {
-      const protectedInput = JSON.parse(text.split('\n## Here is the input:\n')[1]!);
-      assert.deepEqual(protectedInput.map(({ id }: { id: number }) => id), [1]);
-      assert.match(protectedInput[0].input, /^On \[\[ZHIYUE_KEEP_[a-f0-9]+_\d+\]\], the study used/u);
-      return JSON.stringify([{ id: 1, output: '2007 年 9 月 3 日，研究使用了 12 个样本 [4]。' }]);
-    }
-    return JSON.stringify([output[0], { id: 1, output: '2007 年 9 月 3 日，研究使用了 12 个样本 [4]。' }]);
-  }), /数字或引用不一致/);
-  assert.deepEqual(attempts, [undefined, true]);
-});
-
-test('模型重复引用时只重试受影响段落，并按原顺序合并', async (t) => {
-  const work = await mkdtemp(path.join(os.tmpdir(), 'zhiyue-translation-citation-'));
-  t.after(() => rm(work, { recursive: true, force: true }));
-  const script = path.join(work, 'mock.cjs');
-  const input = [
-    { id: 4, input: 'Categorical descriptors' },
-    { id: 9, input: 'Mixed emotions are common. These are basic emotions <b4>.',
-      formula_placeholders_hint: "{'<b4>': '[31]'}" },
-  ];
-  const header = '\n## Here is the input:\n';
-  const event = { type: 'request', id: 1, mode: 'batch', text: header + JSON.stringify(input) };
-  const good = { id: 4, output: '类别描述' };
-  const expected = { id: 1, text: JSON.stringify([good, { id: 9, output: '混合情绪很常见。这些是基本情绪 <b4>。' }]) };
-  const finish = { type: 'finish', pages: 1, reviewPages: [] };
-  await writeFile(script, [
-    `console.log(${JSON.stringify(JSON.stringify(event))});`,
-    'process.stdin.once("data", (data) => {',
-    `  require('node:assert/strict').deepEqual(JSON.parse(data), ${JSON.stringify(expected)});`,
-    `  process.stdout.write(${JSON.stringify(`${JSON.stringify(finish)}\n`)}, () => process.exit(0));`,
-    '});',
-  ].join('\n'));
-  const result = await runTranslationWorker({
-    python: process.execPath, script, source: 'unused.pdf', sourceHash: '', work,
-    model: { ...model, complete: async (_mode, text, _signal, retry) => {
-      if (!retry) return JSON.stringify([{ id: 9, output: '混合情绪 <b4> 很常见。这些是基本情绪 <b4>。' }, good]);
-      const paragraphs = JSON.parse(text.slice(header.length));
-      assert.deepEqual(paragraphs.map(({ id }: { id: number }) => id), [9]);
-      assert.equal(paragraphs[0].formula_placeholders_hint, input[1].formula_placeholders_hint);
-      assert.ok(!paragraphs[0].input.includes('<b4>'));
-      const token = paragraphs[0].input.match(/\[\[ZHIYUE_KEEP_[a-f\d]+_\d+\]\]/u)?.[0];
-      assert.ok(token);
-      return JSON.stringify([{ id: 9, output: `混合情绪很常见。这些是基本情绪 ${token}。` }]);
-    } },
-    signal: AbortSignal.timeout(5000), progress: () => {},
-  });
-  assert.deepEqual(result, { pages: 1, reviewPages: [] });
-});
-
-test('Python 翻译入口将原生库的标准输出移出事件通道', (t) => {
-  const python = resolvePython();
-  if (spawnSync(python, ['-c', 'import os'], { windowsHide: true }).status !== 0) {
-    return t.skip('翻译进程测试需要 Python。');
-  }
-  const probe = [
-    'import os, runpy, sys',
-    'script = sys.argv[1]',
-    'helper = runpy.run_path(script)',
-    'def translate(args):',
-    '    os.write(1, b"native font diagnostic\\n")',
-    '    helper["send"]("finish", pages=1, reviewPages=[])',
-    'helper["main"].__globals__["translate"] = translate',
-    'sys.argv = [script, "translate", "--source", "x", "--work", "x", "--source-hash", "x"]',
-    'sys.exit(helper["main"]())',
-  ].join('\n');
-  const helper = path.resolve('app/web/src/lib/translate_pdf.py');
-  const result = spawnSync(python, ['-X', 'utf8', '-c', probe, helper], {
-    encoding: 'utf8', windowsHide: true, timeout: 5000,
-  });
-  assert.equal(result.status, 0, result.stderr || result.error?.message);
-  assert.match(result.stderr, /native font diagnostic/);
-  assert.deepEqual(JSON.parse(result.stdout), { type: 'finish', pages: 1, reviewPages: [] });
-});
-
-function runPython(python: string, script: string, ...args: string[]): void {
-  const result = spawnSync(python, ['-X', 'utf8', path.resolve('app/web/test/fixtures', script), ...args], {
-    encoding: 'utf8', windowsHide: true, timeout: 20_000,
-    env: { ...process.env, PYTHONDONTWRITEBYTECODE: '1' },
-  });
-  assert.equal(result.status, 0, result.error?.message || result.stderr);
-}
-
-test('按视觉栏序识别编号和作者年份式参考文献，排除非书目并验证条目区域', (t) => {
-  const python = resolvePython();
-  if (spawnSync(python, ['-c', 'import sys'], { windowsHide: true }).status !== 0) {
-    return t.skip('参考文献版式测试需要 Python。');
-  }
-  runPython(python, 'pdf_references_test.py');
-});
-
-const engineSkip = process.env.ZHIYUE_TEST_PDF_ENGINE !== '1' && '设置 ZHIYUE_TEST_PDF_ENGINE=1 启用本机排版测试';
-
-test('保留裁切与旋转，错排时恢复原页文字与图形', { skip: engineSkip, timeout: 25_000 }, async (t) => {
-  const work = await mkdtemp(path.join(os.tmpdir(), 'zhiyue-pdf-recovery-'));
-  t.after(() => rm(work, { recursive: true, force: true }));
-  runPython(resolveTranslationPython(), 'pdf_translation_engine.py', 'recovery', work);
-});
-
-test('轻微越栏只收窄可定位的书目行，保留中文文字、邻栏、图形和链接', {
-  skip: engineSkip, timeout: 25_000,
-}, async (t) => {
-  const work = await mkdtemp(path.join(os.tmpdir(), 'zhiyue-pdf-spill-'));
-  t.after(() => rm(work, { recursive: true, force: true }));
-  runPython(resolveTranslationPython(), 'pdf_translation_engine.py', 'spill', work);
-});
-
-test('按原栏居中单行章节标题，并保留左对齐或存在遮挡的标题', {
-  skip: engineSkip, timeout: 25_000,
-}, async (t) => {
-  const work = await mkdtemp(path.join(os.tmpdir(), 'zhiyue-pdf-headings-'));
-  t.after(() => rm(work, { recursive: true, force: true }));
-  runPython(resolveTranslationPython(), 'pdf_translation_engine.py', 'headings', work);
-});
-
-test('BabelDOC 实际排版保留栏序和独立编号，并生成可复制中文', {
-  skip: engineSkip, timeout: 180_000,
-}, async (t) => {
-  const python = resolveTranslationPython();
-  const work = await mkdtemp(path.join(os.tmpdir(), 'zhiyue-pdf-engine-'));
-  t.after(() => rm(work, { recursive: true, force: true }));
-  const source = path.join(work, 'fixture.pdf');
-  runPython(python, 'pdf_translation_engine.py', 'create', source);
-  const sourceHash = sha256(await readFile(source));
-  const batch = '\n## Here is the input:\n';
-  const body = 'Now translate the following text:\n\n';
-  const translate = (text: string) => text.replace(/\b(?:Research|study)\b/gi, '研究')
-    .replace(/\b(?:results?|reports?)\b/gi, '结果')
-    .replace(/\b(?:methods?|testing)\b/gi, '方法')
-    .replace(/\b(?:references|abstract|vectors?)\b/gi, (word) => (
-      { references: '参考文献', abstract: '摘要' }[word.toLowerCase()] ?? '向量'
-    ));
-  const result = await runTranslationWorker({
-    python, script: path.resolve('app/web/src/lib/translate_pdf.py'), source, sourceHash, work,
-    model: { ...model, complete: async (mode, prompt) => {
-      if (mode === 'batch' && prompt.includes(batch)) {
-        const entries = JSON.parse(prompt.split(batch).at(-1)!) as Array<{ id: number; input: string }>;
-        return JSON.stringify(entries.map(({ id, input }) => ({ id, output: translate(input) })));
-      }
-      return translate(mode === 'batch' ? prompt.split(body).at(-1)! : prompt);
-    } },
-    signal: AbortSignal.timeout(165_000), progress: () => {},
-  });
-  assert.deepEqual(result, { pages: 2, reviewPages: [] });
-  runPython(python, 'pdf_translation_engine.py', 'verify', source, path.join(work, 'result/zh.pdf'));
-  assert.equal(sha256(await readFile(source)), sourceHash);
 });

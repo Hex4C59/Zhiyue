@@ -16,7 +16,9 @@
 app/
 ├─ web/
 │  ├─ src/server.ts      HTTP 与服务装配（tsc 编译到 build/）
-│  ├─ src/lib/            书目、助手协议、任务、预览、路径和提取
+│  ├─ src/lib/            书目、助手协议、任务、预览、路径和翻译服务
+│  ├─ shared/             前后端共享的纯类型与常量契约
+│  ├─ python/             PDF 预览渲染、附件提取与翻译辅助脚本
 │  ├─ frontend/          Vue 3 单文件组件与状态、阅读控制器（TypeScript）
 │  ├─ dist/              Vite 构建的 app.js 与 Vue MIT 许可证
 │  ├─ public/index.html   Vue 挂载入口

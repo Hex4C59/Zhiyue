@@ -2,7 +2,7 @@
 import { computed, inject, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { endpoint, json } from '../lib/content';
 import type { WorkspaceApi } from '../lib/workspace';
-import type { PdfTranslationJob, PdfTranslationStatus } from '../../src/lib/pdfTranslationTypes.js';
+import type { PdfTranslationJob, PdfTranslationStatus } from '../../shared/pdfTranslation.js';
 
 const props = defineProps<{ paperId: string; file: string }>();
 const workspace = inject('workspace') as WorkspaceApi;
@@ -18,7 +18,6 @@ const isActive = (task?: PdfTranslationJob | null): boolean =>
 const active = computed(() => isActive(job.value));
 const submitted = ref<Pick<PdfTranslationJob, 'id' | 'key'> | null>(null);
 const download = computed(() => result.value ? `${base.value}/file?key=${result.value.key}&download=1` : '');
-const reviewPages = computed(() => result.value?.reviewPages ?? []);
 const startLabel = computed(() => {
   if (result.value) return '重新生成中文';
   return job.value?.status === 'failed' ? '重试翻译' : '翻译成中文';
@@ -34,14 +33,15 @@ function apply(update: PdfTranslationStatus): void {
   const watched = submitted.value;
   const ownJob = watched?.id === update.job?.id && watched?.key === update.job?.key ? update.job : null;
   const published = ownJob?.status === 'completed' && ownJob.key === update.result?.key;
-  // 发布与任务状态是两个快照，等到本次任务完成后再切换。
   const next = isActive(ownJob) && previous && update.result?.key === watched?.key &&
     previous.sourceHash === update.result?.sourceHash ? previous : update.result;
   status.value = { ...update, result: next };
-  if (published && next) {
+  if (next) {
     state.pdfTranslation = next.key;
-  } else if (state.pdfTranslation && state.pdfTranslation !== next?.key) {
-    state.pdfTranslation = next && next.sourceHash === previous?.sourceHash ? next.key : '';
+    if (published && state.readerMode === 'pdf') state.readerMode = 'translation';
+  } else if (state.pdfTranslation) {
+    state.pdfTranslation = '';
+    if (state.readerMode === 'translation' || state.readerMode === 'split') state.readerMode = 'pdf';
   }
   if (!isActive(ownJob)) submitted.value = null;
 }
@@ -68,7 +68,10 @@ async function start(): Promise<void> {
     if (current()) {
       submitted.value = update.job && { id: update.job.id, key: update.job.key };
       apply(update);
-      if (!update.job && update.result) state.pdfTranslation = update.result.key;
+      if (!update.job && update.result) {
+        state.pdfTranslation = update.result.key;
+        if (state.readerMode === 'pdf') state.readerMode = 'translation';
+      }
     }
   } catch (error) {
     if (current()) failure.value = (error as Error).message;
@@ -116,18 +119,12 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="pdf-translation-bar" role="group" aria-label="PDF 翻译">
+  <div class="pdf-translation-bar" role="group" aria-label="中文精读翻译">
     <template v-if="result">
-      <div class="segmented" aria-label="PDF 语言" role="group">
-        <button type="button" :class="{ active: !state.pdfTranslation }" :aria-pressed="!state.pdfTranslation"
-          @click="state.pdfTranslation = ''">原文</button>
-        <button type="button" :class="{ active: !!state.pdfTranslation }" :aria-pressed="!!state.pdfTranslation"
-          @click="state.pdfTranslation = result.key">中文</button>
-      </div>
-      <a class="pdf-translation-download" :href="download" download>导出中文 PDF</a>
+      <a class="pdf-translation-download" :href="download" download>导出中文 Markdown</a>
     </template>
     <template v-if="progressJob">
-      <progress :value="progressJob.percent" max="100" aria-label="PDF 翻译进度" />
+      <progress :value="progressJob.percent" max="100" aria-label="论文翻译进度" />
       <span class="pdf-translation-detail" role="status">{{ progressJob.stage }} · {{ progressJob.percent }}%</span>
       <button v-if="progressJob.status === 'running'" type="button" class="button subtle" :disabled="busy"
         @click="cancel">取消</button>
@@ -135,14 +132,10 @@ onBeforeUnmount(() => {
     <button v-else-if="status" type="button" class="button subtle"
       :disabled="busy || !status.engineAvailable || !status.model"
       @click="start">{{ busy ? '正在提交…' : startLabel }}</button>
-    <span v-if="state.pdfTranslation && reviewPages.length" class="pdf-translation-detail"
-      :title="`需核对的物理页：${reviewPages.join('、')}`">
-      {{ reviewPages.includes(state.pdfPage) ? '本页需核对' : `${reviewPages.length} 页需核对` }}
-    </span>
     <template v-if="status && !progressJob">
-      <span v-if="!status.engineAvailable" class="pdf-translation-detail">请按 README 安装翻译运行环境</span>
+      <span v-if="!status.engineAvailable" class="pdf-translation-detail">请按 README 安装 MinerU 解析环境</span>
       <span v-else-if="!status.model" class="pdf-translation-detail">请在「模型与密钥」中配置模型</span>
-      <span v-else class="pdf-translation-detail" :title="`可提取的英文正文将发送给 ${status.model}`">
+      <span v-else class="pdf-translation-detail" :title="`MinerU 解析后的英文正文将发送给 ${status.model}`">
         正文发送至 {{ status.model }}
       </span>
     </template>

@@ -958,3 +958,52 @@ pre,code,kbd,samp { font-family:var(--font-mono); }
   .composer { padding-inline:9px; }
   .model-trigger { max-width:160px; }
 }
+
+/* 中文精读流式视图与宽屏左右对照 */
+.translation-document {
+  max-width: 820px;
+  margin: 0 auto;
+  padding: 24px 28px 64px;
+  line-height: 1.78;
+}
+.translation-document img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: 16px auto;
+  border-radius: 6px;
+}
+.table-wrap {
+  width: 100%;
+  overflow-x: auto;
+  margin: 14px 0;
+}
+.reader-split {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  height: 100%;
+  min-height: 0;
+  gap: 0;
+}
+.reader-split-pane {
+  height: 100%;
+  min-width: 0;
+  overflow: auto;
+}
+.reader-split-pdf {
+  border-right: 1px solid var(--border, rgba(0, 0, 0, 0.08));
+}
+.reader-split-translation .translation-document {
+  max-width: none;
+  padding: 20px 22px 48px;
+}
+@media (max-width: 960px) {
+  .reader-split {
+    grid-template-columns: 1fr;
+    grid-template-rows: minmax(280px, 1fr) minmax(280px, 1fr);
+  }
+  .reader-split-pdf {
+    border-right: none;
+    border-bottom: 1px solid var(--border, rgba(0, 0, 0, 0.08));
+  }
+}

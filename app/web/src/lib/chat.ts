@@ -1,230 +1,30 @@
-import fs from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { Store, redact } from './store.js';
-import { errorMessage, httpStatus, statusError } from './errors.js';
+import { statusError } from './errors.js';
 import { buildCommands, findCommand, parseCommand, runCommand } from './commands.js';
 import type { CommandInfo, CommandOutcome } from './commands.js';
 import type { SkillRuntime } from './skills.js';
-import type { Library, LibraryPaper } from './library.js';
-import type { JobManager, JobRecord } from './jobs.js';
+import { applyPaperContext, normalizePaperContext } from './chatTypes.js';
+import type {
+  AccountResult, AssistantClient, AttachmentInput, Chat, ChatAttachmentRef, ChatDraftTarget, ChatEvent,
+  ChatFolderAction, ChatHistoryState, ChatMessage, ChatModel, ChatNoteDraft, ChatRole, ChatServiceOptions,
+  ChatStatus, ChatStatusResult, ChatStatusSnapshot, ClientNotification, ClientRequest, DynamicTool, JobRecord,
+  LibraryPaper, ModelListResult, PaperContext, ThreadResult, TurnResult,
+} from './chatTypes.js';
+import { dynamicTools, executeToolCall } from './chatTools.js';
+import {
+  createDocumentDraft, createNoteDraft, draftTarget, proposeFolderDeletes, resolveFolderActions, resolveNoteDraft,
+} from './chatDrafts.js';
+import type { ChatDraftHost, FolderActionResolution } from './chatDrafts.js';
 
-export type ChatRole = 'user' | 'assistant' | 'tool' | 'system';
-export type ChatStatus = 'streaming' | 'completed' | 'interrupted' | 'failed' | 'error' | 'cancelled';
-
-export interface ChatModel {
-  id: string;
-  model: string;
-  displayName: string;
-  isDefault?: boolean;
-}
-
-export interface ChatAttachmentRef {
-  id: string;
-  name: string;
-  mime: string;
-  size: number;
-}
-
-export interface ChatMessage {
-  id: string;
-  role: ChatRole;
-  text: string;
-  thinking?: string;
-  status: ChatStatus;
-  createdAt: string;
-  attachments?: ChatAttachmentRef[];
-  error?: string;
-}
-
-export interface ChatNoteDraft {
-  id: string;
-  paperId: string;
-  paperIds?: string[];
-  target?: ChatDraftTarget;
-  title: string;
-  content: string;
-  source: string;
-  path: string;
-  createdAt: string;
-}
-
-export type ChatDraftTarget = 'notes' | 'synthesis' | 'outputs';
-
-/** 助手发起的分类删除等待用户在聊天中确认；确认前不改动磁盘。 */
-export interface ChatFolderAction {
-  id: string;
-  kind: 'delete';
-  category: string;
-  subcategory?: string;
-  path: string;
-  papers: number;
-  createdAt: string;
-  error?: string;
-}
-
-export interface Chat {
-  id: string;
-  title: string;
-  provider?: string;
-  paperIds: string[];
-  messages: ChatMessage[];
-  noteDrafts: ChatNoteDraft[];
-  folderActions?: ChatFolderAction[];
-  createdAt: string;
-  threadId: string | null;
-  historyState?: ChatHistoryState;
-}
-
-export type ChatHistoryState = 'active' | 'archived' | 'trashed';
-
-export interface ChatEvent {
-  type: string;
-  [key: string]: unknown;
-}
-
-export interface ChatStatusSnapshot {
-  available: boolean;
-  authenticated: boolean;
-  account: { type?: string; email?: string; planType?: string } | null;
-  error: string | null;
-  loading: boolean;
-}
-
-export interface ChatStatusResult extends ChatStatusSnapshot {
-  agents?: { pi: ChatStatusSnapshot & { models?: ChatModel[] } };
-  models?: ChatModel[];
-  defaultProvider?: string;
-}
-
-export interface ThreadResult {
-  thread: { id: string };
-}
-
-export interface TurnResult {
-  turn: { id: string };
-}
-
-export interface AccountResult {
-  account: { type?: string; email?: string; planType?: string } | null;
-  requiresOpenaiAuth?: boolean;
-}
-
-export interface ModelListResult {
-  data: ChatModel[];
-}
-
-export interface AssistantClient {
-  available: boolean;
-  lastError: string | null;
-  start(): Promise<unknown>;
-  request<R>(method: string, params?: Record<string, unknown>, timeout?: number): Promise<R>;
-  respond(id: number, result: unknown): void;
-  respondError(id: number, message: string): void;
-  close(): Promise<void>;
-  on(event: 'notification', listener: (message: ClientNotification) => void): unknown;
-  on(event: 'request', listener: (message: ClientRequest) => void): unknown;
-  on(event: 'disconnected', listener: (error: string) => void): unknown;
-}
-
-export interface ClientNotification {
-  method: string;
-  params?: Record<string, unknown>;
-}
-
-export interface ClientRequest {
-  id: number;
-  method: string;
-  params: Record<string, unknown>;
-}
-
-export interface DynamicTool {
-  type: 'function';
-  name: string;
-  description: string;
-  inputSchema: {
-    type: 'object';
-    properties: Record<string, unknown>;
-    required: string[];
-    additionalProperties: false;
-  };
-}
-
-export interface AttachmentInput extends ChatAttachmentRef {
-  path: string;
-}
-
-export interface ChatServiceOptions {
-  root: string;
-  stateDir: string;
-  library: Pick<Library, 'getPaper' | 'getLibrary' | 'safeFile' | 'readDocument' | 'refresh' |
-    'createCategory' | 'renameCategory' | 'deleteCategory' | 'resolveCategory' | 'movePaper'>;
-  jobs: Pick<JobManager, 'startDownload' | 'startAction' | 'startPaperMove' | 'getJob'>;
-  emit: (event: ChatEvent) => unknown;
-  extract: (file: string, pages?: number[]) => Promise<unknown>;
-  /** 单篇论文文字层检索；由服务端复用 extract.py，避免模型逐页读取。 */
-  searchPdfText?: (file: string, query: string, maxHits?: number) => Promise<unknown>;
-  /** 读取 PDF 内嵌书签，返回页序与目录。 */
-  pdfOutline?: (file: string) => Promise<unknown>;
-  /** 把指定页渲染成 PNG 并返回 base64，用于扫描页、图表和公式。 */
-  renderPage?: (file: string, page: number) => Promise<{
-    data: string; mimeType: string; totalPages: number; page: number;
-  }>;
-  readSkill?: (name: unknown, file?: unknown) => Promise<{ name: string; file: string; text: string }>;
-  /** 斜杠命令与 read_skill 使用的库内技能注册表；未提供时只开放本地命令。 */
-  skills?: SkillRuntime;
-  /** 手动压缩会话上下文；未提供时 /compact 报错。 */
-  compact?: (chatId: string, instructions?: string) => Promise<{ tokensBefore: number; estimatedTokensAfter?: number }>;
-  client: AssistantClient;
-}
-
-/**
- * 选中文献与阅读位置的请求载荷。
- * 命令与普通消息共用同一套校验：`paperIds` 缺省表示保留会话原值，空数组表示清空。
- */
-export interface PaperContext {
-  paperIds?: string[];
-  /** 阅读器当前打开的文献编号；只用于标注“这篇”，不扩大或缩小可选范围。 */
-  activePaperId?: string;
-  /** 阅读器当前物理页；缺省表示尚未打开具体页。 */
-  pdfPage?: number;
-}
-
-const MAX_CONTEXT_PAPERS = 6;
-const PAPER_ID = /^L\d+$/;
-
-/**
- * 校验前端传来的上下文。
- * 非法编号与非正整数的页序按缺失处理，超出上限的编号截断；不抛错，避免脏字段挡住整个回合。
- */
-export function normalizePaperContext(input: unknown): PaperContext {
-  const fields = input && typeof input === 'object' ? input as Record<string, unknown> : {};
-  const ids = Array.isArray(fields.paperIds)
-    ? fields.paperIds.filter((id): id is string => typeof id === 'string' && PAPER_ID.test(id))
-      .slice(0, MAX_CONTEXT_PAPERS)
-    : undefined;
-  const active = typeof fields.activePaperId === 'string' && PAPER_ID.test(fields.activePaperId)
-    ? fields.activePaperId
-    : undefined;
-  const page = typeof fields.pdfPage === 'number' && Number.isSafeInteger(fields.pdfPage) && fields.pdfPage > 0
-    ? fields.pdfPage
-    : undefined;
-  return {
-    ...(ids ? { paperIds: ids } : {}),
-    ...(active ? { activePaperId: active } : {}),
-    ...(page ? { pdfPage: page } : {}),
-  };
-}
-
-/**
- * 把显式提供的 paperIds 写回会话记录。
- * 只有请求带 paperIds 时才覆盖，返回是否发生改动，调用方据此决定是否落盘；阅读位置属于单轮状态，不写进 chats.json。
- */
-function applyPaperContext(chat: Chat, context: PaperContext): boolean {
-  if (!context.paperIds || context.paperIds.join(' ') === chat.paperIds.join(' ')) return false;
-  chat.paperIds = context.paperIds;
-  return true;
-}
+export { normalizePaperContext, dynamicTools };
+export type {
+  AccountResult, AssistantClient, AttachmentInput, Chat, ChatAttachmentRef, ChatDraftTarget, ChatEvent,
+  ChatFolderAction, ChatHistoryState, ChatMessage, ChatModel, ChatNoteDraft, ChatRole, ChatServiceOptions,
+  ChatStatus, ChatStatusResult, ChatStatusSnapshot, ClientNotification, ClientRequest, DynamicTool, JobRecord,
+  LibraryPaper, ModelListResult, PaperContext, ThreadResult, TurnResult,
+};
 
 interface ActiveTurn {
   message: ChatMessage;
@@ -251,8 +51,6 @@ interface TurnInput {
   path?: string;
 }
 
-const stringSchema = { type: 'string' };
-
 // 未配置技能注册表时（旧调用方与测试夹具），命令系统退化为只提供本地命令。
 const emptySkills = (): SkillRuntime => ({
   list: () => [],
@@ -261,124 +59,6 @@ const emptySkills = (): SkillRuntime => ({
   read: () => { throw statusError('尚未启用技能加载。', 400); },
   expand: () => { throw statusError('尚未启用技能加载。', 400); },
 });
-const object = (properties: Record<string, unknown>, required: string[] = []): DynamicTool['inputSchema'] =>
-  ({ type: 'object', properties, required, additionalProperties: false });
-
-// 草稿文件名去掉路径分隔符、通配符和控制字符，保留中文题名；L 编号前缀同时避开 Windows 保留名。
-const noteRelative = (paperId: string, title: string): string => {
-  const safe = String(title).replace(/[\\/:*?"<>|%#?\x00-\x1f]/g, '_').replace(/\s+/g, ' ').trim()
-    .replace(/[. ]+$/, '').slice(0, 80) || '论文笔记';
-  return `notes/${paperId}_${safe}.md`;
-};
-
-const reservedName = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?$/i;
-const documentRelative = (target: 'synthesis' | 'outputs', title: string): string => {
-  const safe = String(title).replace(/[\\/:*?"<>|%#?\x00-\x1f]/g, '_').replace(/\s+/g, ' ').trim()
-    .replace(/[. ]+$/, '').slice(0, 80) || '未命名文稿';
-  return `${target}/${reservedName.test(safe) ? `_${safe}` : safe}.md`;
-};
-
-export const dynamicTools: DynamicTool[] = [
-  { type: 'function', name: 'library_search', description: '按题名、作者、文献编号或DOI搜索本地文献库，返回真实归档信息。', inputSchema: object({ query: stringSchema }, ['query']) },
-  {
-    type: 'function', name: 'read_library_doc',
-    description: '读取库内 README、notes/、synthesis/、outputs/ 的 Markdown 或文本，支持 offset/limit 分段。不能读取论文 PDF；PDF 用 read_paper_pages。',
-    inputSchema: object({
-      path: stringSchema,
-      offset: { type: 'integer', minimum: 0 },
-      limit: { type: 'integer', minimum: 1, maximum: 120000 },
-    }, ['path']),
-  },
-  {
-    type: 'function', name: 'paper_outline',
-    description: '返回指定论文的总页数、书目元信息和 PDF 内嵌目录。没有书签时 outline 为空，仍需按页读取核对。',
-    inputSchema: object({ paperId: stringSchema }, ['paperId']),
-  },
-  {
-    type: 'function', name: 'search_paper_text',
-    description: '在单篇论文的文字层中检索关键词，返回命中页、次数和片段。片段只用于定位，不能替代整页核对。',
-    inputSchema: object({
-      paperId: stringSchema,
-      query: stringSchema,
-      maxHits: { type: 'integer', minimum: 1, maximum: 20 },
-    }, ['paperId', 'query']),
-  },
-  { type: 'function', name: 'read_paper_pages', description: '读取指定本地论文的PDF物理页。每次最多12页，返回逐页文本与扫描页提示；不得把局部读取称为全文阅读。', inputSchema: object({ paperId: stringSchema, pages: { type: 'array', items: { type: 'integer', minimum: 1 }, maxItems: 12 } }, ['paperId', 'pages']) },
-  {
-    type: 'function', name: 'render_paper_page',
-    description: '把指定 PDF 物理页渲染成图片，用于扫描页、图表和公式。每次只渲染一页；图片不替代文字核对。',
-    inputSchema: object({
-      paperId: stringSchema,
-      page: { type: 'integer', minimum: 1 },
-    }, ['paperId', 'page']),
-  },
-  {
-    type: 'function', name: 'library_categories',
-    description: '列出 papers/ 下的分类与子文件夹及各级文献数。改名、删除、移动文献前先用它核对真实目录名。',
-    inputSchema: object({}),
-  },
-  {
-    type: 'function', name: 'create_category',
-    description: '新建分类文件夹，直接执行。parent 为已有顶层分类目录名时创建子文件夹；名称会自动加两位编号，不能包含 / \\ : * ? " < > |。',
-    inputSchema: object({ name: stringSchema, parent: stringSchema }, ['name']),
-  },
-  {
-    type: 'function', name: 'rename_category',
-    description: '重命名已有分类或子文件夹，直接执行并保留编号前缀；会同步README、来源记录、文本引用、批次台账和索引。',
-    inputSchema: object({ category: stringSchema, name: stringSchema, subcategory: stringSchema }, ['category', 'name']),
-  },
-  {
-    type: 'function', name: 'delete_category',
-    description: '删除空分类或空子文件夹。只接受空文件夹，执行时移入 .zhiyue/trash/categories 可找回；本工具只生成待确认操作，返回pending_confirmation后必须等用户在界面确认，不得声称已删除。',
-    inputSchema: object({ category: stringSchema, subcategory: stringSchema }, ['category']),
-  },
-  {
-    type: 'function', name: 'delete_categories',
-    description: '把多个空文件夹加入同一张待确认卡片。用户确认后才移入回收站。路径可含子文件夹。',
-    inputSchema: object({ categories: { type: 'array', items: stringSchema, minItems: 1, maxItems: 50 } }, ['categories']),
-  },
-  {
-    type: 'function', name: 'move_paper',
-    description: '把一篇已归档文献及其来源记录移到另一个已存在分类，直接执行；会同步README链接、笔记与成果中的路径、批次台账和索引。目标分类先用library_categories确认，不存在时先create_category。',
-    inputSchema: object({ paperId: stringSchema, category: stringSchema }, ['paperId', 'category']),
-  },
-  {
-    type: 'function', name: 'move_papers',
-    description: '按目标分类分组批量移动已归档文献，最多 1000 个明确的 L 编号。已明确授权时提交一次。通过 get_download_status 查看实际结果。',
-    inputSchema: object({ groups: {
-      type: 'array', minItems: 1, maxItems: 1000,
-      items: object({ category: stringSchema, paperIds: {
-        type: 'array', items: stringSchema, minItems: 1, maxItems: 1000,
-      } }, ['category', 'paperIds']),
-    } }, ['groups']),
-  },
-  { type: 'function', name: 'download_papers', description: '用户要求下载时调用统一文献工具：查重、下载、核验并归档已通过验证的文件。返回后台任务ID；排队不等于已下载，请据状态报告。category为papers/下的相对归档目录；不传则归入情感综述调研/网站导入。IEEE可使用已有机构工具，需登录时由用户完成。', inputSchema: object({ input: stringSchema, channel: { type: 'string', enum: ['public', 'auto', 'ieee'] }, category: stringSchema }, ['input']) },
-  { type: 'function', name: 'continue_download_batch', description: '续跑已有下载批次，或核验、归档、收集本批次机构下载文件。IEEE操作默认仅准备队列，用户要求实际机构获取时才传submit=true。不能将待人工核对的文件标记为核验通过。', inputSchema: object({ batch: stringSchema, action: { type: 'string', enum: ['download', 'verify', 'archive', 'ieee', 'collect'] }, submit: { type: 'boolean' } }, ['batch', 'action']) },
-  { type: 'function', name: 'get_download_status', description: '查看文献下载任务的实际进度、日志及批次统计。', inputSchema: object({ jobId: stringSchema }, ['jobId']) },
-  {
-    type: 'function',
-    name: 'read_skill',
-    description: '读取文献库 .zhiyue/skills 下已加载技能的说明（SKILL.md）或技能目录内的 .md/.txt 附件。任务与技能描述匹配时先调用它，再按步骤执行；不要用它读取其他文件。',
-    inputSchema: object({ name: stringSchema, file: stringSchema }, ['name']),
-  },
-  {
-    type: 'function',
-    name: 'draft_note',
-    description: '把论文笔记草稿提交到网站，由用户在聊天中预览并确认后才写入 notes/。paperId 为 L 编号，title 为笔记标题，content 为完整 Markdown 正文（不要重复标题）。本工具不直接写文件；不得声称已保存，除非工具返回 saved。',
-    inputSchema: object({ paperId: stringSchema, title: stringSchema, content: stringSchema }, ['paperId', 'title', 'content']),
-  },
-  {
-    type: 'function',
-    name: 'draft_document',
-    description: '把跨文献综合或成果草稿提交到 synthesis/ 或 outputs/，由用户在聊天中预览并确认后才写入。paperIds 可选，用于关联文献；本工具不直接写文件，用户确认前不得声称已保存。',
-    inputSchema: object({
-      target: { type: 'string', enum: ['synthesis', 'outputs'] },
-      title: stringSchema,
-      content: stringSchema,
-      paperIds: { type: 'array', items: stringSchema, maxItems: 20 },
-    }, ['target', 'title', 'content']),
-  },
-];
 
 export class ChatService {
   readonly root: string;
@@ -395,7 +75,7 @@ export class ChatService {
   readonly store: Store<{ chats: Chat[] }>;
   readonly client: AssistantClient;
   private readonly runningCommands = new Set<string>();
-  private readonly resolvingFolders = new Set<string>();
+  readonly resolvingFolders = new Set<string>();
   loaded: Set<string>;
   active: Map<string, ActiveTurn>;
   approvals: Map<string, ApprovalRecord>;
@@ -448,6 +128,18 @@ export class ChatService {
     });
   }
 
+  private draftHost(): ChatDraftHost {
+    return {
+      root: this.root,
+      library: this.library,
+      store: this.store,
+      emit: this.emit,
+      resolvingFolders: this.resolvingFolders,
+      get: (id) => this.get(id),
+      writableChat: (id) => this.writableChat(id),
+    };
+  }
+
   status(): ChatStatusSnapshot {
     return {
       available: this.client.available, authenticated: this.authenticated, account: this.account,
@@ -467,7 +159,9 @@ export class ChatService {
       try {
         const models = await this.client.request<ModelListResult>('model/list', {}, 15000);
         this.models = models.data || [];
-      } catch { this.models = []; }
+      } catch {
+        this.models = [];
+      }
       return this.status();
     })().finally(() => {
       this.connecting = undefined;
@@ -564,7 +258,6 @@ export class ChatService {
     if (!parsed) throw statusError('请以斜杠开头输入命令。');
     const command = findCommand(this.commands(), parsed.name);
     if (!command) throw statusError(`未知命令：/${parsed.name}。发送 /help 查看可用命令。`, 404);
-    // /compact 依赖已有会话上下文；未开始的会话先给出行内提示。
     if (command.target) throw statusError('请从助手界面的斜杠命令菜单运行此命令。', 400);
     if (command.name === 'compact' && !chat.threadId) {
       throw statusError('当前会话还没有上下文，先提问或改用其他命令。', 409);
@@ -601,7 +294,6 @@ export class ChatService {
         createdAt: new Date().toISOString(), status: 'completed',
       };
       chat.messages.push(message);
-      // 回执以已完成消息推送，前端按 message 事件并入当前会话。
       this.updateMessage(chatId, message);
       return { kind: 'local', chatId, text: outcome.result.text };
     }
@@ -618,18 +310,17 @@ export class ChatService {
   async send(chatId: string, { text = '', paperIds, activePaperId, pdfPage, attachments = [], model, promptOverride }: {
     text?: string;
     paperIds?: string[];
-    /** 阅读器当前打开的文献编号，仅用于本轮提示定位。 */
     activePaperId?: string;
-    /** 阅读器当前物理页，仅用于本轮提示定位。 */
     pdfPage?: number;
     attachments?: AttachmentInput[];
     model?: string;
-    /** 实际发给模型的正文；技能命令用它替换界面上那行单行指令。 */
     promptOverride?: string;
   }): Promise<{ accepted: true }> {
     const chat = this.writableChat(chatId);
     this.assertIdle(chatId);
-    if (typeof text !== 'string' || text.length > 50000 || (!text.trim() && !attachments.length)) throw statusError('请输入问题或添加附件。');
+    if (typeof text !== 'string' || text.length > 50000 || (!text.trim() && !attachments.length)) {
+      throw statusError('请输入问题或添加附件。');
+    }
     if (model && !/^[\w./:-]{1,100}$/.test(model)) throw statusError('模型名称不合法。');
     const incoming = normalizePaperContext({ paperIds, activePaperId, pdfPage });
     if (applyPaperContext(chat, incoming)) this.store.save();
@@ -656,8 +347,10 @@ export class ChatService {
     return { accepted: true };
   }
 
-  async run(chat: Chat, text: string, attachments: AttachmentInput[], model: string | undefined, active: ActiveTurn,
-    context: PaperContext = {}): Promise<void> {
+  async run(
+    chat: Chat, text: string, attachments: AttachmentInput[], model: string | undefined, active: ActiveTurn,
+    context: PaperContext = {},
+  ): Promise<void> {
     const current = (): boolean => this.active.get(chat.id) === active && !active.cancelled;
     if (!this.client.available || !this.authenticated) await this.connect();
     if (!current()) return;
@@ -685,7 +378,6 @@ export class ChatService {
           文献编号: id, 题名: paper.title, 版本: paper.version,
           原文路径: path.join(this.root, paper.file), 笔记: paper.notes,
         };
-        // 页数让模型知道还有多少页未读，避免把局部读取当成全文。
         if (typeof paper.pages === 'number' && Number.isSafeInteger(paper.pages) && paper.pages > 0) {
           record.页数 = paper.pages;
         }
@@ -696,7 +388,6 @@ export class ChatService {
         selected.push(record);
       }
     }
-    // 用户说“这篇”时指向阅读器当前的文献与页；只在当前文献确实在选中范围内时提示，避免引用未提供的编号。
     const reading = context.activePaperId && chat.paperIds.includes(context.activePaperId)
       ? `\n\n阅读器当前打开 ${context.activePaperId}${context.pdfPage ? ` 第 ${context.pdfPage} 页` : ''}。`
         + '用户说“这篇”时指该文献；读取原文用 read_paper_pages，先读当前页与第 1 页、末页，并说明实际阅读范围。'
@@ -763,7 +454,6 @@ export class ChatService {
       this.emit({ type: 'delta', chatId: chat.id, messageId: active.message.id, delta: separator + (p.delta || '') });
       active.lastItem = p.itemId;
     } else if (method === 'item/agentMessage/thinking') {
-      // 推理文本随消息保存，刷新后仍可在列表中展开查看；多轮工具调用之间用空行分隔。
       const separator = !active.thinkingItems.has(p.itemId as string) && active.message.thinking ? '\n\n' : '';
       const delta = separator + String(p.delta || '');
       active.thinkingItems.set(p.itemId as string, true);
@@ -775,7 +465,6 @@ export class ChatService {
         active.message.text += (active.message.text ? '\n\n' : '') + (item.text || '');
         active.items.set(item.id, true);
       }
-      // 最终消息里的推理块是权威内容，只补上整段未收到增量的情况。
       if (item.thinking && !active.thinkingItems.has(item.id)) {
         const separator = active.message.thinking ? '\n\n' : '';
         active.message.thinking = (active.message.thinking || '') + separator + item.thinking;
@@ -831,256 +520,29 @@ export class ChatService {
   }
 
   createNoteDraft(
-    chatId: string, { paper, title, content }: { paper: LibraryPaper; title: string; content: string },
+    chatId: string, input: { paper: LibraryPaper; title: string; content: string },
   ): ChatNoteDraft {
-    const chat = this.get(chatId);
-    const clean = String(title).replace(/\s+/g, ' ').trim();
-    const draft: ChatNoteDraft = {
-      id: randomUUID(), paperId: paper.id, paperIds: [paper.id], target: 'notes',
-      title: clean, content, source: paper.file,
-      path: noteRelative(paper.id, clean), createdAt: new Date().toISOString(),
-    };
-    chat.noteDrafts.push(draft);
-    this.store.save();
-    this.emit({ type: 'noteDraft', chatId, draft });
-    return draft;
+    return createNoteDraft(this.draftHost(), chatId, input);
   }
 
-  async createDocumentDraft(chatId: string, { target, title, content, paperIds }: {
+  createDocumentDraft(chatId: string, input: {
     target: 'synthesis' | 'outputs'; title: string; content: string; paperIds?: string[];
   }): Promise<ChatNoteDraft> {
-    const chat = this.get(chatId);
-    if (!['synthesis', 'outputs'].includes(target)) throw new Error('文稿目录只能是 synthesis 或 outputs。');
-    const ids = [...new Set((paperIds ?? []).map(String))];
-    if (ids.length > 20 || ids.some((id) => !/^L\d+$/.test(id))) throw new Error('文献编号无效，最多关联20篇。');
-    const papers: LibraryPaper[] = [];
-    for (const id of ids) {
-      const paper = await this.library.getPaper(id);
-      if (!paper) throw new Error(`文献不存在：${id}`);
-      papers.push(paper);
-    }
-    const clean = String(title).replace(/\s+/g, ' ').trim();
-    const draft: ChatNoteDraft = {
-      id: randomUUID(), paperId: papers[0]?.id ?? '', paperIds: ids, target,
-      title: clean, content, source: papers.map((paper) => paper.file).join('、'),
-      path: documentRelative(target, clean), createdAt: new Date().toISOString(),
-    };
-    chat.noteDrafts.push(draft);
-    this.store.save();
-    this.emit({ type: 'noteDraft', chatId, draft });
-    return draft;
+    return createDocumentDraft(this.draftHost(), chatId, input);
   }
 
-  async draftTarget(relative: string): Promise<string> {
-    const root = await fs.realpath(this.root);
-    const target = relative.split('/')[0] as string;
-    if (!['notes', 'synthesis', 'outputs'].includes(target)) throw new Error('草稿目录不在文献工作区内，拒绝写入。');
-    const directory = path.join(root, target);
-    await fs.mkdir(directory, { recursive: true });
-    const resolved = await fs.realpath(directory);
-    const within = path.relative(root, resolved);
-    if (within.startsWith('..') || path.isAbsolute(within)) throw new Error('草稿目录不在文献工作区内，拒绝写入。');
-    return path.join(resolved, path.basename(relative));
+  draftTarget(relative: string): Promise<string> {
+    return draftTarget(this.root, relative);
   }
 
-  async resolveNoteDraft(
+  resolveNoteDraft(
     id: string, action: unknown,
   ): Promise<{ saved: true; path: string | undefined } | { discarded: true }> {
-    if (!['save', 'discard'].includes(action as string)) throw new Error('请指定保存或丢弃。');
-    let owner: Chat | undefined;
-    for (const chat of this.store.data.chats) {
-      if ((chat.noteDrafts || []).some((d) => d.id === id)) { owner = chat; break; }
-    }
-    const draft = owner?.noteDrafts.find((d) => d.id === id);
-    if (!owner || !draft) throw statusError('草稿不存在或已处理。', 404);
-    this.writableChat(owner.id);
-    let savedPath: string | undefined;
-    if (action === 'save') {
-      const target = draft.target ?? 'notes';
-      const relative = draft.path || (target === 'notes'
-        ? noteRelative(draft.paperId, draft.title)
-        : documentRelative(target, draft.title));
-      const base = await this.draftTarget(relative);
-      const ext = path.extname(base);
-      const stem = base.slice(0, -ext.length);
-      const heading = String(draft.content).trimStart().startsWith('# ') ? '' : `# ${draft.title}\n\n`;
-      const date = new Date().toISOString().slice(0, 10);
-      let meta: string;
-      if (target === 'notes') {
-        const paper = await this.library.getPaper(draft.paperId);
-        if (!paper) throw new Error('文献不存在，无法保存笔记。');
-        meta = `> 文献编号：${draft.paperId}  \n> 原文：\`${paper.file}\`  \n> 整理日期：${date}  \n> 来源：Pi Agent 生成，经用户确认保存\n\n`;
-      } else {
-        const ids = draft.paperIds?.length ? draft.paperIds : (draft.paperId ? [draft.paperId] : []);
-        const source = draft.source ? `  \n> 关联原文：\`${draft.source}\`` : '';
-        meta = `> 文献编号：${ids.join('、') || '未关联'}${source}  \n> 整理日期：${date}  \n> 来源：Pi Agent 生成，经用户确认保存\n\n`;
-      }
-      const text = `${heading}${meta}${String(draft.content).trim()}\n`;
-      let file = base;
-      let index = 1;
-      for (;;) {
-        try {
-          await fs.writeFile(file, text, { encoding: 'utf8', flag: 'wx', mode: 0o600 });
-          break;
-        } catch (error) {
-          if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
-          if (++index > 99) throw statusError('同名草稿过多，请更换标题。', 409);
-          file = `${stem} (${index})${ext}`;
-        }
-      }
-      await this.library.refresh();
-      savedPath = `${target}/${path.basename(file)}`;
-    }
-    owner.noteDrafts = owner.noteDrafts.filter((d) => d.id !== id);
-    this.store.save();
-    this.emit({ type: 'noteDraftResolved', id, chatId: owner.id, path: savedPath });
-    return action === 'save' ? { saved: true, path: savedPath } : { discarded: true };
+    return resolveNoteDraft(this.draftHost(), id, action);
   }
 
-  private async proposeFolderDeletes(chat: Chat, values: unknown): Promise<Record<string, unknown>> {
-    if (!Array.isArray(values) || !values.length || values.length > 50) {
-      throw statusError('请指定 1 至 50 个要删除的文件夹。');
-    }
-    const targets = new Map<string, Awaited<ReturnType<Library['resolveCategory']>>>();
-    for (const value of values) {
-      const target = await this.library.resolveCategory(value);
-      targets.set(target.path, target);
-    }
-    const { categories } = await this.library.getLibrary();
-    const pending = chat.folderActions ?? [];
-    const byPath = new Map(pending.map((item) => [item.path, item]));
-    const added: ChatFolderAction[] = [];
-    const proposed = [...targets.values()].map((target) => {
-      const existing = byPath.get(target.path);
-      if (existing) return existing;
-      const top = categories.find((category) => category.id === target.category);
-      const node = target.subcategory
-        ? top?.children.find((child) => child.id === `${target.category}/${target.subcategory}`) : top;
-      const item: ChatFolderAction = {
-        id: randomUUID(), kind: 'delete', ...target, papers: node?.count ?? 0,
-        createdAt: new Date().toISOString(),
-      };
-      added.push(item);
-      return item;
-    });
-    if (added.length) {
-      if (pending.length + added.length > 50) throw statusError('请先处理已有的待确认文件夹。', 409);
-      chat.folderActions = [...pending, ...added];
-      this.store.save();
-      for (const item of added) this.emit({ type: 'folderAction', chatId: chat.id, action: item });
-    }
-    return {
-      status: 'pending_confirmation',
-      items: proposed.map(({ id, path, papers }) => ({ actionId: id, path, papers })),
-      message: '等待用户在界面确认。',
-    };
-  }
-
-  /** 按点击时提交的 ID 快照处理。子目录先执行，失败项留在当前会话。 */
-  async resolveFolderActions(chatId: string, action: unknown, ids: unknown): Promise<{
-    applied: string[]; discarded: string[]; failed: Array<{ id: string; path: string; error: string }>;
-    remaining: string[];
-  }> {
-    if (action !== 'apply' && action !== 'discard') throw statusError('请指定确认或取消。');
-    if (!Array.isArray(ids) || !ids.length ||
-      !ids.every((id) => typeof id === 'string' && /^[\w-]{1,100}$/.test(id))) {
-      throw statusError('请选择待确认的文件夹。');
-    }
-    const chat = this.writableChat(chatId);
-    if (this.resolvingFolders.has(chatId)) throw statusError('文件夹删除正在处理，请稍候。', 409);
-    const byId = new Map((chat.folderActions ?? []).map((item) => [item.id, item]));
-    const items = [...new Set<string>(ids)].map((id) => {
-      const item = byId.get(id);
-      if (!item) throw statusError('待确认的文件夹操作不存在或已处理。', 404);
-      return item;
-    });
-    items.sort((a, b) => Number(Boolean(b.subcategory)) - Number(Boolean(a.subcategory)));
-    const result: Awaited<ReturnType<ChatService['resolveFolderActions']>> = {
-      applied: [], discarded: [], failed: [], remaining: [],
-    };
-    const remove = (selected: ChatFolderAction[], applied: boolean): void => {
-      const resolved = new Set(selected.map(({ id }) => id));
-      chat.folderActions = chat.folderActions!.filter((current) => !resolved.has(current.id));
-      this.store.save();
-      for (const { id } of selected) this.emit({ type: 'folderActionResolved', id, chatId, applied });
-    };
-    const grouped = new Map<string, ChatFolderAction[]>();
-    for (const item of items) {
-      const selected = grouped.get(item.path);
-      if (selected) selected.push(item);
-      else grouped.set(item.path, [item]);
-    }
-    const groups = [...grouped.values()];
-    this.resolvingFolders.add(chatId);
-    try {
-      if (action === 'discard') {
-        remove(items, false);
-        result.discarded = items.map(({ id }) => id);
-        return result;
-      }
-      for (const [index, selected] of groups.entries()) {
-        const item = selected[0]!;
-        try {
-          await this.library.deleteCategory(item.category, item.subcategory ?? '');
-        } catch (error) {
-          const uncertain = httpStatus(error, 500) >= 500;
-          const detail = redact(errorMessage(error));
-          for (const pending of selected) {
-            pending.error = uncertain ? `请核实文件夹状态。${detail}` : detail;
-            result.failed.push({ id: pending.id, path: pending.path, error: pending.error });
-          }
-          this.store.save();
-          for (const pending of selected) this.emit({ type: 'folderAction', chatId, action: pending });
-          if (uncertain) {
-            result.remaining = groups.slice(index + 1).flat().map(({ id }) => id);
-            break;
-          }
-          continue;
-        }
-        result.applied.push(...selected.map(({ id }) => id));
-        remove(selected, true);
-      }
-      return result;
-    } finally {
-      this.resolvingFolders.delete(chatId);
-      if (result.applied.length || result.remaining.length || result.failed.length) this.emit({ type: 'library' });
-    }
-  }
-
-  private async queuePaperMoves(groups: unknown): Promise<JobRecord> {
-    if (!Array.isArray(groups) || !groups.length || groups.length > 1000) {
-      throw statusError('请按实际目标分类分组，并明确列出要移动的文献编号。');
-    }
-    const entries: Array<{ category: string; ids: string[] }> = [];
-    let count = 0;
-    for (const group of groups) {
-      if (!group || typeof group.category !== 'string' || !Array.isArray(group.paperIds) || !group.paperIds.length) {
-        throw statusError('每组须指定一个目标分类和至少一个文献编号。');
-      }
-      count += group.paperIds.length;
-      if (count > 1000) throw statusError('每次最多提交 1000 个文献编号。');
-      const ids = group.paperIds.map((value: unknown) => {
-        const id = typeof value === 'string' ? value.trim().toUpperCase() : '';
-        if (!PAPER_ID.test(id) || id.length > 32) throw statusError(`无效的文献编号：${String(value).slice(0, 80)}`);
-        return id;
-      });
-      entries.push({ category: group.category, ids });
-    }
-    const moves = new Map<string, string>();
-    const targets = new Map<string, string>();
-    for (const { category, ids } of entries) {
-      let target = targets.get(category);
-      if (!target) {
-        target = (await this.library.resolveCategory(category)).path;
-        targets.set(category, target);
-      }
-      for (const id of ids) {
-        const existing = moves.get(id);
-        if (existing && existing !== target) throw statusError(`${id} 同时指定了两个不同的目标分类。`);
-        moves.set(id, target);
-      }
-    }
-    return this.jobs.startPaperMove([...moves].map(([paperId, category]) => ({ paperId, category })));
+  resolveFolderActions(chatId: string, action: unknown, ids: unknown): Promise<FolderActionResolution> {
+    return resolveFolderActions(this.draftHost(), chatId, action, ids);
   }
 
   async serverRequest(message: ClientRequest): Promise<void> {
@@ -1092,150 +554,24 @@ export class ChatService {
         return this.client.respond(rpcId, { success: false, contentItems: [{ type: 'inputText', text: '会话已结束。' }] });
       }
       try {
-        const args = typeof p.arguments === 'string' ? JSON.parse(p.arguments) as Record<string, unknown> : p.arguments as Record<string, unknown>;
+        const args = typeof p.arguments === 'string'
+          ? JSON.parse(p.arguments) as Record<string, unknown>
+          : p.arguments as Record<string, unknown>;
         const tool = String(p.tool ?? '');
-        const paperFor = async (value: unknown): Promise<LibraryPaper> => {
-          const paper = await this.library.getPaper(String(value ?? ''));
-          if (!paper) throw new Error('文献不存在。');
-          return paper;
-        };
-        let result: unknown;
-        if (tool === 'library_search') {
-          const lib = await this.library.getLibrary();
-          const q = String(args.query || '').toLocaleLowerCase();
-          result = lib.papers
-            .filter((x) => JSON.stringify([x.literature_id, x.title, x.titleZh, x.authors, x.doi]).toLocaleLowerCase().includes(q))
-            .slice(0, 20)
-            .map(({ literature_id, title, year, doi, file, notes }) => ({ literature_id, title, year, doi, file, notes }));
-        } else if (tool === 'read_library_doc') {
-          result = await this.library.readDocument(args.path, args.offset, args.limit);
-        } else if (tool === 'paper_outline') {
-          if (!this.pdfOutline) throw new Error('当前助手未启用目录读取。');
-          const paper = await paperFor(args.paperId);
-          result = await this.pdfOutline(await this.library.safeFile(paper.file));
-        } else if (tool === 'search_paper_text') {
-          if (!this.searchPdfText) throw new Error('当前助手未启用全文检索。');
-          const query = String(args.query ?? '').trim();
-          if (!query || query.length > 200) throw new Error('检索词须为1至200个字符。');
-          const maxHits = args.maxHits === undefined ? 20 : args.maxHits;
-          if (!Number.isSafeInteger(maxHits) || (maxHits as number) < 1 || (maxHits as number) > 20) {
-            throw new Error('命中数量须为1至20。');
-          }
-          const paper = await paperFor(args.paperId);
-          result = await this.searchPdfText(await this.library.safeFile(paper.file), query, maxHits as number);
-        } else if (tool === 'read_paper_pages') {
-          const pages = args.pages;
-          if (!Array.isArray(pages) || !pages.length || pages.length > 12 || !pages.every(Number.isSafeInteger)) {
-            throw new Error('请指定1至12个PDF物理页序。');
-          }
-          const paper = await paperFor(args.paperId);
-          result = await this.extract(await this.library.safeFile(paper.file), pages as number[]);
-        } else if (tool === 'render_paper_page') {
-          if (!this.renderPage) throw new Error('当前助手未启用页面渲染。');
-          const page = args.page;
-          if (!Number.isSafeInteger(page) || (page as number) < 1) throw new Error('请指定正整数PDF页序。');
-          const paper = await paperFor(args.paperId);
-          const rendered = await this.renderPage(await this.library.safeFile(paper.file), page as number);
-          this.client.respond(rpcId, {
-            success: true,
-            contentItems: [
-              {
-                type: 'inputText',
-                text: JSON.stringify({
-                  paperId: paper.id, file: paper.file, page: rendered.page, totalPages: rendered.totalPages,
-                  mimeType: rendered.mimeType,
-                  note: '这是PDF页面图像，用于扫描页、图表和公式；引用前仍需核对文字与页码。',
-                }),
-              },
-              { type: 'inputImage', data: rendered.data, mimeType: rendered.mimeType },
-            ],
-          });
-          return;
-        } else if (tool === 'library_categories') {
-          const lib = await this.library.getLibrary();
-          result = {
-            categories: lib.categories.map((category) => ({
-              id: category.id, name: category.id.replace(/^\d+_/, ''), count: category.count,
-              children: category.children.map((child) => ({
-                id: child.id.split('/').pop(),
-                name: child.id.split('/').pop()?.replace(/^\d+_/, ''),
-                count: child.count,
-              })),
-            })),
-          };
-        } else if (tool === 'create_category') {
-          const created = await this.library.createCategory(args.name, args.parent);
-          this.emit({ type: 'library' });
-          result = { ...created, path: `papers/${[created.category, created.subcategory].filter(Boolean).join('/')}` };
-        } else if (tool === 'rename_category') {
-          const value = args.subcategory
-            ? `${String(args.category ?? '')}/${String(args.subcategory)}` : args.category;
-          const target = await this.library.resolveCategory(value);
-          const renamed = await this.library.renameCategory(target.category, target.subcategory, args.name);
-          this.emit({ type: 'library' });
-          result = { ...(renamed as Record<string, unknown>), previous: target.path };
-        } else if (tool === 'delete_category') {
-          const value = args.subcategory
-            ? `${String(args.category ?? '')}/${String(args.subcategory)}` : args.category;
-          result = await this.proposeFolderDeletes(chat, [value]);
-        } else if (tool === 'delete_categories') {
-          result = await this.proposeFolderDeletes(chat, args.categories);
-        } else if (tool === 'move_paper') {
-          result = await this.library.movePaper(args.paperId, args.category);
-          this.emit({ type: 'library' });
-        } else if (tool === 'move_papers') {
-          const { id, status, title } = await this.queuePaperMoves(args.groups);
-          result = { id, status, title, message: '已提交任务，请使用 get_download_status 核对实际移动结果。' };
-        } else if (tool === 'download_papers') {
-          result = await this.jobs.startDownload({
-            input: args.input,
-            channel: typeof args.channel === 'string' ? args.channel : 'public',
-            autoArchive: true,
-            ...(args.category ? { category: String(args.category) } : {}),
-          });
-        } else if (tool === 'continue_download_batch') {
-          result = await this.jobs.startAction({
-            batch: String(args.batch ?? ''),
-            action: args.action as 'download' | 'verify' | 'archive' | 'ieee' | 'collect',
-            submit: (args.submit ?? false) as boolean,
-          });
-        } else if (tool === 'get_download_status') {
-          result = this.jobs.getJob(String(args.jobId ?? ''));
-        } else if (tool === 'read_skill') {
-          if (!this.readSkill) throw new Error('当前助手未启用技能加载。');
-          result = await this.readSkill(args.name, args.file);
-        } else if (tool === 'draft_note') {
-          const paper = await this.library.getPaper(String(args.paperId || ''));
-          if (!paper) throw new Error('文献不存在，无法创建笔记草稿。');
-          const title = String(args.title || '').trim();
-          const content = String(args.content || '');
-          if (!title || title.length > 100) throw new Error('笔记标题须为1至100个字符。');
-          if (!content.trim() || content.length > 200000) throw new Error('笔记正文不能为空且不能超过20万字符。');
-          const draft = this.createNoteDraft(chat.id, { paper, title, content });
-          result = {
-            status: 'pending_confirmation', draftId: draft.id, path: draft.path,
-            message: '笔记草稿已显示在聊天中，等待用户确认保存。',
-          };
-        } else if (tool === 'draft_document') {
-          const target = String(args.target ?? '');
-          if (target !== 'synthesis' && target !== 'outputs') throw new Error('文稿目录只能是 synthesis 或 outputs。');
-          const title = String(args.title || '').trim();
-          const content = String(args.content || '');
-          const ids = args.paperIds === undefined ? [] : args.paperIds;
-          if (!title || title.length > 100) throw new Error('文稿标题须为1至100个字符。');
-          if (!content.trim() || content.length > 200000) throw new Error('文稿正文不能为空且不能超过20万字符。');
-          if (!Array.isArray(ids) || ids.length > 20 || !ids.every((id) => typeof id === 'string')) {
-            throw new Error('关联文献须为最多20个L编号。');
-          }
-          const draft = await this.createDocumentDraft(chat.id, {
-            target, title, content, paperIds: ids as string[],
-          });
-          result = {
-            status: 'pending_confirmation', draftId: draft.id, path: draft.path, target,
-            message: '文稿草稿已显示在聊天中，等待用户确认保存。',
-          };
-        } else throw new Error('未知的文献工具。');
-        this.client.respond(rpcId, { success: true, contentItems: [{ type: 'inputText', text: JSON.stringify(result) }] });
+        const contentItems = await executeToolCall({
+          library: this.library,
+          jobs: this.jobs,
+          emit: this.emit,
+          extract: this.extract,
+          searchPdfText: this.searchPdfText,
+          pdfOutline: this.pdfOutline,
+          renderPage: this.renderPage,
+          readSkill: this.readSkill,
+          createNoteDraft: (chatId, input) => this.createNoteDraft(chatId, input),
+          createDocumentDraft: (chatId, input) => this.createDocumentDraft(chatId, input),
+          proposeFolderDeletes: (targetChat, values) => proposeFolderDeletes(this.draftHost(), targetChat, values),
+        }, chat, tool, args);
+        this.client.respond(rpcId, { success: true, contentItems });
       } catch (error) {
         this.client.respond(rpcId, { success: false, contentItems: [{ type: 'inputText', text: redact((error as Error).message) }] });
       }
@@ -1268,5 +604,3 @@ export class ChatService {
     return { resolved: true };
   }
 }
-
-export type { JobRecord, LibraryPaper };

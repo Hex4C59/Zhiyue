@@ -5,29 +5,11 @@ import path from 'node:path';
 import { libraryPaths } from './paths.js';
 import { appPaths } from './appPaths.js';
 import { statusError } from './errors.js';
-import { DEFAULT_PDF_PREVIEW_SCALE, PDF_PREVIEW_SCALES } from './pdfScales.js';
-import type { PDFPreviewScale } from './pdfScales.js';
+import { DEFAULT_PDF_PREVIEW_SCALE, PDF_PREVIEW_SCALES } from '../../shared/pdfScales.js';
+import type { PDFPreviewScale } from '../../shared/pdfScales.js';
+import type { TextLayer, TextLine, TextWord } from '../../shared/contracts.js';
 
-export interface TextWord {
-  text: string;
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-  rotation: number;
-}
-
-export interface TextLine {
-  words: TextWord[];
-}
-
-export interface TextLayer {
-  width: number;
-  height: number;
-  hasText: boolean;
-  text: string;
-  lines: TextLine[];
-}
+export type { TextLayer, TextLine, TextWord };
 
 interface RenderResult {
   page: number;
@@ -54,7 +36,7 @@ export interface PreviewResult {
   textLayer: TextLayer;
 }
 
-const script = (): string => path.join(appPaths().sourceLibDir, 'render.py');
+const script = (): string => path.join(appPaths().pythonDir, 'render.py');
 const inflight = new Map<string, Promise<PreviewResult>>();
 const waiting: Array<() => void> = [];
 let running = 0;

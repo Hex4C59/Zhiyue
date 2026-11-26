@@ -11,10 +11,10 @@
 
 - **文献库浏览**：按主题分类、年份、阅读进度、收藏筛选，支持题名／作者／L 编号搜索；分类对应真实目录，可在界面新建顶层/子文件夹、重命名、删除空文件夹，或右键把 PDF 导入该目录；文献卡片可拖动到左侧任意文件夹（含子文件夹）直接移动分类。
 - **连续阅读**：PDF 页面纵向排列跨页滚动，Ctrl+滚轮缩放，透明文字层支持选择复制；可切换 Markdown 笔记或浏览器原生阅读器，笔记可删除（移入 `.zhiyue/trash/notes/` 回收站）。
-- **PDF 翻译**：在阅读器点击「翻译成中文」，用已配置的 Pi 默认模型翻译英文论文，生成可复制和导出的中文 PDF。阅读时可按原页码在两种语言之间切换。
+- **中文精读翻译**：在阅读器点击「翻译成中文」，使用本机 MinerU 解析英文论文结构、LaTeX 公式、插图与表格，再调用 Pi 默认模型翻译正文与图表标题，生成流式中文 Markdown 精读视图；保留英文标题、原始表格与公式，支持「原文 PDF / 中文精读 / 左右对照」切换及导出中文 Markdown。
 - **批量导入**：多选文件、整个文件夹或拖放导入本机 PDF（单次最多 100 个），逐条核对书目后归档，SHA-256 查重避免重复入库。
 - **下载任务中心**：按 DOI／题名创建批次，经公开来源、Elsevier API 或机构渠道下载，自动核验 PDF 身份、解析与渲染，仅归档通过核验的条目，断点可续跑。
-- **AI 研究助手**：基于官方 Pi SDK 的流式问答，支持论文上下文、图片与文件附件、历史会话；可加载文献库 `.zhiyue/skills/` 中的指令型技能，按需读取技能说明，随包提供 `paper-experiments`（总结论文并拆解实验设计）与 `paper-reading`（判断是否值得精读）两个技能；可检索文献、读取任意已索引文献的页文本、发起下载；可列出、新建、改名分类或把单篇文献移到其他分类，删除空分类需在聊天里点确认；输入框支持斜杠命令，`/help`、`/skills`、`/compact` 由网站直接处理，`/skill:<名称>` 强制套用某个技能流程；在“模型与密钥”中可更换默认模型、填写 API 密钥并调整思考强度与上下文压缩阈值，推理内容在消息内折叠显示；笔记以草稿形式经用户确认后保存。
+- **AI 研究助手**：基于官方 Pi SDK 的流式问答，支持论文上下文、图片与文件附件、历史会话；可加载文献库 `.zhiyue/skills/` 中的指令型技能，按需读取技能说明，随包提供 `paper-experiments`（总结论文并拆解实验设计）、`paper-reading`（判断是否值得精读）与 `paper-translation`（学术论文段落精翻与术语对照）三个技能；可检索文献、读取任意已索引文献的页文本、发起下载；可列出、新建、改名分类或把单篇文献移到其他分类，删除空分类需在聊天里点确认；输入框支持斜杠命令，`/help`、`/skills`、`/compact` 由网站直接处理，`/skill:<名称>` 强制套用某个技能流程；在“模型与密钥”中可更换默认模型、填写 API 密钥并调整思考强度与上下文压缩阈值，推理内容在消息内折叠显示；笔记以草稿形式经用户确认后保存。
 - **索引与来源记录**：每篇文献分配固定 `L001` 式编号，`.来源.json` 记录下载与校验历史，README 索引与目录同步更新。
 
 ## 环境要求
@@ -47,19 +47,18 @@ npm run doctor
 
 桌面安装包自带官方 Pi SDK（`@earendil-works/pi-coding-agent`）。在助手面板的“模型与密钥”中填写 API 密钥并选择默认模型，也可在终端运行 `pi` 完成账号登录。模型与登录配置读取本机 `~/.pi/agent`（可用 `PI_CODING_AGENT_DIR` 指定）。未配置时文献浏览与下载不受影响。
 
-### 启用 PDF 翻译（可选）
+### 启用中文精读翻译（可选）
 
-用 [uv](https://docs.astral.sh/uv/getting-started/installation/) 准备独立的 BabelDOC 运行环境。源码版和安装版共用此位置；`ZHIYUE_TRANSLATION_PYTHON` 可指定另一个装有同版本 BabelDOC 的解释器。
+用 [uv](https://docs.astral.sh/uv/getting-started/installation/) 准备独立的 MinerU（4.x）运行环境并预下载本地模型。源码版和安装版共用此位置；`ZHIYUE_MINERU_CMD` 可指定已安装的 `mineru-kit` 可执行文件。应用只调用 `mineru-kit parse` 做本机离线解析，不使用依赖后台服务、默认走 mineru.net 远程解析的 `mineru` 命令。
 
 ```powershell
-$translationEnv = Join-Path $env:LOCALAPPDATA 'Zhiyue\translation\venv'
-uv venv --python 3.13 $translationEnv
-uv pip install --python (Join-Path $translationEnv 'Scripts\python.exe') --only-binary :all: BabelDOC==0.7.1
+$mineruEnv = Join-Path $env:LOCALAPPDATA 'Zhiyue\mineru\venv'
+uv venv --python 3.13 $mineruEnv
+uv pip install --python (Join-Path $mineruEnv 'Scripts\python.exe') "mineru[core]"
+& (Join-Path $mineruEnv 'Scripts\mineru-kit.exe') models download --tier standard --source modelscope
 ```
 
-在「模型与密钥」中选择 Pi 默认模型，再打开有英文文字层的论文并点击「翻译成中文」。首次翻译会下载本机版式模型和字体。可提取的正文会发送给按钮旁显示的模型服务。完成后可按同一物理页和缩放在「原文 / 中文」间切换，也可导出译本。已有译本时，可点「重新生成中文」再次调用当前默认模型。生成期间、取消后或失败后，仍可阅读和导出已有译本。
-
-参考文献按原页、栏位和条目顺序回填，支持常见编号及悬挂缩进的作者年份式书目。轻微越栏且可独立定位的行会在本机收窄，保留可选文字。无法安全排版的书目页保留该页原文并标为「需核对」。单次支持最多 200 页、100 MB。扫描件需先完成 OCR，图片内文字和复杂表格可保留原样。
+在「模型与密钥」中选择 Pi 默认模型，再打开论文并点击「翻译成中文」。MinerU 会在本机（支持 NVIDIA GPU 加速）把 PDF 解析为带 LaTeX 公式、插图与表格的结构化 Markdown；随后仅将英文正文与图表标题分段发送给所选模型翻译，论文大标题、章节标题、独立公式与表格均保留原文。完成后可在阅读器顶部切换「原文 PDF / 中文精读 / 左右对照」，也可导出中文 Markdown。已有译本时可点「重新生成中文」，生成期间、取消后或失败后仍可阅读和导出已有译本。
 
 ## 桌面版（Windows）
 

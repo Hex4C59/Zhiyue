@@ -1,20 +1,9 @@
 import { statusError } from './errors.js';
 import type { SkillInfo, SkillRuntime } from './skills.js';
+import type { CommandInfo, CommandScope, CommandSource, CommandTarget } from '../../shared/contracts.js';
 
 // 斜杠命令来源：本地命令由服务端直接执行，技能命令展开为技能说明后作为用户回合发送。
-export type CommandSource = 'local' | 'skill';
-export type CommandScope = 'composer' | 'chat';
-export type CommandTarget = 'workspace' | 'terminal';
-
-export interface CommandInfo {
-  name: string;
-  description: string;
-  source: CommandSource;
-  /** 需要已有会话才能执行的命令标为 chat。 */
-  scope: CommandScope;
-  argumentHint?: string;
-  target?: CommandTarget;
-}
+export type { CommandInfo, CommandScope, CommandSource, CommandTarget };
 
 export interface ParsedCommand {
   name: string;

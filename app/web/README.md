@@ -109,12 +109,13 @@ Pi Agent 可用的具名工具：`library_search`、`library_categories`、`crea
 | `src/lib/chat.ts` | 聊天记录、助手协议、具名工具与审批 |
 | `src/lib/assistants.ts`、`src/lib/pi.ts` | Pi Agent 的接入、模型与连接状态 |
 | `src/lib/jobs.ts` | 串行调用下载工具，保存断点与任务日志 |
-| `src/lib/extract.py` | 只读附件提取，保留读取范围与截断提示 |
+| `shared/` | 前后端共享的纯类型与常量契约（PDF 预览倍率、翻译状态、命令、界面状态、文字层等） |
+| `python/extract.py` | 只读附件提取，保留读取范围与截断提示 |
 | `src/lib/skills.ts` | 扫描 `.zhiyue/skills`，校验 frontmatter 并限制 `read_skill` 的读取范围；`SkillRegistry` 供系统提示、`read_skill` 与斜杠命令共用 |
 | `src/lib/commands.ts` | 斜杠命令目录、解析与本地命令回执，技能命令只做校验与展开 |
 | `src/lib/uiState.ts` | 界面状态（上次会话、当前文献、栏宽）的读写与字段校验，存 `.zhiyue/data/ui.json` |
 | `frontend/components/CommandMenu.vue` | 输入框的斜杠命令菜单、键盘导航与插入 |
-| `src/lib/preview.ts`、`src/lib/render.py` | 优先用 Poppler、缺失时用 pypdfium2 按需渲染单页；源 PDF 保持原样 |
+| `src/lib/preview.ts`、`python/render.py` | 优先用 Poppler、缺失时用 pypdfium2 按需渲染单页；源 PDF 保持原样 |
 | `test/` | TypeScript 测试源码：HTTP/SSE、任务、PDF 边界与 jsdom 交互（编译后运行） |
 | 仓库根 `build/` | `tsc` 输出的服务端、测试与脚本；被 Git 忽略，桌面资源与测试从这里取 |
 | `../../library/.zhiyue/data/` | 网站聊天、上传原文件、任务输入和阅读标记；全部被 Git 忽略 |

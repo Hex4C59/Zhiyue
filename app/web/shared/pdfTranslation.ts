@@ -3,8 +3,8 @@ export interface PdfTranslationResult {
   sourceHash: string;
   model: string;
   completedAt: string;
-  pages: number;
-  reviewPages: number[];
+  sections: number;
+  images: number;
 }
 
 export interface PdfTranslationJob {
@@ -24,6 +24,12 @@ export interface PdfTranslationStatus {
   job: PdfTranslationJob | null;
   result: PdfTranslationResult | null;
   updateAvailable: boolean;
+}
+
+export interface PdfTranslationMarkdown {
+  key: string;
+  text: string;
+  result: PdfTranslationResult;
 }
 
 export interface PdfTranslationEvent {

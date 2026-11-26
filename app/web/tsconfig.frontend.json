@@ -14,5 +14,5 @@
     "resolveJsonModule": true,
     "noEmit": true
   },
-  "include": ["frontend/**/*.ts", "frontend/**/*.vue", "vite.config.ts"]
+  "include": ["frontend/**/*.ts", "frontend/**/*.vue", "shared/**/*.ts", "vite.config.ts"]
 }
