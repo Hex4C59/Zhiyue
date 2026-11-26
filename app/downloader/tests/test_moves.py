@@ -4,7 +4,7 @@ from pathlib import Path
 from unittest.mock import patch
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 from common import *
-import categories,library
+import categories,library,moves
 
 PDF='papers/08_SER/01_资源/paper.pdf'
 SOURCE='papers/08_SER/01_资源/paper.来源.json'
@@ -120,7 +120,7 @@ class MoveTests(unittest.TestCase):
   self.assertTrue((self.root/PDF).is_file())
 
  def test_repair_moves_resumes_reference_rewrite_after_files_moved(self):
-  with patch.object(categories,'_rewrite_move_references',side_effect=RuntimeError('引用写入失败')):
+  with patch.object(moves,'_rewrite_move_references',side_effect=RuntimeError('引用写入失败')):
    with self.assertRaises(CliError) as caught:categories.move_paper(self.root,'L001',TARGET)
   self.assertEqual(caught.exception.exit_code,1)
   self.assertIn('修复记录',str(caught.exception))
@@ -250,11 +250,11 @@ class MoveTests(unittest.TestCase):
   pdf2='papers/10_来源/second.pdf';self.add_paper('L002',pdf2)
   target2='papers/11_第二目标';(self.root/target2).mkdir()
   request=self.request(('L001',TARGET),('L002',target2))
-  rename=categories._rename_file_no_replace
+  rename=moves._rename_file_no_replace
   def fail_after_first_paper(source,target):
    if source.parent.name=='10_来源':raise KeyboardInterrupt
    rename(source,target)
-  with patch.object(categories,'_rename_file_no_replace',side_effect=fail_after_first_paper):
+  with patch.object(moves,'_rename_file_no_replace',side_effect=fail_after_first_paper):
    with self.assertRaises(KeyboardInterrupt):categories.move_papers(self.root,request)
   self.assertEqual(len(self.journals()),1)
   return pdf2,target2
@@ -282,11 +282,11 @@ class MoveTests(unittest.TestCase):
   self.assertEqual(self.journals()[0].read_bytes(),before)
 
  def test_batch_does_not_overwrite_a_target_created_after_preflight_and_rolls_back(self):
-  rename=categories._rename_file_no_replace
+  rename=moves._rename_file_no_replace
   def create_conflict(source,target):
    if source.name=='paper_v2.pdf':target.write_bytes(b'new target')
    rename(source,target)
-  with patch.object(categories,'_rename_file_no_replace',side_effect=create_conflict):
+  with patch.object(moves,'_rename_file_no_replace',side_effect=create_conflict):
    result=categories.move_papers(self.root,self.request(('L001',TARGET)))
   self.assertEqual(result['items'][0]['status'],'failed')
   self.assertEqual((self.root/TARGET/'paper_v2.pdf').read_bytes(),b'new target')
@@ -295,11 +295,11 @@ class MoveTests(unittest.TestCase):
   self.assertEqual(self.journals(),[])
 
  def test_batch_retains_journal_when_roll_back_fails(self):
-  rename=categories._rename_file_no_replace
+  rename=moves._rename_file_no_replace
   def fail_move_and_first_rollback(source,target):
    if source.name=='paper_v2.pdf' or source==self.root/TARGET/'paper.pdf':raise OSError('模拟移动失败')
    rename(source,target)
-  with patch.object(categories,'_rename_file_no_replace',side_effect=fail_move_and_first_rollback):
+  with patch.object(moves,'_rename_file_no_replace',side_effect=fail_move_and_first_rollback):
    result=categories.move_papers(self.root,self.request(('L001',TARGET)))
   self.assertEqual(result['items'][0]['status'],'failed')
   self.assertIn('回滚',result['items'][0]['error'])
@@ -311,7 +311,7 @@ class MoveTests(unittest.TestCase):
   pdf2='papers/11_来源/paper.pdf';self.add_paper('L002',pdf2)
   target1=f'{TARGET}/papers/11_来源';target2='papers/12_第二目标'
   for target in (target1,target2):(self.root/target).mkdir(parents=True)
-  with patch.object(categories,'_update_ledger_files',side_effect=OSError('模拟台账写入失败')):
+  with patch.object(moves,'_update_ledger_files',side_effect=OSError('模拟台账写入失败')):
    result=categories.move_papers(self.root,self.request(('L001',target1),('L002',target2)))
   self.assertEqual([item['status'] for item in result['items']],['failed','failed'])
   self.assertTrue((self.root/result['repair']).is_file())
