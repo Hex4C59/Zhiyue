@@ -205,38 +205,37 @@ def reference_lines(pymupdf, page, matrix):
                     size=line.size * abs(matrix.d)) for line in text_lines(blocks)]
 
 
-def verify_reference_pages(pymupdf, output, snapshot, layout, pages):
-    from pdf_reference_fit import fit_reference_spills
+def review_output_layout(pymupdf, output, snapshot, layout, pages):
+    from pdf_reference_fit import fit_centered_headings, fit_reference_spills
     from pdf_references import HORIZONTAL_SPILL, reference_issue
 
     restored = {}
     fitted = False
     corrected = output.with_name('reviewed.pdf')
-    with pymupdf.open(output) as pdf:
+    with pymupdf.open(output) as pdf, pymupdf.open(snapshot) as original:
         check_geometry(pdf, pages)
-        review = set(layout.unsafe_pages)
-        for number, regions in layout.regions.items():
-            if number in review:
-                continue
+        for number, source in enumerate(original):
             page = pdf[number]
-            # 经 PDF 用户坐标映射回引擎无 CropBox 的坐标系，便于使用原始区域和基线。
-            to_user = ~unrotated_matrix(page)
-            matrix = to_user * ~layout.to_pdf[number]
-            spills = []
-            issue = reference_issue(regions, reference_lines(pymupdf, page, matrix), spills=spills)
-            if issue == HORIZONTAL_SPILL and fit_reference_spills(page, spills, ~matrix, to_user):
-                fitted = True
-                issue = reference_issue(regions, reference_lines(pymupdf, page, matrix))
-            if issue:
+            if number not in layout.unsafe_pages:
+                to_user = ~unrotated_matrix(page)
+                fitted |= fit_centered_headings(source, page, to_user)
+                regions = layout.regions.get(number)
+                if not regions:
+                    continue
+                # 在最终排版上复核书目，经 PDF 用户坐标映射回引擎无 CropBox 的坐标系。
+                matrix = to_user * ~layout.to_pdf[number]
+                spills = []
+                issue = reference_issue(regions, reference_lines(pymupdf, page, matrix), spills=spills)
+                if issue == HORIZONTAL_SPILL and fit_reference_spills(page, spills, ~matrix, to_user):
+                    fitted = True
+                    issue = reference_issue(regions, reference_lines(pymupdf, page, matrix))
+                if not issue:
+                    continue
                 print(f'第 {number + 1} 页参考文献需核对：{issue}', file=sys.stderr)
-                review.add(number)
-        if not review and not fitted:
+            restored[number] = ''.join(source.get_text().split())
+            restore_page_content(source, page)
+        if not restored and not fitted:
             return output, restored
-        with pymupdf.open(snapshot) as original:
-            for number in sorted(review):
-                source = original[number]
-                restored[number] = ''.join(source.get_text().split())
-                restore_page_content(source, pdf[number])
         pdf.save(corrected, garbage=3, deflate=True)
     return corrected, restored
 
@@ -363,8 +362,8 @@ def translate(args):
     with pymupdf.open(snapshot) as pdf:
         pages = source_pages(pdf)
     output, layout = render_translation(args, pages, snapshot)
-    send('progress', percent=96, stage='核对译本页框、文字层和参考文献')
-    output, restored = verify_reference_pages(pymupdf, output, snapshot, layout, pages)
+    send('progress', percent=96, stage='核对译本页框、文字层与排版')
+    output, restored = review_output_layout(pymupdf, output, snapshot, layout, pages)
     review = validate_result(pymupdf, output, pages, restored=restored)
     result = args.work / 'result'
     result.mkdir()

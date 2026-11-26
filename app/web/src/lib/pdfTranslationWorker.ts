@@ -4,7 +4,7 @@ import path from 'node:path';
 import { createInterface } from 'node:readline';
 import { statusError } from './errors.js';
 
-export const PDF_TRANSLATION_REVISION = 'babeldoc-0.7.1-zh-CN-4';
+export const PDF_TRANSLATION_REVISION = 'babeldoc-0.7.1-zh-CN-5';
 const BATCH_INPUT = '\n## Here is the input:\n';
 const PROMPTED_PARAGRAPH_INPUT = '\n## Output\n\n' +
   'Output ONLY the translated zh-CN text. No explanations, no backticks, no extra text.\n\n' +

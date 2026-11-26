@@ -400,6 +400,14 @@ test('轻微越栏只收窄可定位的书目行，保留中文文字、邻栏�
   runPython(resolveTranslationPython(), 'pdf_translation_engine.py', 'spill', work);
 });
 
+test('按原栏居中单行章节标题，并保留左对齐或存在遮挡的标题', {
+  skip: engineSkip, timeout: 25_000,
+}, async (t) => {
+  const work = await mkdtemp(path.join(os.tmpdir(), 'zhiyue-pdf-headings-'));
+  t.after(() => rm(work, { recursive: true, force: true }));
+  runPython(resolveTranslationPython(), 'pdf_translation_engine.py', 'headings', work);
+});
+
 test('BabelDOC 实际排版保留栏序和独立编号，并生成可复制中文', {
   skip: engineSkip, timeout: 180_000,
 }, async (t) => {

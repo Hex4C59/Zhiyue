@@ -1,13 +1,16 @@
-"""收窄 BabelDOC 0.7.1 成品中轻微越栏且可独立定位的书目行。"""
+"""调整 BabelDOC 0.7.1 成品中可独立定位的书目行与章节标题。"""
 from collections import defaultdict
 import math
 import re
 
 import pymupdf
 
+from pdf_references import merge_baselines, text_lines
+
 
 MIN_WIDTH_SCALE = 0.88
 POINT_TOLERANCE = 0.03
+SECTION_HEADING = re.compile(r'^([1-9]\d?(?:\.\d{1,2})*)(?:[.)、]\s*|\s+)[^\W\d_].{0,100}$')
 PDF_NUMBER = rb'[-+]?(?:\d+(?:\.\d*)?|\.\d+)'
 # BabelDOC 每个字形以独立的 q … BT … Tj ET Q 输出。MuPDF 清理后可将单位 Tm 改写为 TD。
 GLYPH_POSITION = re.compile(
@@ -52,10 +55,11 @@ def _annotation_boxes(page, from_user):
     return boxes
 
 
-def _isolated(box, selected, marks, annotations):
+def _isolated(box, selected, marks, annotations, offset=0):
     if any(box.intersects(note) for note in annotations):
         return False
-    glyph_boxes = [marks[index][1] for index in selected]
+    shift = (offset, 0, offset, 0)
+    glyph_boxes = [marks[index][1] + shift for index in selected]
     for index, (kind, other) in enumerate(marks):
         if index in selected or not box.intersects(other):
             continue
@@ -69,7 +73,7 @@ def _isolated(box, selected, marks, annotations):
     return True
 
 
-def _text_edits(page, spills, from_layout, to_user, trace, marks):
+def _text_edits(page, adjustments, from_layout, to_user, trace, marks):
     raw = page.get_text('rawdict', flags=pymupdf.TEXTFLAGS_TEXT)['blocks']
     raw_lines = [line for block in raw for line in block.get('lines', ())]
     annotations = _annotation_boxes(page, ~to_user)
@@ -81,12 +85,10 @@ def _text_edits(page, spills, from_layout, to_user, trace, marks):
             by_origin[origin].append(span)
     bounds = page.rect * page.derotation_matrix
     edits = {}
-    for row, right in spills:
+    for row, scale, offset in adjustments:
         box = pymupdf.Rect(row.box) * from_layout
         baseline = (pymupdf.Point(row.left, row.baseline) * from_layout).y
-        limit = (pymupdf.Point(right, row.baseline) * from_layout).x - 0.65
-        scale = (limit - box.x0) / box.width if box.width else 0
-        if not bounds.contains(box) or not MIN_WIDTH_SCALE <= scale < 1:
+        if not bounds.contains(box) or not bounds.contains(box + (offset, 0, offset, 0)):
             return None
         origins = _row_glyphs(raw_lines, box, baseline, row.size * from_layout.d)
         if not origins or len(origins) != len(set(origins)):
@@ -103,12 +105,14 @@ def _text_edits(page, spills, from_layout, to_user, trace, marks):
                 return None
             selected.add(index)
             point = pymupdf.Point(span['chars'][0][2])
-            target = pymupdf.Point(box.x0 + (point.x - box.x0) * scale, point.y)
+            target = pymupdf.Point(box.x0 + (point.x - box.x0) * scale + offset, point.y)
             edits[index] = (point * to_user, target * to_user, target, scale)
         area = pymupdf.Rect(box)
         for index in selected:
             area.include_rect(marks[index][1])
         if not _isolated(area, selected, marks, annotations):
+            return None
+        if offset and not _isolated(area + (offset, 0, offset, 0), selected, marks, annotations, offset):
             return None
     return edits
 
@@ -161,15 +165,15 @@ def _same_text_and_marks(page, trace, marks, edits):
                for index, ((kind, box), actual) in enumerate(zip(marks, actual_marks)))
 
 
-def fit_reference_spills(page, spills, from_layout, to_user):
-    """仅改可逐字定位的横排字形矩阵。校验失败则撤销，交给调用方恢复原物理页。"""
+def _adjust_rows(page, adjustments, from_layout, to_user):
+    """仅改可逐字定位的横排字形矩阵。重新提取的字形或邻近内容不符时撤销。"""
     contents = page.get_contents()
     if len(contents) != 1 or min(from_layout.a, from_layout.d) <= 0 or from_layout.b or from_layout.c:
         return False
     doc = page.parent
     trace = page.get_texttrace()
     marks = [(kind, pymupdf.Rect(box)) for kind, box in page.get_bboxlog()]
-    edits = _text_edits(page, spills, from_layout, to_user, trace, marks)
+    edits = _text_edits(page, adjustments, from_layout, to_user, trace, marks)
     if not edits:
         return False
     stream = _rewrite_stream(doc.xref_stream(contents[0]), edits)
@@ -191,3 +195,66 @@ def fit_reference_spills(page, spills, from_layout, to_user):
     finally:
         if not accepted:
             page.set_contents(contents[0])
+
+
+def fit_reference_spills(page, spills, from_layout, to_user):
+    """收窄轻微越栏的书目行。无法安全收窄时交给调用方恢复原物理页。"""
+    adjustments = []
+    for row, right in spills:
+        box = pymupdf.Rect(row.box) * from_layout
+        limit = (pymupdf.Point(right, row.baseline) * from_layout).x - 0.65
+        scale = (limit - box.x0) / box.width if box.width else 0
+        if not MIN_WIDTH_SCALE <= scale < 1:
+            return False
+        adjustments.append((row, scale, 0))
+    return _adjust_rows(page, adjustments, from_layout, to_user)
+
+
+def _section_rows(lines):
+    return [(match[1], row) for row in merge_baselines(lines)
+            if row.bold and (match := SECTION_HEADING.fullmatch(row.text))]
+
+
+def _single_line(row, lines):
+    # 接近且横向重叠的粗体行可能是同一标题的续行。
+    return not any(line.bold and 0.35 * row.size < abs(line.baseline - row.baseline) <= 1.7 * row.size
+                   and line.left < row.right and line.right > row.left for line in lines)
+
+
+def fit_centered_headings(source, page, to_user):
+    """原文居中的单行编号章标题，按原中心水平平移译文字形。"""
+    def read_lines(pdf_page):
+        return list(text_lines(pdf_page.get_text('dict', flags=pymupdf.TEXTFLAGS_TEXT)['blocks']))
+
+    original = read_lines(source)
+    headings = _section_rows(original)
+    if not headings:
+        return False
+    translated = read_lines(page)
+    translated_headings = _section_rows(translated)
+    fitted = False
+    for number, row in headings:
+        center = (row.left + row.right) / 2
+        tolerance = max(2, 0.3 * row.size)
+        # 以附近的正文行确认原栏中心，并排除贴着左边距的标题。
+        body = [
+            line for line in original
+            if not line.bold and row.size < abs(line.baseline - row.baseline) < 8 * row.size
+            and line.left <= row.left - row.size and line.right >= row.right + row.size
+            and abs((line.left + line.right) / 2 - center) <= tolerance
+        ]
+        if len(body) < 2 or not _single_line(row, original):
+            continue
+        matches = [
+            line for label, line in translated_headings if label == number and line.text != row.text
+            and abs(line.baseline - row.baseline) <= tolerance and abs(line.left - row.left) <= tolerance
+        ]
+        if len(matches) != 1 or not _single_line(matches[0], translated):
+            continue
+        line = matches[0]
+        offset = center - (line.left + line.right) / 2
+        if (abs(offset) <= 0.5 or line.left + offset < max(item.left for item in body)
+                or line.right + offset > min(item.right for item in body)):
+            continue
+        fitted |= _adjust_rows(page, [(line, 1, offset)], pymupdf.Identity, to_user)
+    return fitted

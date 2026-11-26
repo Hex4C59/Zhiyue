@@ -8,11 +8,11 @@ import pymupdf
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'src/lib'))
 from pdf_references import (  # noqa: E402
-    HORIZONTAL_SPILL, detect_references, reference_issue, reference_regions, text_lines, visual_lanes,
+    HORIZONTAL_SPILL, detect_references, merge_baselines, reference_issue, reference_regions, text_lines, visual_lanes,
 )
 from translate_pdf import (  # noqa: E402
-    TranslationError, check_geometry, digest, reference_lines, source_pages, unrotated_matrix, validate_result,
-    verify_reference_pages,
+    TranslationError, check_geometry, digest, reference_lines, review_output_layout, source_pages, unrotated_matrix,
+    validate_result,
 )
 
 
@@ -20,6 +20,11 @@ WIDTH, HEIGHT = 612, 792
 CROP = pymupdf.Rect(12, 20, 597, 770)
 FIGURE = pymupdf.Rect(102, 478, 222, 528)
 SPILL_TEXT = '核对中文参考文献在原栏内的实际排版效果。'
+HEADINGS = [
+    ('1. Introduction', '1. 引言', 150, 'center'),
+    ('2. Research Methods', '2. 方法', 240, 'left'),
+    ('3. Observational Results', '3. 结果', 330, 'blocked'),
+]
 REFERENCES = [
     [(3, 'A. Adams, Research methods in science.', 'Journal of Testing, 2017, pp. 5–8.'),
      (5, 'B. Brown, Methods for vector analysis.', 'Journal of Testing, 2019, pp. 12–18.'),
@@ -85,6 +90,14 @@ def draw_references(page, variant='original'):
                 page.insert_text((x + 20, y + 13), second, fontsize=10, fontname='tiro')
 
 
+def join_contents(page):
+    doc = page.parent
+    xref = doc.get_new_xref()
+    doc.update_object(xref, '<<>>')
+    doc.update_stream(xref, page.read_contents())
+    page.set_contents(xref)
+
+
 def make_pdf(path, *, rotation=0, crop=False, variant='original', chinese=False, cover=True, clean=False):
     with pymupdf.open() as pdf:
         if cover:
@@ -99,11 +112,7 @@ def make_pdf(path, *, rotation=0, crop=False, variant='original', chinese=False,
             page.set_cropbox(CROP)
         page.set_rotation(rotation)
         if variant in {'fit', 'severe', 'blocked-figure', 'blocked-text', 'blocked-link'}:
-            doc = page.parent
-            xref = doc.get_new_xref()
-            doc.update_object(xref, '<<>>')
-            doc.update_stream(xref, page.read_contents())
-            page.set_contents(xref)
+            join_contents(page)
         pdf.save(path, clean=clean)
 
 
@@ -140,8 +149,8 @@ def check_recovery(work):
         layout = layout_for(source)
         with pymupdf.open(source) as original:
             pages = source_pages(original)
-            assert verify_reference_pages(pymupdf, valid, source, layout, pages) == (valid, {})
-            output, restored = verify_reference_pages(pymupdf, invalid, source, layout, pages)
+            assert review_output_layout(pymupdf, valid, source, layout, pages) == (valid, {})
+            output, restored = review_output_layout(pymupdf, invalid, source, layout, pages)
             assert restored.keys() == {1}, (rotation, variant, restored)
             assert validate_result(pymupdf, output, pages, restored=restored) == [2]
             with pymupdf.open(output) as pdf:
@@ -155,7 +164,7 @@ def check_recovery(work):
     make_pdf(invalid, cover=False, variant='missing')
     with pymupdf.open(source) as pdf:
         pages = source_pages(pdf)
-    output, restored = verify_reference_pages(pymupdf, invalid, source, layout_for(source), pages)
+    output, restored = review_output_layout(pymupdf, invalid, source, layout_for(source), pages)
     try:
         validate_result(pymupdf, output, pages, restored=restored)
     except TranslationError as error:
@@ -178,7 +187,7 @@ def check_spill(work):
             matrix = ~unrotated_matrix(page) * ~layout.to_pdf[1]
             regions = layout.regions[1]
             assert reference_issue(regions, reference_lines(pymupdf, page, matrix)) == HORIZONTAL_SPILL, variant
-            output, restored = verify_reference_pages(pymupdf, raw, source, layout, pages)
+            output, restored = review_output_layout(pymupdf, raw, source, layout, pages)
             assert output != raw
             with pymupdf.open(output) as checked:
                 result = checked[1]
@@ -198,6 +207,77 @@ def check_spill(work):
                 for part in (FIGURE, (315, 135, 554, 252), (50, 137, 285, 185), (50, 224, 285, 252)):
                     clip = pymupdf.Rect(part) * ~matrix * page.rotation_matrix
                     assert result.get_pixmap(clip=clip).samples == page.get_pixmap(clip=clip).samples, part
+
+
+def make_heading_pdf(path, rotation, font=None):
+    body = 'The figure shows the same observations under the two conditions used in this test.'
+    center = WIDTH / 2
+    left = center - pymupdf.get_text_length(body, fontname='tiro', fontsize=11) / 2
+    size = 14
+    with pymupdf.open() as pdf:
+        page = pdf.new_page(width=WIDTH, height=HEIGHT)
+        if font:
+            page.insert_font(fontname='heading', fontbuffer=font.buffer)
+        for source, translated, y, alignment in HEADINGS:
+            x = left if alignment == 'left' else center - pymupdf.get_text_length(source, 'tibo', size) / 2
+            if font:
+                # 模拟引擎从原文起点逐字定位较短的中文译文。
+                page.insert_text((x, y), translated, fontsize=size, fontname='heading')
+                glyphs = []
+                for char, width in zip(translated, font.char_lengths(translated, fontsize=size)):
+                    glyphs.append(f'q 0 g BT /heading {size} Tf 1 0 0 1 {x} {HEIGHT - y} Tm '
+                                  f'<{font.has_glyph(ord(char)):04x}> Tj ET Q\n')
+                    x += width
+                pdf.update_stream(page.get_contents()[-1], ''.join(glyphs).encode('ascii'))
+            else:
+                page.insert_text((x, y), source, fontsize=size, fontname='tibo')
+            for delta in (23, 36):
+                page.insert_text((left, y + delta), body, fontsize=11, fontname='tiro')
+            if font and alignment == 'blocked':
+                page.draw_rect((center + 5, y - 10, center + 11, y + 2), fill=(0.4, 0.2, 0.1))
+        page.draw_rect(FIGURE, fill=(0.9, 0.94, 1))
+        page.set_cropbox(CROP)
+        page.set_rotation(rotation)
+        if font:
+            join_contents(page)
+        pdf.save(path, clean=bool(rotation))
+
+
+def check_headings(work):
+    from babeldoc.const import get_cache_file_path
+
+    def heading(page, label):
+        rows = merge_baselines(text_lines(blocks(page)))
+        return next(row for row in rows if ''.join(row.text.split()) == label.replace(' ', ''))
+
+    font = pymupdf.Font(fontfile=str(get_cache_file_path('SourceHanSerifCN-Bold.ttf', 'fonts')))
+    layout = Box(unsafe_pages=set(), regions={})
+    for rotation in (0, 90):
+        source, raw = (work / f'{rotation}-{name}.pdf' for name in ('source', 'translated'))
+        make_heading_pdf(source, rotation)
+        make_heading_pdf(raw, rotation, font)
+        with pymupdf.open(source) as original, pymupdf.open(raw) as translated:
+            pages = source_pages(original)
+            output, restored = review_output_layout(pymupdf, raw, source, layout, pages)
+            assert output != raw and not restored
+            assert validate_result(pymupdf, output, pages) == []
+            with pymupdf.open(output) as checked:
+                before, after = translated[0], checked[0]
+                assert before.get_text() == after.get_text()
+                for english, chinese, _, alignment in HEADINGS:
+                    origin, moved = heading(before, chinese), heading(after, chinese)
+                    if alignment == 'center':
+                        expected = heading(original[0], english)
+                        assert abs(origin.left - expected.left) < 0.05
+                        assert abs(moved.left - origin.left) > 5
+                        assert abs((moved.left + moved.right) / 2 - (expected.left + expected.right) / 2) < 0.05
+                        assert abs(moved.baseline - origin.baseline) < 0.05
+                        assert abs((moved.right - moved.left) - (origin.right - origin.left)) < 0.05
+                    else:
+                        assert moved.box == origin.box, (rotation, alignment, moved, origin)
+                # 比较标题下方的正文、未移动的标题和图形。
+                clip = pymupdf.Rect(0, 150, CROP.width, CROP.height) * before.rotation_matrix
+                assert before.get_pixmap(clip=clip).samples == after.get_pixmap(clip=clip).samples
 
 
 def check_output(source, output):
@@ -227,5 +307,7 @@ if __name__ == '__main__':
         check_recovery(target)
     elif action == 'spill':
         check_spill(target)
+    elif action == 'headings':
+        check_headings(target)
     else:
         raise ValueError(action)
