@@ -74,10 +74,22 @@ def _resolve(path):
   return path.resolve()
  return path.resolve() if stat_module.S_ISLNK(info.st_mode) else path
 def within(root,path):
- root=_resolved_root(root);p=Path(path);p=_resolve(p if p.is_absolute() else root/p)
- if not p.is_relative_to(root):raise ValueError(f'路径超出指定目录：{p}')
+ root=_resolved_root(root);p=_resolve(Path(path) if Path(path).is_absolute() else root/Path(path))
+ if not p.is_relative_to(root):
+  # 库根是真实解析后的长路径，而传入路径可能来自未解析的短路径（Windows 临时目录 RUNNER~1）。
+  resolved=p.resolve()
+  if not resolved.is_relative_to(root):raise ValueError(f'路径超出指定目录：{p}')
+  return resolved
  return p
-def rel(root,path):return _resolve(path).relative_to(_resolved_root(root)).as_posix()
+def rel(root,path):
+ """相对库根的 posix 路径。
+
+ 库根已做真实解析，而传入路径可能来自未解析的短路径（Windows 临时目录下的 RUNNER~1），
+ 两者字面前缀不一致时 relative_to 会报错；此时回退到真实解析后再算。
+ """
+ base=_resolved_root(root);resolved=_resolve(path)
+ try:return resolved.relative_to(base).as_posix()
+ except ValueError:return resolved.resolve().relative_to(base).as_posix()
 def safe_url(value):
  try:
   p=urllib.parse.urlsplit(str(value))
