@@ -282,7 +282,8 @@ test('右键空文件夹先在应用内对话框确认，非空文件夹禁用�
   };
   const dialog = await triggerDelete();
   assert.match(dialog.textContent ?? '', /删除文件夹/);
-  assert.match(dialog.textContent ?? '', /「测试」是空文件夹/);
+  assert.match(dialog.textContent ?? '', /「测试」没有文献/);
+  assert.match(dialog.textContent ?? '', /说明和历史下载资料一起移到回收站/);
   assert.match(dialog.textContent ?? '', /trash\/categories/);
   const cancel = [...dialog.querySelectorAll('button')]
     .find((item) => /取消/.test(item.textContent ?? ''));

@@ -1,6 +1,7 @@
 import { markRaw, reactive } from 'vue';
 import type { ComputedRef } from 'vue';
 import { endpoint, json, titleOf } from './content';
+import { mergeMessages, messageSnapshot } from './chatMessages';
 import type {
   Chat, ChatHistoryState, ChatMessage, CommandInfo, ModelOption, Paper, PiAgentStatus, StatusInfo, UiState,
   WorkspaceState,
@@ -47,11 +48,16 @@ export interface ChatActionsDeps {
   toast: (message: string, error?: boolean) => void;
   saveUiState: (patch: Partial<UiState>) => void;
   loadLibrary: () => Promise<void>;
+  classificationBusy: (id: string) => boolean;
+  mergeClassifyChat: (chat: Chat) => void;
+  classifySummaryVersion: () => number;
+  mergeClassifySummaries: (chats: Chat[], started: number) => void;
 }
 
 export function createWorkspaceChatActions({
   state, api, activeStatuses, pendingChatChanges, currentPaper, agent, models, busy, modelReady, canStartTurn,
   canRunPaperSkill, canSend, isStopped, toast, saveUiState, loadLibrary,
+  classificationBusy, mergeClassifyChat, classifySummaryVersion, mergeClassifySummaries,
 }: ChatActionsDeps) {
   let historyVersion = 0;
   let uploadSequence = 0;
@@ -95,9 +101,11 @@ export function createWorkspaceChatActions({
 
   async function loadChats(): Promise<void> {
     const version = ++historyVersion;
+    const classifyVersion = classifySummaryVersion();
     try {
       const chats = await api<Chat[]>('/api/chats');
       if (version !== historyVersion || isStopped()) return;
+      mergeClassifySummaries(chats, classifyVersion);
       state.chats = chats;
       const current = chats.find((chat) => chat.id === state.chat?.id);
       if (current?.historyState) applyChatHistory(current.id, current.historyState);
@@ -127,9 +135,9 @@ export function createWorkspaceChatActions({
   }
 
   function canChangeChat(id: string): boolean {
-    if (pendingChatChanges.has(id)) return false;
+    if (pendingChatChanges.has(id) || classificationBusy(id)) return false;
     if (id === state.chat?.id) {
-      return !busy.value && !state.noteSaving && !state.folderActionSaving && !state.classifySaving;
+      return !busy.value && !state.noteSaving && !state.folderActionSaving;
     }
     const summary = state.chats.find((chat) => chat.id === id);
     return !summary?.messages?.some((message) => activeStatuses.includes(message.status));
@@ -156,12 +164,19 @@ export function createWorkspaceChatActions({
   async function openChat(id: string): Promise<void> {
     if (state.sending || pendingChatChanges.has(id)) return;
     const epoch = ++state.chatEpoch;
+    const started = messageSnapshot(state.chat?.id === id ? state.chat.messages || [] : []);
     try {
       const chat = await api<Chat>(`/api/chats/${endpoint(id)}`);
-      if (epoch !== state.chatEpoch || isStopped() || pendingChatChanges.has(id)) return;
+      if (isStopped()) return;
+      mergeClassifyChat(chat);
+      if (epoch !== state.chatEpoch || pendingChatChanges.has(id)) return;
       const summary = state.chats.find((item) => item.id === id);
       if (summary?.historyState === 'trashed') return;
       if (summary?.historyState) chat.historyState = summary.historyState;
+      if (state.chat?.id === id) {
+        chat.messages = mergeMessages(chat.messages || [], state.chat.messages || [], started,
+          (status) => activeStatuses.includes(status));
+      }
       state.chat = chat;
       state.context = new Set(chat.paperIds || []);
       saveUiState({ chatId: chat.id });
@@ -173,20 +188,15 @@ export function createWorkspaceChatActions({
 
   async function syncChat(id: string): Promise<void> {
     const epoch = state.chatEpoch;
+    const started = messageSnapshot(state.chat?.id === id ? state.chat.messages || [] : []);
     const chat = await api<ChatResponse>(`/api/chats/${endpoint(id)}`);
-    if (epoch !== state.chatEpoch || state.chat?.id !== id || isStopped() || pendingChatChanges.has(id)) return;
+    if (isStopped()) return;
+    mergeClassifyChat(chat);
+    if (epoch !== state.chatEpoch || state.chat?.id !== id || pendingChatChanges.has(id)) return;
     const summary = state.chats.find((item) => item.id === id);
     if (summary?.historyState) chat.historyState = summary.historyState;
-    const existing = new Map((state.chat.messages || []).map((message) => [message.id, message]));
-    // 补查 HTTP 状态时保留已经通过 SSE 收到的较长正文，并更新最终状态。
-    chat.messages = (chat.messages || []).map((message) => {
-      const live = existing.get(message.id);
-      existing.delete(message.id);
-      return live && (live.text || '').length > (message.text || '').length
-        ? { ...live, ...message, text: live.text }
-        : message;
-    });
-    chat.messages.push(...existing.values());
+    chat.messages = mergeMessages(chat.messages || [], state.chat.messages || [], started,
+      (status) => activeStatuses.includes(status));
     state.chat = chat;
   }
 
@@ -479,47 +489,6 @@ export function createWorkspaceChatActions({
     }
   }
 
-  /** 提交已勾选的归类提案；按服务端逐条结果更新卡片。 */
-  async function resolveClassifyProposals(ids: string[], action: 'apply' | 'discard'): Promise<void> {
-    const chat = state.chat;
-    if (!chat || !ids.length || state.classifySaving) return;
-    state.classifySaving = chat.id;
-    try {
-      const result = await api<{
-        applied: string[]; discarded: string[]; failed: Array<{ id: string; paperId: string; error: string }>;
-        remaining: string[]; message?: ChatMessage;
-      }>(`/api/chats/${endpoint(chat.id)}/classify-proposals`, json('POST', { action, ids }));
-      const resolved = new Set([...result.applied, ...result.discarded]);
-      const errors = new Map(result.failed.map(({ id, error }) => [id, error]));
-      if (state.chat?.id === chat.id) {
-        state.chat.classifyProposals = (state.chat.classifyProposals ?? []).filter((item) => !resolved.has(item.id));
-        for (const item of state.chat.classifyProposals) {
-          const error = errors.get(item.id);
-          if (error) item.error = error;
-        }
-        // HTTP 回执补齐断线时未收到的消息；SSE 可能已经送达，按 ID 去重。
-        const message = result.message;
-        if (message) {
-          const messages = (state.chat.messages ??= []);
-          const existing = messages.find((item) => item.id === message.id);
-          if (existing) Object.assign(existing, message);
-          else messages.push(message);
-        }
-      }
-      if (action === 'apply') {
-        const failed = result.failed.length ? `，${result.failed.length} 项需处理` : '';
-        toast(`已归类 ${result.applied.length} 篇论文${failed}`, !!failed);
-        await loadLibrary();
-      } else {
-        toast(`已取消 ${result.discarded.length} 项归类请求`);
-      }
-    } catch (error) {
-      toast(messageOf(error), true);
-    } finally {
-      state.classifySaving = '';
-    }
-  }
-
   async function decideApproval(
     id: string,
     decision: string,
@@ -563,7 +532,6 @@ export function createWorkspaceChatActions({
     saveNoteDraft,
     discardNoteDraft,
     resolveFolderActions,
-    resolveClassifyProposals,
     decideApproval,
   };
 }

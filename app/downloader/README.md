@@ -31,6 +31,7 @@ Python入口为`run.py`，默认以本工具所在项目为根目录，和当前
 | review --batch NAME --item ID --note TEXT | 完成人工查看后记录核对；可指定--accept-identity、--visual-reviewed、--type、--version |
 | archive --batch NAME [--category DIR] | 归档已核验项，分配或复用L编号，保留版本及更新README/catalog；分类目录须已存在，指定的DIR会写回台账 |
 | rename-category --category NAME [--subcategory NAME] --name NEW | 在库写锁下移动分类目录，同步README、来源记录、文本引用、批次台账和catalog |
+| delete-category --category NAME [--subcategory NAME] | 无文献的分类连同说明和历史下载资料一起移到回收站，保留文件、索引和批次引用检查 |
 | move-paper --literature-id L --category DIR | 在库写锁下把一篇文献及其来源记录移到现有分类，同步README链接、笔记与成果引用、批次台账条目、归档事务和catalog；目标同名文件时报错且不改动 |
 | move-papers INPUT.json | 单次取库写锁，按指定目标分类批量移动最多 1000 篇，返回逐项结果和需要时的修复记录 |
 | repair | 恢复未完成的分类改名、文献移动和归档事务，报告冲突 |
@@ -53,7 +54,14 @@ Python入口为`run.py`，默认以本工具所在项目为根目录，和当前
 
 `move-paper` 只处理已经归档的 `L` 编号，目标分类必须已存在；同目录内的主文件、其他版本与 `.来源.json` 一起搬，其他目录的同编号版本留在原处并在 `other_locations` 里报告。搬完文件后改写 README 链接、`notes/`/`synthesis/`/`outputs/` 中的路径、来源记录的 `当前路径`、批次台账条目的 `file`/`source_record`、归档事务记录，并重建 catalog；批次级 `category` 不变。引用改写失败时保留 `.zhiyue/tmp/paper_moves/` 事务记录，`repair` 可续做。
 
-`move-papers INPUT.json` 接受 `[{"paperId":"L001","category":"papers/01_分类"}]` 格式的数组。同一编号指定不同目标时拒绝整组。其他预检问题逐项报告，有效项共用一份事务记录，批次级 `category` 保留，索引统一重建。中断后运行 `repair`，它会核对整组文件状态与哈希，能安全续做时完成移动和引用同步。存在冲突时保留修复记录。
+`move-papers INPUT.json` 接受 `[{"paperId":"L001","category":"papers/01_分类"}]` 格式的数组。同一编号指定不同目标时拒绝整组。其他预检问题逐项报告，有效项共用一份事务记录，批次级 `category` 保留，索引统一重建。中断后运行 `repair`，它会核对整组文件状态与哈希，能安全续做时完成移动和引用同步。存在冲突时保留修复记录。普通 `move-paper` 和 `move-papers` 都在库写锁内先检查请求文献涉及的未完成事务；存在记录时先返回待修复原因，不执行新移动，也不把“文件已在目标”报告为完成。批量请求返回 `repair` 和逐项失败/阻止状态，显式修复完成后才可正常重试。
+
+`delete-category` 在同一库写锁内核对持久化索引和当前索引中的文献主版本、其他版本和来源记录引用，再递归检查实际目录。
+没有文献且只剩 Markdown、TXT、CSV、TSV、JSON，或普通文件名以 `.API.xml` 结尾（不区分大小写）的历史 API 下载响应时，
+说明和历史下载资料一起移到回收站：整个目录连同内部空目录通过 `rename` 原样移入 `.zhiyue/trash/categories/`。
+历史 API XML 可能包含全文；删除操作不解析、改写或清理内容，也不清空或覆盖其中的文件。
+其他 XML、未入索引的 PDF、来源侧车、未知文件、符号链接、目录联接以及仍被批次引用的目录会阻止删除，并给出具体原因。
+侧栏的 0 篇只表示没有主版本，不代表磁盘上没有其他文件。
 
 `archive` 不再为缺失的分类目录执行 `mkdir`。导入前由网站按编号规则创建分类；直接调用 CLI 时需先创建目录，否则 `import` 返回“分类目录不存在”。已有批次可用 `archive --category papers/现有目录` 把台账分类改到现有目录，后续续跑沿用新分类。
 

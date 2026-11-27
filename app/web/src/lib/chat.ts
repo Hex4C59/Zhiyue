@@ -1,6 +1,7 @@
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { Store, redact } from './store.js';
+import { redact } from './store.js';
+import { ChatStore } from './chatStore.js';
 import { statusError } from './errors.js';
 import { buildCommands, findCommand, parseCommand, runCommand } from './commands.js';
 import type { CommandInfo, CommandOutcome } from './commands.js';
@@ -14,10 +15,13 @@ import type {
 } from './chatTypes.js';
 import { dynamicTools, executeToolCall } from './chatTools.js';
 import {
-  createDocumentDraft, createNoteDraft, draftTarget, proposeFolderDeletes, proposePaperClassifications,
-  resolveClassifyProposals, resolveFolderActions, resolveNoteDraft,
+  createDocumentDraft, createNoteDraft, draftTarget, proposeFolderDeletes, resolveFolderActions, resolveNoteDraft,
 } from './chatDrafts.js';
-import type { ChatDraftHost, ClassifyResolution, FolderActionResolution } from './chatDrafts.js';
+import type { ChatDraftHost, FolderActionResolution } from './chatDrafts.js';
+import {
+  classificationBusy, proposePaperClassifications, reconcileClassifications, resolveClassifyProposals,
+} from './chatClassifications.js';
+import type { ClassificationHost, ClassifyResolution, ClassifySubmission } from './chatClassifications.js';
 
 export { normalizePaperContext, dynamicTools };
 export type {
@@ -76,7 +80,7 @@ export class ChatService {
   readPaperTranslation?: ChatServiceOptions['readPaperTranslation'];
   readonly skills?: ChatServiceOptions['skills'];
   readonly compactSession?: ChatServiceOptions['compact'];
-  readonly store: Store<{ chats: Chat[] }>;
+  readonly store: ChatStore;
   readonly client: AssistantClient;
   private readonly runningCommands = new Set<string>();
   readonly resolvingFolders = new Set<string>();
@@ -105,7 +109,7 @@ export class ChatService {
     this.readPaperTranslation = readPaperTranslation;
     this.skills = skills;
     this.compactSession = compact;
-    this.store = new Store<{ chats: Chat[] }>(path.join(stateDir, 'chats.json'), { chats: [] });
+    this.store = new ChatStore(stateDir);
     this.client = client;
     this.loaded = new Set();
     this.active = new Map();
@@ -114,12 +118,15 @@ export class ChatService {
     this.models = [];
     this.authenticated = false;
     for (const chat of this.store.data.chats) {
+      let interrupted = false;
       for (const message of chat.messages) {
         if (message.status === 'streaming') {
           message.status = 'interrupted';
           message.text ||= '上次会话在服务关闭时中断。';
+          interrupted = true;
         }
       }
+      if (interrupted) this.store.save(chat.id);
     }
     this.client.on('notification', (message) => this.notification(message));
     this.client.on('request', (message) => {
@@ -145,6 +152,10 @@ export class ChatService {
       get: (id) => this.get(id),
       writableChat: (id) => this.writableChat(id),
     };
+  }
+
+  private classificationHost(): ClassificationHost {
+    return { ...this.draftHost(), jobs: this.jobs };
   }
 
   status(): ChatStatusSnapshot {
@@ -177,9 +188,12 @@ export class ChatService {
     return this.connecting;
   }
 
-  list(): Array<Omit<Chat, 'noteDrafts' | 'folderActions' | 'classifyProposals'> & { messages: ChatMessage[] }> {
-    return this.store.data.chats.map(({ noteDrafts, folderActions, classifyProposals, ...chat }) => ({
+  list(): Array<Omit<Chat, 'noteDrafts' | 'folderActions' | 'classifyProposals' | 'classifyRuns'> & {
+    messages: ChatMessage[]; classifyRunning: boolean;
+  }> {
+    return this.store.data.chats.map(({ noteDrafts, folderActions, classifyProposals, classifyRuns, ...chat }) => ({
       ...chat,
+      classifyRunning: classificationBusy(this.classificationHost(), { ...chat, classifyRuns }),
       messages: chat.historyState === 'trashed' ? [] : chat.messages.slice(-1),
     })).reverse();
   }
@@ -190,10 +204,16 @@ export class ChatService {
     if (!chat.noteDrafts) chat.noteDrafts = [];
     if (!chat.folderActions) chat.folderActions = [];
     if (!chat.classifyProposals) chat.classifyProposals = [];
+    chat.classifyRuns ??= [];
+    chat.classifyRevision ??= 0;
     return chat;
   }
 
   private assertIdle(id: string): void {
+    const chat = this.store.data.chats.find((item) => item.id === id);
+    if (chat && classificationBusy(this.classificationHost(), chat)) {
+      throw statusError('归类移动正在处理，请稍候。', 409);
+    }
     if (this.active.has(id) || this.runningCommands.has(id)) {
       throw statusError('当前回答或命令尚未完成，请先停止或等待。', 409);
     }
@@ -215,13 +235,15 @@ export class ChatService {
     if (!chat) throw statusError('会话不存在。', 404);
     this.assertIdle(id);
     if (this.resolvingFolders.has(id)) throw statusError('文件夹删除正在处理，请稍候。', 409);
-    if (this.resolvingClassifications.has(id)) throw statusError('归类移动正在处理，请稍候。', 409);
+    if (classificationBusy(this.classificationHost(), chat)) {
+      throw statusError('归类移动正在处理，请稍候。', 409);
+    }
     const previous = chat.historyState;
     if (previous !== historyState) {
       // 会话记录由本地服务独占管理。归档和回收状态与正文用同一次原子替换写入。
       chat.historyState = historyState;
       try {
-        this.store.save();
+        this.store.save(id);
       } catch (error) {
         chat.historyState = previous;
         throw error;
@@ -235,16 +257,20 @@ export class ChatService {
     const chat: Chat = {
       id: randomUUID(), title: String(title || '新的论文讨论').slice(0, 100),
       paperIds: normalizePaperContext({ paperIds }).paperIds ?? [], messages: [], noteDrafts: [], folderActions: [],
-      classifyProposals: [],
+      classifyProposals: [], classifyRuns: [], classifyRevision: 0,
       createdAt: new Date().toISOString(), threadId: null,
     };
     this.store.data.chats.push(chat);
-    this.store.save();
+    try { this.store.save(chat.id); }
+    catch (error) {
+      this.store.data.chats.splice(this.store.data.chats.indexOf(chat), 1);
+      throw error;
+    }
     return chat;
   }
 
   updateMessage(chatId: string, message: ChatMessage): void {
-    this.store.save();
+    this.store.save(chatId);
     this.emit({ type: 'message', chatId, message });
   }
 
@@ -263,7 +289,7 @@ export class ChatService {
     this.assertIdle(chatId);
     // 命令与普通消息同样携带选中文献；不清空、不覆盖时才保留会话原值。
     const incoming = normalizePaperContext(context);
-    if (applyPaperContext(chat, incoming)) this.store.save();
+    if (applyPaperContext(chat, incoming)) this.store.save(chatId);
     const parsed = parseCommand(text);
     if (!parsed) throw statusError('请以斜杠开头输入命令。');
     const command = findCommand(this.commands(), parsed.name);
@@ -333,7 +359,8 @@ export class ChatService {
     }
     if (model && !/^[\w./:-]{1,100}$/.test(model)) throw statusError('模型名称不合法。');
     const incoming = normalizePaperContext({ paperIds, activePaperId, pdfPage });
-    if (applyPaperContext(chat, incoming)) this.store.save();
+    const previous = { paperIds: chat.paperIds, title: chat.title, length: chat.messages.length };
+    applyPaperContext(chat, incoming);
     const user: ChatMessage = {
       id: randomUUID(), role: 'user', text,
       attachments: attachments.map(({ id, name, mime, size }) => ({ id, name, mime, size })),
@@ -348,9 +375,17 @@ export class ChatService {
       message: assistant, turnId: null, items: new Map(), thinkingItems: new Map(),
       turnStarting: false, cancelled: false,
     };
+    // 用户消息、上下文和占位回答在同一次提交中可靠保存，随后才发布两条消息事件。
+    try { this.store.save(chatId); }
+    catch (error) {
+      chat.messages.splice(previous.length);
+      chat.paperIds = previous.paperIds;
+      chat.title = previous.title;
+      throw error;
+    }
     this.active.set(chatId, active);
-    this.updateMessage(chatId, user);
-    this.updateMessage(chatId, assistant);
+    this.emit({ type: 'message', chatId, message: user });
+    this.emit({ type: 'message', chatId, message: assistant });
     this.run(chat, promptOverride ?? text, attachments, model, active, incoming).catch((error: Error) => {
       if (this.active.get(chatId) === active) this.finish(chatId, 'failed', redact(error.message));
     });
@@ -373,7 +408,7 @@ export class ChatService {
       if (!current()) return;
       chat.threadId = started.thread.id;
       this.loaded.add(chat.threadId);
-      this.store.save();
+      this.store.save(chat.id);
     } else if (!this.loaded.has(chat.threadId)) {
       await this.client.request('thread/resume', { threadId: chat.threadId }, 60000);
       if (!current()) return;
@@ -573,8 +608,14 @@ export class ChatService {
     return resolveFolderActions(this.draftHost(), chatId, action, ids);
   }
 
-  resolveClassifyProposals(chatId: string, action: unknown, ids: unknown): Promise<ClassifyResolution> {
-    return resolveClassifyProposals(this.draftHost(), chatId, action, ids);
+  resolveClassifyProposals(
+    chatId: string, action: unknown, ids: unknown, requestId?: unknown,
+  ): Promise<ClassifyResolution | ClassifySubmission> {
+    return resolveClassifyProposals(this.classificationHost(), chatId, action, ids, requestId);
+  }
+
+  reconcileClassifications(restarting = false, changed?: JobRecord): void {
+    reconcileClassifications(this.classificationHost(), restarting, changed);
   }
 
   async serverRequest(message: ClientRequest): Promise<void> {
@@ -604,7 +645,7 @@ export class ChatService {
           createDocumentDraft: (chatId, input) => this.createDocumentDraft(chatId, input),
           proposeFolderDeletes: (targetChat, values) => proposeFolderDeletes(this.draftHost(), targetChat, values),
           proposePaperClassifications: (targetChat, values) =>
-            proposePaperClassifications(this.draftHost(), targetChat, values),
+            proposePaperClassifications(this.classificationHost(), targetChat, values),
         }, chat, tool, args);
         this.client.respond(rpcId, { success: true, contentItems });
       } catch (error) {

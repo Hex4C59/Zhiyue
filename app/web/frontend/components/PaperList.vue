@@ -3,6 +3,7 @@ import { computed, inject } from 'vue';
 import { authorText, readKey, readLabels, titleOf } from '../lib/content';
 import Icon from './Icon.vue';
 import PanelHandle from './PanelHandle.vue';
+import VirtualList from './VirtualList.vue';
 import type { Paper } from '../lib/types';
 import type { WorkspaceApi } from '../lib/workspace';
 
@@ -28,38 +29,12 @@ const emptyText = computed(() =>
       ? '这个文件夹还没有文献'
       : '文献库还没有文献',
 );
-const papers = computed<Paper[]>(() => {
-  const query = state.query.trim().toLocaleLowerCase();
-  const result = state.papers.filter((paper) => {
-    const haystack = [
-      paper.title,
-      paper.titleZh,
-      authorText(paper),
-      paper.literature_id,
-      paper.venue,
-      paper.category,
-      paper.subcategory,
-    ]
-      .join(' ')
-      .toLocaleLowerCase();
-    return (
-      (!query || haystack.includes(query)) &&
-      (!state.year || String(paper.year) === state.year) &&
-      (!state.read || readKey(paper.readStatus) === state.read) &&
-      (!state.starred || paper.starred) &&
-      (!state.category || (paper.category || '未分类') === state.category) &&
-      (!state.subcategory || paper.subcategory === state.subcategory)
-    );
-  });
-  result.sort((a, b) =>
-    state.sort.startsWith('year')
-      ? (Number(a.year) || 0) - (Number(b.year) || 0)
-      : state.sort === 'title'
-        ? titleOf(a).localeCompare(titleOf(b))
-        : a.literature_id.localeCompare(b.literature_id, undefined, { numeric: true }),
-  );
-  return state.sort === 'year-desc' ? result.reverse() : result;
-});
+const papers = workspace.filteredPapers;
+const paperKey = (paper: Paper): string => paper.literature_id;
+const resetKey = computed(() => JSON.stringify([
+  state.query.trim().toLocaleLowerCase(), state.year, state.read, state.starred,
+  state.category, state.subcategory, state.sort,
+]));
 
 function openImport(): void {
   state.importCategory = state.category
@@ -125,6 +100,11 @@ function dragStart(event: DragEvent, paper: Paper): void {
             <option value="title">题名顺序</option>
           </select>
         </div>
+        <button type="button" class="button subtle compact batch-translation-trigger"
+          :disabled="!papers.length || !!state.libraryError" title="批量翻译当前筛选结果"
+          data-batch-translation @click="workspace.openBatchTranslation(papers.map(paper => paper.literature_id))">
+          批量翻译
+        </button>
         <button
           id="refresh-catalog"
           class="icon-button compact"
@@ -138,76 +118,83 @@ function dragStart(event: DragEvent, paper: Paper): void {
         </button>
       </div>
     </div>
-    <div id="paper-list" class="paper-list" tabindex="0" aria-label="论文列表">
-      <div v-if="state.libraryError" class="empty">
-        <p class="error-text">{{ state.libraryError }}</p>
-        <button class="button subtle" @click="workspace.loadLibrary">重新连接</button>
-      </div>
-      <article
-        v-for="paper in papers"
-        v-else
-        :key="paper.literature_id"
-        class="paper-card"
-        :class="{ active: state.current === paper.literature_id, dragging: state.draggingPaper === paper.literature_id }"
-        :data-paper="paper.literature_id"
-        draggable="true"
-        title="拖动到左侧文件夹可移动分类"
-        tabindex="0"
-        :aria-label="titleOf(paper)"
-        :aria-current="state.current === paper.literature_id"
-        @dragstart="dragStart($event, paper)"
-        @dragend="workspace.endPaperDrag()"
-        @click="workspace.selectPaper(paper.literature_id)"
-        @keydown.enter.self.prevent="workspace.selectPaper(paper.literature_id)"
-        @keydown.space.self.prevent="workspace.selectPaper(paper.literature_id)"
-      >
-        <div class="paper-top">
-          <span class="paper-id">{{ paper.literature_id }}</span>
-          <span>· {{ paper.year || '年份待核实' }}</span>
-          <button
-            class="icon-button"
-            :class="{ selected: paper.starred }"
-            :aria-pressed="!!paper.starred"
-            :title="paper.starred ? '取消收藏' : '收藏论文'"
-            :aria-label="paper.starred ? '取消收藏' : '收藏论文'"
-            :disabled="state.pendingPatches.has(paper.literature_id)"
-            draggable="false"
-            @dragstart.stop.prevent
-            @click.stop="workspace.patchPaper(paper.literature_id, { starred: !paper.starred })"
-          >
-            <Icon name="star" />
-          </button>
+    <VirtualList id="paper-list" class="paper-list" aria-label="论文列表"
+      :items="state.libraryError ? [] : papers" :item-key="paperKey"
+      :estimate="172" :gap="9" :reset-key="resetKey">
+      <template #default="{ item: paper }">
+        <article
+          class="paper-card"
+          :class="{
+            active: state.current === paper.literature_id,
+            dragging: state.draggingPaper === paper.literature_id,
+          }"
+          :data-paper="paper.literature_id"
+          data-virtual-focus
+          draggable="true"
+          title="拖动到左侧文件夹可移动分类"
+          tabindex="0"
+          :aria-label="titleOf(paper)"
+          :aria-current="state.current === paper.literature_id"
+          @dragstart="dragStart($event, paper)"
+          @dragend="workspace.endPaperDrag()"
+          @click="workspace.selectPaper(paper.literature_id)"
+          @keydown.enter.self.prevent="workspace.selectPaper(paper.literature_id)"
+          @keydown.space.self.prevent="workspace.selectPaper(paper.literature_id)"
+        >
+          <div class="paper-top">
+            <span class="paper-id">{{ paper.literature_id }}</span>
+            <span>· {{ paper.year || '年份待核实' }}</span>
+            <button
+              class="icon-button"
+              :class="{ selected: paper.starred }"
+              :aria-pressed="!!paper.starred"
+              :title="paper.starred ? '取消收藏' : '收藏论文'"
+              :aria-label="paper.starred ? '取消收藏' : '收藏论文'"
+              :disabled="state.pendingPatches.has(paper.literature_id)"
+              draggable="false"
+              @dragstart.stop.prevent
+              @click.stop="workspace.patchPaper(paper.literature_id, { starred: !paper.starred })"
+            >
+              <Icon name="star" />
+            </button>
+          </div>
+          <h3>{{ titleOf(paper) }}</h3>
+          <div class="paper-authors" :title="authorText(paper)">{{ authorText(paper) }}</div>
+          <div class="paper-bottom">
+            <span class="tag" :title="String(paper.subcategory || paper.venue || '')">
+              {{ String(paper.subcategory || paper.venue || paper.category || '未分类').replace(/^\d+_/, '') }}</span
+            >
+            <span :class="readKey(paper.readStatus)"
+              ><i class="read-dot" />{{ readLabels[readKey(paper.readStatus)] }}</span
+            >
+          </div>
+        </article>
+      </template>
+      <template #empty>
+        <div v-if="state.libraryError" class="empty">
+          <p class="error-text">{{ state.libraryError }}</p>
+          <button class="button subtle" @click="workspace.loadLibrary">重新连接</button>
         </div>
-        <h3>{{ titleOf(paper) }}</h3>
-        <div class="paper-authors" :title="authorText(paper)">{{ authorText(paper) }}</div>
-        <div class="paper-bottom">
-          <span class="tag" :title="String(paper.subcategory || paper.venue || '')">
-            {{ String(paper.subcategory || paper.venue || paper.category || '未分类').replace(/^\d+_/, '') }}</span
-          >
-          <span :class="readKey(paper.readStatus)"
-            ><i class="read-dot" />{{ readLabels[readKey(paper.readStatus)] }}</span
-          >
+        <div v-else class="empty paper-list-empty">
+          <span class="empty-art"><Icon :name="filtering ? 'search' : 'library'" /></span>
+          <h2>{{ filtering ? '没有找到匹配结果' : emptyText }}</h2>
+          <p>{{ filtering ? '试试其他关键词，或清除筛选条件。' : '导入 PDF，慢慢搭建你的专属文献库。' }}</p>
+          <div class="empty-actions">
+            <button
+              v-if="filtering || state.category"
+              id="reset-filters"
+              class="button subtle"
+              @click="workspace.resetFilters"
+            >
+              {{ filtering ? '清除筛选' : '查看全部文献' }}
+            </button>
+            <button v-if="!filtering" class="button primary" @click="openImport">
+              <Icon name="upload" />导入 PDF
+            </button>
+          </div>
         </div>
-      </article>
-      <div v-if="!state.libraryError && !papers.length" class="empty paper-list-empty">
-        <span class="empty-art"><Icon :name="filtering ? 'search' : 'library'" /></span>
-        <h2>{{ filtering ? '没有找到匹配结果' : emptyText }}</h2>
-        <p>{{ filtering ? '试试其他关键词，或清除筛选条件。' : '导入 PDF，慢慢搭建你的专属文献库。' }}</p>
-        <div class="empty-actions">
-          <button
-            v-if="filtering || state.category"
-            id="reset-filters"
-            class="button subtle"
-            @click="workspace.resetFilters"
-          >
-            {{ filtering ? '清除筛选' : '查看全部文献' }}
-          </button>
-          <button v-if="!filtering" class="button primary" @click="openImport">
-            <Icon name="upload" />导入 PDF
-          </button>
-        </div>
-      </div>
-    </div>
+      </template>
+    </VirtualList>
     <PanelHandle kind="papers" />
   </section>
 </template>

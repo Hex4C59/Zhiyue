@@ -4,7 +4,12 @@ import { EventEmitter } from 'node:events';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
+import { randomUUID } from 'node:crypto';
+import { activeClassifyRun } from '../shared/contracts.js';
+import type { ClassificationMovePreparation, JobRecord, PaperMove } from '../src/lib/jobs.js';
 import { ChatService } from '../src/lib/chat.js';
+import type { ChatRecord } from '../src/lib/chatStore.js';
+import { ChatStore } from '../src/lib/chatStore.js';
 import { resolvePi } from '../src/lib/pi.js';
 import type {
   AccountResult, AssistantClient, ChatEvent, ChatMessage, ChatServiceOptions,
@@ -51,6 +56,7 @@ interface Fixture {
   client: FakeAgent;
   events: ChatEvent[];
   dir: string;
+  classificationBatches: PaperMove[][];
 }
 
 async function fixture(t: test.TestContext): Promise<Fixture> {
@@ -58,6 +64,8 @@ async function fixture(t: test.TestContext): Promise<Fixture> {
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
   const client = new FakeAgent();
   const events: ChatEvent[] = [];
+  const classificationJobs = new Map<string, JobRecord>();
+  const classificationBatches: PaperMove[][] = [];
   const skillList: Array<{ name: string; description: string; filePath: string; baseDir: string; disableModelInvocation: boolean }> = [
     {
       name: 'paper-reading', description: '判断论文是否值得精读。',
@@ -81,7 +89,32 @@ async function fixture(t: test.TestContext): Promise<Fixture> {
       startDownload: async (input: unknown) => ({ id: 'job-1', status: 'queued', input }),
       startAction: async () => ({ id: 'job-1' }),
       startPaperMove: async (moves: unknown) => ({ id: 'move-1', status: 'queued', moves }),
-      getJob: () => ({ id: 'job-1' }),
+      startClassificationMove: async (
+        classification: { chatId: string; runId: string }, _count: number,
+        prepare: (jobId: string, checkOpen: () => void) => Promise<ClassificationMovePreparation>,
+      ) => {
+        const job: JobRecord = { id: randomUUID(), title: '归类移动', batch: null, classification,
+          status: 'queued', log: '', steps: [], createdAt: '', updatedAt: '' };
+        classificationJobs.set(job.id, job);
+        queueMicrotask(async () => {
+          try {
+            job.status = 'running';
+            chats.reconcileClassifications(false, job);
+            const { moves, blocked } = await prepare(job.id, () => {});
+            classificationBatches.push(structuredClone(moves));
+            job.moveResult = { items: [...blocked, ...moves.map(({ paperId, category }) => ({
+              paperId, category, status: paperId === 'L009' ? 'blocked' as const : 'moved' as const,
+              ...(paperId === 'L009' ? { error: '目标同名文件已存在。' } : {}),
+            }))] };
+            job.steps = [{ action: 'move-papers', status: 'completed', startedAt: '', finishedAt: '' }];
+            job.status = job.moveResult.items.some(({ status }) => status === 'blocked') ? 'partial' : 'completed';
+          } catch (error) { job.status = 'failed'; job.error = (error as Error).message; }
+          chats.reconcileClassifications(false, job);
+        });
+        return job;
+      },
+      getJob: (id: string) => classificationJobs.get(id) ?? { id: 'job-1' },
+      listJobs: () => [...classificationJobs.values()],
     },
     emit: (event: ChatEvent) => events.push(structuredClone(event)),
     extract: async () => ({ text: '文件内容' }),
@@ -112,7 +145,7 @@ async function fixture(t: test.TestContext): Promise<Fixture> {
   } as unknown as ChatServiceOptions;
   const chats = new ChatService(options);
   chats.authenticated = true;
-  return { chats, client, events, dir };
+  return { chats, client, events, dir, classificationBatches };
 }
 
 const until = async (predicate: () => boolean): Promise<void> => {
@@ -122,6 +155,122 @@ const until = async (predicate: () => boolean): Promise<void> => {
   }
   throw new Error('condition timeout');
 };
+
+const applyClassifications = async (chats: ChatService, chatId: string, ids: string[]) => {
+  const submitted = await chats.resolveClassifyProposals(chatId, 'apply', ids, randomUUID());
+  assert.ok('run' in submitted);
+  await until(() => !activeClassifyRun(submitted.run));
+  const run = submitted.run;
+  return {
+    run, applied: run.items.filter(({ status }) => status === 'moved' || status === 'unchanged')
+      .map(({ proposalId }) => proposalId),
+    failed: run.items.filter(({ status }) => !['moved', 'unchanged'].includes(status))
+      .map(({ proposalId, paperId, error }) => ({ id: proposalId, paperId, error })),
+    message: chats.get(chatId).messages.find(({ id }) => id === run.messageId),
+  };
+};
+
+test('用户消息与占位回答只保存一次，持久化成功后才发布两条事件', async (t) => {
+  const { chats, client, events } = await fixture(t);
+  const chat = chats.create({ paperIds: ['L001'] });
+  const other = chats.create({ title: '不应改写的另一会话' });
+  const before = await fs.readFile(chats.store.fileFor(other.id));
+  let release!: (value: ThreadResult) => void;
+  const request = client.request.bind(client);
+  client.request = async <R,>(method: string, params?: Record<string, unknown>): Promise<R> => {
+    if (method === 'thread/start') return new Promise<ThreadResult>((resolve) => { release = resolve; }) as Promise<R>;
+    return request<R>(method, params);
+  };
+  const save = chats.store.save.bind(chats.store);
+  const commits: string[] = [];
+  t.mock.method(chats.store, 'save', (id: string) => { commits.push(id); save(id); });
+  const emit = chats.emit;
+  const publications: Array<{ messages: number; commits: number }> = [];
+  t.mock.method(chats, 'emit', (event: ChatEvent) => {
+    if (event.type === 'message') {
+      const committed = new ChatStore(path.dirname(chats.store.directory)).data.chats.find(({ id }) => id === chat.id)!;
+      publications.push({ messages: committed.messages.length, commits: commits.length });
+    }
+    return emit(event);
+  });
+  assert.deepEqual(await chats.send(chat.id, { text: '一次可靠提交', paperIds: ['L002'] }), { accepted: true });
+  assert.deepEqual(commits, [chat.id]);
+  assert.deepEqual(publications, [{ messages: 2, commits: 1 }, { messages: 2, commits: 1 }]);
+  const saved = JSON.parse(await fs.readFile(chats.store.fileFor(chat.id), 'utf8')) as ChatRecord;
+  assert.deepEqual(saved.chat.paperIds, ['L002']);
+  assert.deepEqual(saved.chat.messages.map(({ role, status }) => [role, status]),
+    [['user', 'completed'], ['assistant', 'streaming']]);
+  assert.equal(events.filter(({ type }) => type === 'message').length, 2);
+  assert.deepEqual(await fs.readFile(chats.store.fileFor(other.id)), before);
+  await chats.interrupt(chat.id);
+  release({ thread: { id: 'obsolete-thread' } });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+});
+
+test('消息受理保存失败回滚正文、上下文和标题，不发布事件或启动模型回合', async (t) => {
+  const { chats, client, events } = await fixture(t);
+  const chat = chats.create({ title: '原名称', paperIds: ['L001'] });
+  const original = structuredClone(chat);
+  const before = await fs.readFile(chats.store.fileFor(chat.id));
+  t.mock.method(chats.store, 'save', () => { throw new Error('合成受理保存失败'); });
+  await assert.rejects(chats.send(chat.id, { text: '不能被受理', paperIds: ['L002'] }), /受理保存失败/);
+  assert.deepEqual(chat, original);
+  assert.equal(chats.active.has(chat.id), false);
+  assert.equal(client.calls.length, 0);
+  assert.equal(events.filter(({ type }) => type === 'message').length, 0);
+  assert.deepEqual(await fs.readFile(chats.store.fileFor(chat.id)), before);
+  assert.throws(() => chats.create(), /受理保存失败/);
+  assert.equal(chats.store.data.chats.length, 1, '新建失败不残留无法恢复的内存会话');
+});
+
+test('归档与草稿状态保存失败回滚内存，并保留可重试的完整草稿', async (t) => {
+  const { chats, events, dir } = await fixture(t);
+  const chat = chats.create();
+  const paper = { id: 'L001', file: 'papers/synthetic.pdf', title: '合成论文', authors: [], titleZh: '',
+    category: '01_测试', subcategory: '', notes: [], readStatus: 'unread' as const, starred: false };
+  const fail = () => { throw new Error('合成草稿保存失败'); };
+  const failing = t.mock.method(chats.store, 'save', fail);
+  assert.throws(() => chats.changeHistory(chat.id, 'archived'), /草稿保存失败/);
+  assert.equal(chat.historyState, undefined);
+  assert.throws(() => chats.createNoteDraft(chat.id, { paper, title: '临时笔记', content: '内容' }), /草稿保存失败/);
+  await assert.rejects(chats.createDocumentDraft(chat.id, { target: 'outputs', title: '临时文稿', content: '内容' }),
+    /草稿保存失败/);
+  assert.deepEqual(chat.noteDrafts, []);
+  assert.equal(events.length, 0);
+  failing.mock.restore();
+  const draft = chats.createNoteDraft(chat.id, { paper, title: '必须保留的笔记', content: '# 完整草稿' });
+  const before = await fs.readFile(chats.store.fileFor(chat.id));
+  const discard = t.mock.method(chats.store, 'save', fail);
+  await assert.rejects(chats.resolveNoteDraft(draft.id, 'discard'), /草稿保存失败/);
+  assert.deepEqual(chat.noteDrafts, [draft]);
+  assert.deepEqual(await fs.readFile(chats.store.fileFor(chat.id)), before);
+  assert.equal(events.some(({ type }) => type === 'noteDraftResolved'), false);
+  discard.mock.restore();
+  assert.deepEqual(await chats.resolveNoteDraft(draft.id, 'discard'), { discarded: true });
+  assert.deepEqual(new ChatStore(dir).data.chats[0]!.noteDrafts, []);
+});
+
+test('重启只提交中断回答所属会话，其他会话和固定回执保持不变', async (t) => {
+  const { chats, dir } = await fixture(t);
+  const pending = chats.create();
+  pending.messages.push({ id: 'unfinished', role: 'assistant', text: '', thinking: '已收到的推理',
+    createdAt: new Date().toISOString(), status: 'streaming' });
+  chats.store.save(pending.id);
+  const other = chats.create({ title: '保留固定回执' });
+  other.messages.push({ id: 'fixed-receipt', role: 'system', text: '确认结果',
+    status: 'completed', createdAt: new Date().toISOString() });
+  other.lastContextOperationId = 'fixed-receipt';
+  chats.store.save(other.id);
+  const before = await fs.readFile(chats.store.fileFor(other.id));
+  const restored = new ChatService({ root: dir, stateDir: dir, library: chats.library, jobs: chats.jobs,
+    emit: () => {}, extract: chats.extract, client: new FakeAgent() });
+  assert.equal(restored.get(pending.id).messages[0]!.status, 'interrupted');
+  assert.equal(restored.get(pending.id).messages[0]!.thinking, '已收到的推理');
+  const saved = JSON.parse(await fs.readFile(restored.store.fileFor(pending.id), 'utf8')) as ChatRecord;
+  assert.equal(saved.chat.messages[0]!.status, 'interrupted');
+  assert.deepEqual(await fs.readFile(chats.store.fileFor(other.id)), before);
+  assert.equal(restored.get(other.id).lastContextOperationId, 'fixed-receipt');
+});
 
 test('生成中的会话不能归档或移入回收站', async (t) => {
   const { chats, client } = await fixture(t);
@@ -170,10 +319,8 @@ test('多条agent消息流可拼接并在turn完成后持久化', async (t) => {
   assert.equal(lastMessage(chat).text, '第一段\n\n第二段');
   assert.equal(lastMessage(chat).status, 'completed');
   assert.equal(events.filter((e) => e.type === 'delta').map((e) => e.delta).join(''), '第一段\n\n第二段');
-  const saved = JSON.parse(await fs.readFile(path.join(dir, 'chats.json'), 'utf8')) as {
-    chats: Array<{ messages: ChatMessage[] }>;
-  };
-  assert.equal(saved.chats[0]?.messages.at(-1)?.text, '第一段\n\n第二段');
+  const saved = JSON.parse(await fs.readFile(chats.store.fileFor(chat.id), 'utf8')) as ChatRecord;
+  assert.equal(saved.chat.messages.at(-1)?.text, '第一段\n\n第二段');
 });
 
 test('推理增量按消息保存，多轮之间分隔且不被最终整段覆盖', async (t) => {
@@ -196,10 +343,8 @@ test('推理增量按消息保存，多轮之间分隔且不被最终整段覆�
   const message = lastMessage(chat);
   assert.equal(message.thinking, '先看目录\n\n再核对\n\n补录的推理');
   assert.equal(events.filter((e) => e.type === 'thinking').map((e) => e.delta).join(''), '先看目录\n\n再核对');
-  const saved = JSON.parse(await fs.readFile(path.join(dir, 'chats.json'), 'utf8')) as {
-    chats: Array<{ messages: ChatMessage[] }>;
-  };
-  assert.equal(saved.chats[0]?.messages.at(-1)?.thinking, '先看目录\n\n再核对\n\n补录的推理');
+  const saved = JSON.parse(await fs.readFile(chats.store.fileFor(chat.id), 'utf8')) as ChatRecord;
+  assert.equal(saved.chat.messages.at(-1)?.thinking, '先看目录\n\n再核对\n\n补录的推理');
 });
 
 test('下载请求必须通过命名工具，审批只响应明确点击', async (t) => {
@@ -637,10 +782,8 @@ test('技能命令作为用户回合发送展开后的技能说明，界面保�
   const user = chat.messages.find((message) => message.role === 'user');
   assert.equal(user?.text, '/skill:paper-reading 只看第 3 节');
   // 保存的聊天记录只留可见指令，不落展开后的技能正文。
-  const saved = JSON.parse(await fs.readFile(path.join(dir, 'chats.json'), 'utf8')) as {
-    chats: Array<{ messages: ChatMessage[] }>;
-  };
-  assert.equal(saved.chats[0]?.messages[0]?.text, '/skill:paper-reading 只看第 3 节');
+  const saved = JSON.parse(await fs.readFile(chats.store.fileFor(chat.id), 'utf8')) as ChatRecord;
+  assert.equal(saved.chat.messages[0]?.text, '/skill:paper-reading 只看第 3 节');
 });
 
 test('已开始回答时拒绝命令，避免与流式回合交错', async (t) => {
@@ -746,8 +889,8 @@ const classifyLibrary = (calls: Array<{ method: string; args: unknown[] }>): Cha
   },
 } as unknown as ChatServiceOptions['library']);
 
-test('归类提案匹配已有目录或标记待新建，确认后按缺失目录去重创建再逐篇移动', async (t) => {
-  const { chats, client, events, dir } = await fixture(t);
+test('归类提案匹配已有目录或标记待新建，确认后去重创建并提交一次整批移动', async (t) => {
+  const { chats, client, events, dir, classificationBatches } = await fixture(t);
   const calls: Array<{ method: string; args: unknown[] }> = [];
   chats.library = classifyLibrary(calls);
   const chat = chats.create();
@@ -813,6 +956,7 @@ test('归类提案匹配已有目录或标记待新建，确认后按缺失目�
 
   // 取消丢弃指定提案，并留下明确的取消回执。
   const discarded = await chats.resolveClassifyProposals(chat.id, 'discard', [replaced.id]);
+  assert.ok('discarded' in discarded);
   assert.deepEqual(discarded.discarded, [replaced.id]);
   assert.match(discarded.message?.text ?? '', /已取消 L003 的归类请求/);
   assert.match(discarded.message?.text ?? '', /未新建文件夹或移动论文/);
@@ -828,7 +972,7 @@ test('归类提案匹配已有目录或标记待新建，确认后按缺失目�
   const pending = (chat.classifyProposals ?? []).filter((item) =>
     item.paperId === 'L004' || item.paperId === 'L005');
   assert.equal(pending.length, 2);
-  const applied = await chats.resolveClassifyProposals(chat.id, 'apply', [
+  const applied = await applyClassifications(chats, chat.id, [
     existing.id, matched.id, ...pending.map(({ id }) => id),
   ]);
   assert.deepEqual(applied.failed, []);
@@ -838,29 +982,31 @@ test('归类提案匹配已有目录或标记待新建，确认后按缺失目�
     ['子方向', '03_新领域'],
     ['另一方向', '03_新领域'],
   ]);
-  assert.deepEqual(calls.filter((call) => call.method === 'movePaper').map(({ args }) => args), [
+  assert.equal(classificationBatches.length, 1);
+  assert.deepEqual(classificationBatches[0]?.map(({ paperId, category }) => [paperId, category]), [
     ['L001', 'papers/02_方法'],
     ['L002', 'papers/01_综述/01_语音'],
     ['L004', 'papers/03_新领域/01_子方向'],
     ['L005', 'papers/03_新领域/01_另一方向'],
   ]);
   assert.deepEqual(chat.classifyProposals, []);
-  assert.equal(events.filter((event) => event.type === 'classifyProposalResolved' && event.applied === true).length, 4);
+  assert.ok(events.some((event) => event.type === 'classifyRun' &&
+    (event.run as { status?: string }).status === 'completed'));
   assert.ok(events.some((event) => event.type === 'library'));
   const receipt = applied.message;
   assert.ok(receipt);
   assert.equal(receipt.role, 'system');
   assert.equal(receipt.status, 'completed');
   assert.equal((receipt.text.match(/已新建文件夹：`papers\/03_新领域`/g) ?? []).length, 1);
-  assert.match(receipt.text, /L001 已归类至 `papers\/02_方法`/);
-  assert.match(receipt.text, /L004 已归类至 `papers\/03_新领域\/01_子方向`/);
-  assert.match(receipt.text, /L005 已归类至 `papers\/03_新领域\/01_另一方向`/);
+  assert.match(receipt.text, /L001 已移动至 `papers\/02_方法`/);
+  assert.match(receipt.text, /L004 已移动至 `papers\/03_新领域\/01_子方向`/);
+  assert.match(receipt.text, /L005 已移动至 `papers\/03_新领域\/01_另一方向`/);
   assert.equal(chat.messages.at(-1)?.id, receipt.id);
   assert.ok(events.some((event) => event.type === 'message' &&
     (event.message as ChatMessage | undefined)?.id === receipt.id));
-  const saved = JSON.parse(await fs.readFile(path.join(dir, 'chats.json'), 'utf8')) as { chats: typeof chat[] };
-  assert.equal(saved.chats[0]?.messages.at(-1)?.text, receipt.text);
-  await assert.rejects(chats.resolveClassifyProposals(chat.id, 'apply', [existing.id]), /不存在/);
+  const saved = JSON.parse(await fs.readFile(chats.store.fileFor(chat.id), 'utf8')) as ChatRecord;
+  assert.equal(saved.chat.messages.at(-1)?.text, receipt.text);
+  await assert.rejects(chats.resolveClassifyProposals(chat.id, 'apply', [existing.id], 'reapply'), /不存在/);
 
   // 用户下一次提问时，即使 SDK 历史还停在 pending_confirmation，也会补入界面执行结果。
   chats.finish(chat.id, 'completed');
@@ -905,13 +1051,13 @@ test('分批操作回执完整同步，失败后重送且完成后跨重启保�
   assert.equal(chat.lastContextOperationId, 'discarded');
   assert.match(await prompt(), /L003 归类未完成/);
   chats.finish(chat.id, 'completed');
-  const saved = JSON.parse(await fs.readFile(path.join(dir, 'chats.json'), 'utf8')) as { chats: typeof chat[] };
-  assert.equal(saved.chats[0]?.lastContextOperationId, 'failed');
+  const saved = JSON.parse(await fs.readFile(chats.store.fileFor(chat.id), 'utf8')) as ChatRecord;
+  assert.equal(saved.chat.lastContextOperationId, 'failed');
   assert.doesNotMatch(await prompt(), /界面操作结果/);
 });
 
 test('归类执行失败时保留该行并写回原因，冲突目录重新解析复用', async (t) => {
-  const { chats, client, events } = await fixture(t);
+  const { chats, client, events, classificationBatches } = await fixture(t);
   const calls: Array<{ method: string; args: unknown[] }> = [];
   chats.library = classifyLibrary(calls);
   const chat = chats.create();
@@ -928,7 +1074,7 @@ test('归类执行失败时保留该行并写回原因，冲突目录重新解�
     ],
   });
   const [failing, passing] = (chat.classifyProposals ?? []).map(({ id }) => id);
-  const result = await chats.resolveClassifyProposals(chat.id, 'apply', [failing, passing]);
+  const result = await applyClassifications(chats, chat.id, [failing, passing]);
   assert.deepEqual(result.applied, [passing]);
   assert.equal(result.failed.length, 1);
   assert.equal(result.failed[0]?.paperId, 'L009');
@@ -937,10 +1083,10 @@ test('归类执行失败时保留该行并写回原因，冲突目录重新解�
   assert.match(chat.classifyProposals?.[0]?.error ?? '', /同名文件/);
   assert.match(result.message?.text ?? '', /已新建文件夹：`papers\/03_新领域`/);
   assert.match(result.message?.text ?? '', /L009 归类未完成：目标同名文件已存在/);
-  assert.match(result.message?.text ?? '', /L010 已归类至 `papers\/02_方法`/);
-  assert.doesNotMatch(result.message?.text ?? '', /L009 已归类至/);
-  assert.ok(events.some((event) => event.type === 'classifyProposal' && event.proposal &&
-    (event.proposal as { error?: string }).error));
+  assert.match(result.message?.text ?? '', /L010 已移动至 `papers\/02_方法`/);
+  assert.doesNotMatch(result.message?.text ?? '', /L009 已移动至/);
+  assert.ok(events.some((event) => event.type === 'classifyRun' &&
+    (event.proposals as Array<{ error?: string }>).some(({ error }) => error)));
 
   // 并发建目录返回 409 时重新解析已有目录，不重复创建。
   const conflictCalls: Array<{ method: string; args: unknown[] }> = [];
@@ -953,17 +1099,17 @@ test('归类执行失败时保留该行并写回原因，冲突目录重新解�
   } as unknown as ChatServiceOptions['library'];
   await request(2, { items: [{ paperId: 'L011', category: '冲突', basis: 'notes', reason: '并发已存在' }] });
   const concurrent = (chat.classifyProposals ?? []).find((item) => item.paperId === 'L011')?.id as string;
-  const reused = await chats.resolveClassifyProposals(chat.id, 'apply', [concurrent]);
+  const reused = await applyClassifications(chats, chat.id, [concurrent]);
   assert.deepEqual(reused.failed, []);
-  assert.deepEqual(conflictCalls.filter((call) => call.method === 'movePaper').map(({ args }) => args), [
+  assert.deepEqual(classificationBatches.at(-1)?.map(({ paperId, category }) => [paperId, category]), [
     ['L011', 'papers/05_冲突'],
   ]);
 
   // 防重入与非法参数。
   chats.resolvingClassifications.add(chat.id);
-  await assert.rejects(chats.resolveClassifyProposals(chat.id, 'apply', [failing]), /正在处理/);
+  await assert.rejects(chats.resolveClassifyProposals(chat.id, 'apply', [failing], 'busy'), /正在处理/);
   chats.resolvingClassifications.delete(chat.id);
-  await assert.rejects(chats.resolveClassifyProposals(chat.id, 'apply', ['missing']), /不存在/);
+  await assert.rejects(chats.resolveClassifyProposals(chat.id, 'apply', ['missing'], 'missing'), /不存在/);
   await assert.rejects(chats.resolveClassifyProposals(chat.id, 'delete', [failing]), /确认或取消/);
   await assert.rejects(chats.resolveClassifyProposals(chat.id, 'apply', []), /请选择/);
 });

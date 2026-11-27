@@ -37,7 +37,10 @@ function submit(action: 'apply' | 'discard'): void {
       <strong>删除文件夹</strong>
       <span class="folder-action-count">已选 {{ selected.size }} / {{ rows.length }}</span>
     </header>
-    <p>空文件夹会移到 <code>.zhiyue/trash/categories</code>。非空或被批次引用的目录会保留。</p>
+    <p>
+      没有文献的文件夹连同说明和历史下载资料一起移到回收站，位于 <code>.zhiyue/trash/categories/</code>。
+      含 PDF、来源记录或仍被索引、批次引用的目录会保留。
+    </p>
     <ul class="folder-action-rows">
       <li v-for="{ action } in rows" :key="action.path" :data-folder-action="action.id">
         <label>

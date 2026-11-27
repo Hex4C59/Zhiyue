@@ -1,12 +1,13 @@
 import { spawn } from 'node:child_process';
 import { createReadStream, existsSync, mkdirSync, realpathSync, readFileSync } from 'node:fs';
-import { readFile, writeFile, rename, readdir, realpath, lstat, open, stat, rm } from 'node:fs/promises';
+import { readFile, writeFile, readdir, realpath, lstat, open, stat, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { StringDecoder } from 'node:string_decoder';
 import { downloaderScript, resolvePython } from './python.js';
 import { libraryPaths } from './paths.js';
 import { statusError } from './errors.js';
+import { SnapshotWriter } from './snapshotWriter.js';
 import type { Library } from './library.js';
 
 export type JobStatus = 'queued' | 'running' | 'completed' | 'partial' | 'failed';
@@ -17,6 +18,8 @@ export interface PaperMoveItem extends PaperMove {
   otherLocations?: string[];
 }
 export interface PaperMoveResult { items: PaperMoveItem[]; repair?: string }
+export interface ClassificationMovePreparation { moves: PaperMove[]; blocked: PaperMoveItem[] }
+export interface ClassificationJobLink { chatId: string; runId: string }
 export type ActionName = 'download' | 'verify' | 'archive' | 'ieee' | 'collect';
 
 export interface JobStep {
@@ -46,6 +49,7 @@ export interface JobRecord {
   result?: BatchSummary;
   kind?: 'paper-move';
   moveResult?: PaperMoveResult;
+  classification?: ClassificationJobLink;
 }
 
 export interface DownloadEntry {
@@ -210,6 +214,11 @@ export class JobManager {
   persistence: Promise<unknown>;
   ready: Promise<unknown>;
   closing?: Promise<void>;
+  private readonly snapshots: SnapshotWriter;
+  private readonly logTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private readonly summaries = new Map<string, {
+    mtimeMs: number; ctimeMs: number; size: number; value: BatchSummary;
+  }>();
 
   constructor({ root, stateDir, emit = () => {}, python, downloader = downloaderScript, library = null }: JobManagerOptions) {
     const rootPath = path.resolve(root);
@@ -235,6 +244,7 @@ export class JobManager {
     this.children = new Set();
     this.queue = Promise.resolve();
     this.persistence = Promise.resolve();
+    this.snapshots = new SnapshotWriter(path.join(this.stateDir, 'jobs.json'), () => this.jobs);
     try {
       const saved = JSON.parse(readFileSync(path.join(this.stateDir, 'jobs.json'), 'utf8').replace(/^\uFEFF/, '')) as unknown;
       this.jobs = Array.isArray(saved) ? saved as JobRecord[] : (saved as { jobs?: JobRecord[] }).jobs ?? [];
@@ -288,13 +298,21 @@ export class JobManager {
   close(): Promise<void> {
     if (this.closing) return this.closing;
     this.closed = true;
+    for (const [id, timer] of this.logTimers) {
+      clearTimeout(timer);
+      this.logTimers.delete(id);
+      const job = this.jobs.find((item) => item.id === id);
+      if (job) this._notify(job);
+    }
     for (const job of this.jobs) {
-      if (!['queued', 'running'].includes(job.status)) continue;
+      if (job.status !== 'queued') continue;
       job.status = 'failed';
       job.error = INTERRUPTED;
       this._log(job, `\n${INTERRUPTED}\n`);
+      this._notify(job);
     }
-    // Start termination immediately, even if an earlier persistence write is pending.
+    // 运行项由队列在底层操作收尾后发布终态；准备目录的异步回调此时也必须先结束。
+    // 即使先前的持久化仍未结束，也立即开始终止所属进程。
     const stops = Promise.allSettled([...this.children].map((child) => this._stopChild(child)));
     this.closing = (async () => {
       await this.ready;
@@ -308,19 +326,16 @@ export class JobManager {
     return this.closing;
   }
 
-  _save(): Promise<unknown> {
-    const data = JSON.stringify(this.jobs, null, 2);
-    const operation = this.persistence.then(async () => {
-      const target = path.join(this.stateDir, 'jobs.json');
-      const temp = `${target}.${randomUUID()}.tmp`;
-      await writeFile(temp, data, { mode: 0o600 });
-      await rename(temp, target);
-    });
+  _save(): Promise<void> {
+    const operation = this.snapshots.save();
     this.persistence = operation.catch(() => {});
     return operation;
   }
 
   _notify(job: JobRecord): void {
+    const timer = this.logTimers.get(job.id);
+    if (timer !== undefined) clearTimeout(timer);
+    this.logTimers.delete(job.id);
     job.updatedAt = stamp();
     try {
       const result = this.emit({ type: 'job', job: clone(job) });
@@ -332,7 +347,12 @@ export class JobManager {
 
   _log(job: JobRecord, message: string): void {
     job.log = (job.log + redact(message)).slice(-LOG_LIMIT);
-    this._notify(job);
+    job.updatedAt = stamp();
+    if (this.closed || this.logTimers.has(job.id)) return;
+    // 日志立即进入有上限且已脱敏的状态；只合并日志通知，阶段和终态仍直接发布。
+    const timer = setTimeout(() => this._notify(job), 100);
+    timer.unref?.();
+    this.logTimers.set(job.id, timer);
   }
 
   async _batchPath(batch: unknown): Promise<string> {
@@ -386,18 +406,32 @@ export class JobManager {
   }
 
   async _summary(batch: string): Promise<BatchSummary> {
-    const state = JSON.parse((await readFile(await this._batchPath(batch), 'utf8')).replace(/^\uFEFF/, '')) as {
-      entries?: unknown; 条目?: unknown; scope_note?: unknown;
-    };
-    const entries = Array.isArray(state.entries)
-      ? state.entries as Array<Record<string, unknown>>
-      : Array.isArray(state.条目) ? state.条目 as Array<Record<string, unknown>> : [];
-    const counts: Record<string, number> = {};
-    for (const entry of entries) {
-      const status = String(entry.status ?? entry.状态 ?? 'unknown');
-      counts[status] = (counts[status] ?? 0) + 1;
+    // 即使缓存命中，也重新校验真实台账路径，不能绕过目录和链接边界。
+    const file = await this._batchPath(batch);
+    try {
+      const info = await stat(file);
+      const cached = this.summaries.get(file);
+      if (cached && cached.mtimeMs === info.mtimeMs && cached.ctimeMs === info.ctimeMs && cached.size === info.size) {
+        return { ...clone(cached.value), batch };
+      }
+      const state = JSON.parse((await readFile(file, 'utf8')).replace(/^\uFEFF/, '')) as {
+        entries?: unknown; 条目?: unknown; scope_note?: unknown;
+      };
+      const entries = Array.isArray(state.entries)
+        ? state.entries as Array<Record<string, unknown>>
+        : Array.isArray(state.条目) ? state.条目 as Array<Record<string, unknown>> : [];
+      const counts: Record<string, number> = {};
+      for (const entry of entries) {
+        const status = String(entry.status ?? entry.状态 ?? 'unknown');
+        counts[status] = (counts[status] ?? 0) + 1;
+      }
+      const value = { batch, entries: entries.length, counts, scope_note: String(state.scope_note ?? '') };
+      this.summaries.set(file, { mtimeMs: info.mtimeMs, ctimeMs: info.ctimeMs, size: info.size, value: clone(value) });
+      return value;
+    } catch (error) {
+      this.summaries.delete(file);
+      throw error;
     }
-    return { batch, entries: entries.length, counts, scope_note: String(state.scope_note ?? '') };
   }
 
   async _catalogDuplicate(digest: string): Promise<Record<string, unknown> | null> {
@@ -420,13 +454,19 @@ export class JobManager {
       if (error.code === 'ENOENT') return [];
       throw error;
     });
-    for (const dir of dirs) {
-      if (!dir.isDirectory() || !validBatch(dir.name)) continue;
-      try { result.push(await this._summary(dir.name)); }
-      catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    const batches = dirs.filter((dir) => dir.isDirectory() && validBatch(dir.name));
+    const present = new Set(batches.map((dir) => dir.name));
+    for (const [file, cached] of this.summaries) if (!present.has(cached.value.batch)) this.summaries.delete(file);
+    let cursor = 0;
+    await Promise.all(Array.from({ length: Math.min(4, batches.length) }, async () => {
+      while (cursor < batches.length) {
+        const batch = batches[cursor++]!;
+        try { result.push(await this._summary(batch.name)); }
+        catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+        }
       }
-    }
+    }));
     return result.sort((a, b) => b.batch.localeCompare(a.batch));
   }
 
@@ -437,6 +477,7 @@ export class JobManager {
     const step: JobStep = { action: command, status: 'running', startedAt: stamp() };
     job.steps.push(step);
     this._log(job, `\n[${command}] 开始\n`);
+    this._notify(job);
     await this._save();
     try {
       this._assertOpen();
@@ -505,8 +546,8 @@ export class JobManager {
     }
   }
 
-  async _enqueue({ batch = null, title, kind }: {
-    batch?: string | null; title?: string; kind?: JobRecord['kind'];
+  async _enqueue({ batch = null, title, kind, classification }: {
+    batch?: string | null; title?: string; kind?: JobRecord['kind']; classification?: ClassificationJobLink;
   }, work: (job: JobRecord) => Promise<void>): Promise<JobRecord> {
     this._assertOpen();
     await this.ready;
@@ -514,9 +555,15 @@ export class JobManager {
     const job: JobRecord = {
       id: randomUUID(), batch, title: String(title ?? '文献任务').slice(0, 300), status: 'queued',
       log: '', steps: [], createdAt: stamp(), updatedAt: stamp(), ...(kind ? { kind } : {}),
+      ...(classification ? { classification } : {}),
     };
     this.jobs.push(job);
-    await this._save();
+    try { await this._save(); }
+    catch (error) {
+      // 尚未可靠受理的任务不能留在查询结果中，后续快照也不能把它保存成永久排队。
+      this.jobs = this.jobs.filter((item) => item !== job);
+      throw error;
+    }
     this._notify(job);
     if (this.closed) return clone(job);
     this.queue = this.queue.catch(() => {}).then(async () => {
@@ -723,37 +770,56 @@ export class JobManager {
   }
 
   async startPaperMove(moves: PaperMove[]): Promise<JobRecord> {
-    return this._enqueue({ title: `批量移动 ${moves.length} 篇文献`, kind: 'paper-move' }, async (job) => {
-      const input = path.join(this.stateDir, `${job.id}_moves.json`);
-      if (!inside(this.root, await realpath(this.stateDir))) throw fail('任务输入目录逃逸');
-      await writeFile(input, JSON.stringify(moves), { flag: 'wx', mode: 0o600 });
-      try {
-        await this._run(job, 'move-papers', [input], (output) => {
-          const result = JSON.parse(output) as PaperMoveResult;
-          const expected = new Map(moves.map(({ paperId, category }) => [paperId, category]));
-          if (!Array.isArray(result?.items) || result.items.length !== expected.size ||
-            (result.repair !== undefined && typeof result.repair !== 'string')) {
-            throw new Error('文献工具返回了无效的移动结果。');
-          }
-          for (const item of result.items) {
-            if (!item || !expected.has(item.paperId) || expected.get(item.paperId) !== item.category ||
-              !['moved', 'unchanged', 'blocked', 'failed'].includes(item.status) ||
-              (item.error !== undefined && typeof item.error !== 'string') ||
-              (item.otherLocations !== undefined && (!Array.isArray(item.otherLocations) ||
-                !item.otherLocations.every((file) => typeof file === 'string')))) {
-              throw new Error('文献工具返回了无效的移动明细。');
-            }
-            expected.delete(item.paperId);
-            if (item.error) item.error = redact(item.error);
-          }
-          job.moveResult = result;
-          if (result.repair) throw new Error(`请运行文献库修复。事务记录：${result.repair}`);
-          if (result.items.some(({ status }) => status === 'failed')) throw new Error('文献移动失败，请核对任务明细。');
-        });
-      } finally {
-        await rm(input, { force: true });
-      }
+    return this._enqueue({ title: `批量移动 ${moves.length} 篇文献`, kind: 'paper-move' },
+      (job) => this._movePaperBatch(job, moves));
+  }
+
+  /** 关联信息在任务创建时落盘；目录准备和整批移动都在现有串行队列中执行。 */
+  async startClassificationMove(
+    classification: ClassificationJobLink, count: number,
+    prepare: (jobId: string, checkOpen: () => void) => Promise<ClassificationMovePreparation>,
+  ): Promise<JobRecord> {
+    return this._enqueue({ title: `归类移动 ${count} 篇文献`, kind: 'paper-move', classification }, async (job) => {
+      const { moves, blocked } = await prepare(job.id, () => this._assertOpen());
+      this._assertOpen();
+      if (moves.length) await this._movePaperBatch(job, moves, blocked);
+      else job.moveResult = { items: blocked };
     });
+  }
+
+  private async _movePaperBatch(job: JobRecord, moves: PaperMove[], blocked: PaperMoveItem[] = []): Promise<void> {
+    const input = path.join(this.stateDir, `${job.id}_moves.json`);
+    if (!inside(this.root, await realpath(this.stateDir))) throw fail('任务输入目录逃逸');
+    await writeFile(input, JSON.stringify(moves), { flag: 'wx', mode: 0o600 });
+    try {
+      await this._run(job, 'move-papers', [input], (output) => {
+        const result = JSON.parse(output) as PaperMoveResult;
+        const expected = new Map(moves.map(({ paperId, category }) => [paperId, category]));
+        if (!Array.isArray(result?.items) || result.items.length !== expected.size ||
+          (result.repair !== undefined && typeof result.repair !== 'string')) {
+          throw new Error('文献工具返回了无效的移动结果。');
+        }
+        for (const item of result.items) {
+          if (!item || !expected.has(item.paperId) || expected.get(item.paperId) !== item.category ||
+            !['moved', 'unchanged', 'blocked', 'failed'].includes(item.status) ||
+            (item.error !== undefined && typeof item.error !== 'string') ||
+            (item.otherLocations !== undefined && (!Array.isArray(item.otherLocations) ||
+              !item.otherLocations.every((file) => typeof file === 'string')))) {
+            throw new Error('文献工具返回了无效的移动明细。');
+          }
+          expected.delete(item.paperId);
+          if (item.error) item.error = redact(item.error);
+        }
+        job.moveResult = { ...result, items: [...blocked, ...result.items] };
+      });
+      // CLI 的完整回执先与成功退出的步骤一起落盘，再把逐项业务失败提升为任务失败。
+      if (job.moveResult?.repair) throw new Error(`请运行文献库修复。事务记录：${job.moveResult.repair}`);
+      if (job.moveResult?.items.some(({ status }) => status === 'failed')) {
+        throw new Error('文献移动失败，请核对任务明细。');
+      }
+    } finally {
+      await rm(input, { force: true });
+    }
   }
 
   async refreshCatalog(): Promise<JobRecord> {

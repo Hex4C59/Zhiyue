@@ -87,12 +87,15 @@ export const dynamicTools: DynamicTool[] = [
   },
   {
     type: 'function', name: 'delete_category',
-    description: '删除空分类或空子文件夹。只接受空文件夹，执行时移入 .zhiyue/trash/categories 可找回；本工具只生成待确认操作，返回pending_confirmation后必须等用户在界面确认，不得声称已删除。',
+    description: '删除没有文献的分类或子文件夹，说明和历史下载资料一起移到回收站，可从 .zhiyue/trash/categories 找回；'
+      + '含 PDF、来源记录、其他不支持的文件或仍被索引、批次引用的目录不能删除。'
+      + '本工具只生成待确认操作，返回 pending_confirmation 后必须等用户在界面确认，不得声称已删除。',
     inputSchema: object({ category: stringSchema, subcategory: stringSchema }, ['category']),
   },
   {
     type: 'function', name: 'delete_categories',
-    description: '把多个空文件夹加入同一张待确认卡片。用户确认后才移入回收站。路径可含子文件夹。',
+    description: '把多个没有文献的文件夹加入同一张待确认卡片，说明和历史下载资料一起移到回收站。'
+      + '用户确认后才执行，路径可含子文件夹。',
     inputSchema: object({ categories: { type: 'array', items: stringSchema, minItems: 1, maxItems: 50 } }, ['categories']),
   },
   {

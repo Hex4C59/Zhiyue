@@ -390,7 +390,13 @@ export async function translateMarkdownBlocks(
     }
   };
 
-  await Promise.all(Array.from({ length: Math.min(CONCURRENCY, batches.length) }, () => runWorker()));
+  // 取消时先等所有已发起请求收尾，避免 Promise.all 提前拒绝后下一篇与残留请求重叠。
+  const workers = await Promise.allSettled(
+    Array.from({ length: Math.min(CONCURRENCY, batches.length) }, () => runWorker()),
+  );
+  const rejected = workers.find((result): result is PromiseRejectedResult => result.status === 'rejected');
+  if (rejected) throw rejected.reason;
+  signal.throwIfAborted();
   if (translatedCount === 0) {
     throw statusError(lastError || '模型未能返回有效中文译文，请检查模型配置后重试。', 502);
   }

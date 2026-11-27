@@ -68,6 +68,38 @@ export interface ChatClassifyProposal {
   error?: string;
 }
 
+export type ClassifyRunStatus =
+  'queued' | 'preparing' | 'moving' | 'completed' | 'partial' | 'failed' | 'interrupted';
+
+export interface ClassifyRunItem {
+  proposalId: string;
+  paperId: string;
+  category: string;
+  status: 'pending' | 'moved' | 'unchanged' | 'blocked' | 'failed' | 'interrupted';
+  error?: string;
+}
+
+/** 一次用户确认的快照及固定回执；终态记录继续用于 requestId 幂等重放。 */
+export interface ChatClassifyRun {
+  id: string;
+  requestId: string;
+  proposalIds: string[];
+  proposals: ChatClassifyProposal[];
+  jobId: string | null;
+  status: ClassifyRunStatus;
+  stage: string;
+  revision: number;
+  createdFolders: string[];
+  items: ClassifyRunItem[];
+  messageId: string;
+  createdAt: string;
+  updatedAt: string;
+  repair?: string;
+}
+
+export const activeClassifyRun = (run?: Pick<ChatClassifyRun, 'status'> | null): boolean =>
+  !!run && ['queued', 'preparing', 'moving'].includes(run.status);
+
 export interface TextWord {
   text: string;
   x: number;

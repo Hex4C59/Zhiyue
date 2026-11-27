@@ -333,8 +333,49 @@ def _batch_references(root, relative):
     return refs
 
 
+def _check_deletable_category(root, target):
+    """无文献引用时，允许的说明和历史下载资料随整目录移入回收站。"""
+    def record_paths(record):
+        for key in ('file', 'source_record'):
+            value = record.get(key)
+            if isinstance(value, str) and value:
+                yield value
+        versions = record.get('versions')
+        for version in versions if isinstance(versions, list) else []:
+            if isinstance(version, dict):
+                yield from record_paths(version)
+
+    # 同时检查持久化索引和当前读取结果；README 更新后的重建不能掩盖旧索引里待修复的版本引用。
+    stored = load(meta(root) / 'catalog/文献索引.json', {})
+    for catalog in (stored, library_index.read(root)):
+        records = catalog.get('records', []) if isinstance(catalog, dict) else None
+        if not isinstance(records, list) or any(not isinstance(record, dict) for record in records):
+            raise CliError('文献索引格式无效，请先修复索引。', 4)
+        for record in records:
+            try:
+                referenced = any(within(root, value).is_relative_to(target) for value in record_paths(record))
+            except ValueError as exc:
+                raise CliError('文献索引包含越界路径，请先修复索引。', 4) from exc
+            if referenced:
+                lid = record.get('literature_id') or '索引记录'
+                raise CliError(f'文件夹仍被文献 {lid} 引用，请先移出文献或修复索引。', 4)
+    # 历史 API XML 可能包含全文；这里只按文件名放行，不解析、改写或清理其内容。
+    pending = [target]
+    while pending:
+        for entry in pending.pop().iterdir():
+            name = entry.relative_to(root).as_posix()
+            if entry.is_symlink() or entry.is_junction():
+                raise CliError(f'文件夹含有链接，请先移出或核实：{name}。', 4)
+            if entry.is_dir():
+                pending.append(entry)
+            elif (not entry.is_file() or entry.name.casefold().endswith(SIDECAR_SUFFIX) or
+                    (entry.suffix.casefold() not in TEXT_SUFFIXES and
+                     not entry.name.casefold().endswith('.api.xml'))):
+                raise CliError(f'文件夹仍包含原文、来源记录或其他文件，请先移出或核实：{name}。', 4)
+
+
 def delete(root, category, subcategory, timeout=RENAME_TIMEOUT):
-    """Move an empty category directory to .zhiyue/trash/categories under the write lock."""
+    """在库写锁内将没有文献的分类及其历史资料整体移入回收站。"""
     root = Path(root).resolve()
     top = plain_component(category)
     sub = plain_component(subcategory) if subcategory else ''
@@ -342,8 +383,9 @@ def delete(root, category, subcategory, timeout=RENAME_TIMEOUT):
         parts = [top] + ([sub] if sub else [])
         relative = 'papers/' + '/'.join(parts)
         target = require_category(root, relative)
-        if any(target.iterdir()):
-            raise CliError('文件夹不是空的，请先移出文献或子文件夹。', 4)
+        if target != root / relative:
+            raise CliError('分类路径包含链接，请先核实原目录。', 4)
+        _check_deletable_category(root, target)
         batches = _batch_references(root, relative)
         if batches:
             raise CliError('批次仍引用此文件夹：' + '、'.join(batches) + '。请先处理该批次。', 4)

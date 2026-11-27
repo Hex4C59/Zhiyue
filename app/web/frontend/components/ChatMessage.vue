@@ -1,10 +1,15 @@
 <script setup lang="ts">
-import { computed } from 'vue';
+import { computed, nextTick, ref, watch } from 'vue';
 import { markdown, endpoint } from '../lib/content';
+import { useMessageText } from '../lib/messageRendering';
 import { activeStatuses } from '../lib/workspace';
 import type { ChatMessage } from '../lib/types';
 
 const props = defineProps<{ message: ChatMessage }>();
+const emit = defineEmits<{ rendered: [] }>();
+const resultOpen = ref(false);
+const thinkingOpen = ref(false);
+const rendered = useMessageText(() => props.message, (status) => activeStatuses.includes(status));
 const role = computed(() =>
   ['user', 'assistant', 'tool', 'system'].includes(props.message.role) ? props.message.role : 'assistant',
 );
@@ -13,8 +18,24 @@ const label = computed(
 );
 const working = computed(() => activeStatuses.includes(props.message.status));
 const failed = computed(() => ['error', 'failed'].includes(props.message.status));
-const body = computed(() => markdown(props.message.text));
-const thinking = computed(() => markdown(props.message.thinking));
+const body = computed(() => role.value === 'system' && !resultOpen.value ? '' : markdown(rendered.text.value));
+const thinking = computed(() => thinkingOpen.value ? markdown(rendered.thinking.value) : '');
+
+function toggle(event: Event, kind: 'result' | 'thinking'): void {
+  const open = (event.currentTarget as HTMLDetailsElement).open;
+  if (kind === 'result') resultOpen.value = open;
+  else thinkingOpen.value = open;
+  if (open) rendered.flush();
+}
+
+watch([rendered.text, rendered.thinking, resultOpen, thinkingOpen], async (value, previous) => {
+  const visibilityChanged = value[2] !== previous[2] || value[3] !== previous[3];
+  const bodyChanged = value[0] !== previous[0] && (role.value !== 'system' || resultOpen.value);
+  const thoughtsChanged = thinkingOpen.value && value[1] !== previous[1];
+  if (!visibilityChanged && !bodyChanged && !thoughtsChanged) return;
+  await nextTick();
+  emit('rendered');
+});
 const error = computed(() => {
   const value = props.message.error;
   if (value && typeof value === 'object' && 'message' in value) return String((value as { message?: unknown }).message ?? '');
@@ -32,10 +53,15 @@ const attachments = computed(() =>
   <article class="message" :class="[role, { streaming: working, error: failed }]" :data-message="message.id">
     <div class="message-label sr-only">{{ label }}</div>
     <div v-if="role === 'user'" class="message-body">{{ message.text }}</div>
+    <details v-else-if="role === 'system'" class="message-result" :open="resultOpen" @toggle="toggle($event, 'result')">
+      <summary>操作结果</summary>
+      <div v-if="resultOpen" class="message-body markdown" v-html="body" />
+    </details>
     <template v-else>
-      <details v-if="message.thinking" class="message-thinking">
+      <details v-if="message.thinking" class="message-thinking" :open="thinkingOpen"
+        @toggle="toggle($event, 'thinking')">
         <summary>推理过程</summary>
-        <div class="message-thinking-body markdown" v-html="thinking" />
+        <div v-if="thinkingOpen" class="message-thinking-body markdown" v-html="thinking" />
       </details>
       <div class="message-body markdown" v-html="body" />
     </template>

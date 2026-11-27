@@ -323,6 +323,64 @@ class MoveTests(unittest.TestCase):
   self.assertEqual(self.catalog()['records'][0]['file'],final)
   self.assertEqual(categories.repair_moves(self.root),[])
 
+ def test_台账失败后的普通重试仍须显式修复(self):
+  self.assert_retry_requires_repair('_update_ledger_files')
+
+ def test_索引失败后的普通重试仍须显式修复(self):
+  self.assert_retry_requires_repair('_rebuild_catalog')
+
+ def assert_retry_requires_repair(self,failing_step):
+  pdf2='papers/10_来源/second.pdf';self.add_paper('L002',pdf2)
+  request=self.request(('L001',TARGET))
+  with patch.object(moves,failing_step,side_effect=OSError('模拟写入失败')):
+   first=categories.move_papers(self.root,request)
+  self.assertEqual(first['items'][0]['status'],'failed')
+  journal=self.root/first['repair'];before=journal.read_bytes()
+  self.assertEqual(json.loads(before)['paper_ids'],['L001'])
+  self.assertTrue((self.root/TARGET/'paper.pdf').is_file())
+  self.assertIn(f'{TARGET}/paper.pdf',self.read('README.md'))
+  self.assertEqual(library.read(self.root)['records'][0]['file'],f'{TARGET}/paper.pdf')
+  # 即使原文已在目标，未修复事务也不能被 unchanged 掩盖；同批其他项不得改索引。
+  for retry in (request,self.request(('L001',TARGET),('L002',TARGET))):
+   with patch.object(library,'read',side_effect=AssertionError('不应继续普通预检')):
+    result=categories.move_papers(self.root,retry)
+   self.assertEqual(result['repair'],first['repair'])
+   self.assertEqual(result['items'][0]['status'],'failed')
+   self.assertIn('修复',result['items'][0]['error'])
+   self.assertIn(first['repair'],result['items'][0]['error'])
+   if len(retry)>1:self.assertEqual(result['items'][1]['status'],'blocked')
+   self.assertEqual(journal.read_bytes(),before)
+   self.assertTrue((self.root/pdf2).is_file())
+   self.assertFalse((self.root/TARGET/'second.pdf').exists())
+  with self.assertRaisesRegex(CliError,'未完成的移动事务'):
+   categories.move_paper(self.root,'L001',TARGET)
+  self.assertEqual(journal.read_bytes(),before)
+  self.assertEqual(categories.repair_moves(self.root)[0]['action'],'repaired')
+  self.assertFalse(journal.exists())
+  result=categories.move_papers(self.root,self.request(('L001',TARGET),('L002',TARGET)))
+  self.assertEqual([item['status'] for item in result['items']],['unchanged','moved'])
+  self.assertNotIn('repair',result)
+  ledger=json.loads(self.read('.zhiyue/batches/b1/下载状态.json'))
+  self.assertEqual(ledger['entries'][0]['file'],f'{TARGET}/paper.pdf')
+  self.assertEqual(self.journals(),[])
+
+ def test_普通批量请求识别单篇移动事务并忽略已完成事务(self):
+  with patch.object(moves,'_update_ledger_files',side_effect=OSError('模拟台账写入失败')):
+   with self.assertRaises(CliError):categories.move_paper(self.root,'L001',TARGET)
+  journal=self.journals()[0];before=journal.read_bytes()
+  self.assertEqual(json.loads(before)['literature_id'],'L001')
+  result=categories.move_papers(self.root,self.request(('L001',TARGET)))
+  self.assertEqual(result['items'][0]['status'],'failed')
+  self.assertEqual(self.root/result['repair'],journal)
+  self.assertEqual(journal.read_bytes(),before)
+  # 模拟已提交完成、只剩 journal 清理的事务；普通请求不负责清理。
+  completed=json.loads(before);completed['stage']='done';save(journal,completed)
+  done=journal.read_bytes()
+  result=categories.move_papers(self.root,self.request(('L001',TARGET)))
+  self.assertEqual(result['items'][0]['status'],'unchanged')
+  self.assertNotIn('repair',result)
+  self.assertEqual(journal.read_bytes(),done)
+
  def test_cli_batch_reads_json_and_emits_structured_results(self):
   entry=Path(__file__).resolve().parents[1]/'run.py'
   env={**os.environ,'PYTHONUTF8':'1','PYTHONIOENCODING':'utf-8'}

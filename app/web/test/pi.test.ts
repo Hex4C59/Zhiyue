@@ -9,6 +9,7 @@ import type { PiSdk, PiSettings } from '../src/lib/pi.js';
 import { AssistantService } from '../src/lib/assistants.js';
 import { createApp } from '../src/server.js';
 import type { ChatEvent } from '../src/lib/chat.js';
+import type { ChatRecord } from '../src/lib/chatStore.js';
 import type { ChatServiceOptions } from '../src/lib/chat.js';
 
 const wait = async (predicate: () => boolean): Promise<void> => {
@@ -332,8 +333,9 @@ test('Pi 会话保存于独立目录，重建服务可恢复', async (t) => {
   t.after(() => restored.client.close());
   assert.equal(restored.get(chat.id).id, chat.id);
   assert.equal(restored.get(chat.id).messages.length, 2);
-  const saved = JSON.parse(fs.readFileSync(path.join(dir, 'pi', 'chats.json'), 'utf8')) as { chats: unknown[] };
-  assert.equal(saved.chats.length, 1);
+  const saved = JSON.parse(fs.readFileSync(restored.store.fileFor(chat.id), 'utf8')) as ChatRecord;
+  assert.equal(saved.chat.id, chat.id);
+  assert.equal(path.dirname(restored.store.directory), path.join(dir, 'pi'));
   await restored.send(chat.id, { text: '继续' });
   await wait(() => lastMessage(restored, chat.id).status === 'completed');
   assert.equal(restored.get(chat.id).messages.length, 4);

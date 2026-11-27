@@ -73,6 +73,7 @@ export interface PaperPatch {
 
 interface LibraryData {
   papers: Paper[];
+  paperById: Map<string, Paper>;
   allowed: Set<string>;
   categories: Category[];
 }
@@ -103,11 +104,20 @@ const inside = (base: string, target: string): boolean => {
 const categoryName = (value: string): string => String(value).replace(/^\d+_/, '');
 const reservedCategory = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?$/i;
 
+function withReading(paper: Paper, reading: ReadingState): LibraryPaper {
+  const entry = reading[paper.id];
+  const readStatus = typeof entry?.readStatus === 'string' && statuses.has(entry.readStatus)
+    ? entry.readStatus as ReadStatus
+    : 'unread';
+  return { ...paper, readStatus, starred: entry?.starred === true };
+}
+
 export class Library {
   readonly root: string;
   readonly stateDir: string;
   cache: Promise<LibraryData> | null;
   writes: Promise<unknown>;
+  private reading: Promise<ReadingState> | null = null;
   categoryCommand: (args: string[]) => Promise<unknown>;
 
   constructor({ root, stateDir, categoryCommand }: LibraryOptions) {
@@ -216,7 +226,12 @@ export class Library {
     }
     const categories = [...categoryMap.values()].sort((a, b) => a.id.localeCompare(b.id));
     for (const category of categories) category.children.sort((a, b) => a.id.localeCompare(b.id));
-    return { papers, allowed, categories };
+    const paperById = new Map<string, Paper>();
+    for (const paper of papers) {
+      // 与原先 find 的行为一致；索引出现重复编号时优先使用首条记录。
+      if (!paperById.has(paper.id)) paperById.set(paper.id, paper);
+    }
+    return { papers, paperById, allowed, categories };
   }
 
   async _paperFolders(): Promise<Array<{ name: string; children: string[] }>> {
@@ -278,24 +293,22 @@ export class Library {
     return this.cache;
   }
 
-  async _reading(): Promise<ReadingState> {
-    try {
-      return JSON.parse((await readFile(path.join(this.stateDir, 'reading.json'), 'utf8')).replace(/^\uFEFF/, '')) as ReadingState;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return {};
-      throw error;
-    }
+  _reading(): Promise<ReadingState> {
+    if (this.reading) return this.reading;
+    // 只合并重叠读取；完成后清除引用，下一次查询仍能看到外部文件更新。
+    const operation = readFile(path.join(this.stateDir, 'reading.json'), 'utf8')
+      .then((text) => JSON.parse(text.replace(/^\uFEFF/, '')) as ReadingState)
+      .catch((error: NodeJS.ErrnoException) => {
+        if (error.code === 'ENOENT') return {};
+        throw error;
+      }).finally(() => { if (this.reading === operation) this.reading = null; });
+    this.reading = operation;
+    return operation;
   }
 
   async getLibrary(): Promise<LibraryPayload> {
     const [data, reading] = await Promise.all([this._data(), this._reading()]);
-    const papers: LibraryPaper[] = data.papers.map((paper) => {
-      const entry = reading[paper.id];
-      const readStatus = typeof entry?.readStatus === 'string' && statuses.has(entry.readStatus)
-        ? entry.readStatus as ReadStatus
-        : 'unread';
-      return { ...paper, readStatus, starred: entry?.starred === true } as LibraryPaper;
-    });
+    const papers = data.papers.map((paper) => withReading(paper, reading));
     const stats: LibraryStats = { total: papers.length, unread: 0, reading: 0, read: 0, starred: 0, withNotes: 0 };
     for (const paper of papers) {
       stats[paper.readStatus]++;
@@ -306,7 +319,9 @@ export class Library {
   }
 
   async getPaper(id: string): Promise<LibraryPaper | null> {
-    return (await this.getLibrary()).papers.find((paper) => paper.id === id) ?? null;
+    const [data, reading] = await Promise.all([this._data(), this._reading()]);
+    const paper = data.paperById.get(id);
+    return paper ? copy(withReading(paper, reading)) : null;
   }
 
   async updatePaper(id: string, patch: unknown): Promise<LibraryPaper | null> {
@@ -316,17 +331,22 @@ export class Library {
     if (!fields || Object.keys(fields).some((key) => !['readStatus', 'starred'].includes(key)) || !validRead || !validStar) {
       throw statusError('阅读状态或收藏字段无效', 400);
     }
-    if (!await this.getPaper(id)) throw statusError('文献不存在', 404);
     const change = fields as PaperPatch;
     const operation = this.writes.then(async () => {
+      const data = await this._data();
+      const paper = data.paperById.get(id);
+      if (!paper) throw statusError('文献不存在', 404);
       const reading = await this._reading();
-      reading[id] = { readStatus: 'unread', starred: false, ...reading[id], ...change };
+      // 读取可能与只读查询合并；新状态独立构造，不能提前修改其他查询正在使用的对象。
+      const updated = { ...reading, [id]: { readStatus: 'unread', starred: false, ...reading[id], ...change } };
       await mkdir(this.stateDir, { recursive: true });
       const target = path.join(this.stateDir, 'reading.json');
       const temp = `${target}.${randomUUID()}.tmp`;
-      await writeFile(temp, JSON.stringify(reading, null, 2), { mode: 0o600 });
+      await writeFile(temp, JSON.stringify(updated, null, 2), { mode: 0o600 });
       await rename(temp, target);
-      return this.getPaper(id);
+      // 提交前发起的只读查询仍可完成，但后续写入必须重新读取已提交的状态。
+      this.reading = null;
+      return copy(withReading(paper, updated));
     });
     this.writes = operation.catch(() => {});
     return operation;

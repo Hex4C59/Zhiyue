@@ -452,7 +452,7 @@ async function submitRename(row: CategoryRow): Promise<void> {
           type="button"
           role="menuitem"
           :disabled="menu.row.count > 0"
-          :title="menu.row.count > 0 ? '文件夹中还有文献，暂不能删除' : '仅空文件夹可删除'"
+          :title="menu.row.count > 0 ? '文件夹中还有文献，暂不能删除' : '没有文献的文件夹可移到回收站'"
           @click="runMenu('delete')"
         >
           <Icon name="trash" />删除文件夹
@@ -462,14 +462,14 @@ async function submitRename(row: CategoryRow): Promise<void> {
     <ConfirmDialog
       v-if="deleteTarget"
       title="删除文件夹"
-      :message="`「${label(deleteTarget.label)}」是空文件夹，将移到回收站。`"
+      :message="`「${label(deleteTarget.label)}」没有文献，说明和历史下载资料一起移到回收站。`"
       confirm-label="移到回收站"
       danger
       :busy="saving"
       @confirm="confirmRemoveFolder"
       @cancel="deleteTarget = null"
     >
-      仅空文件夹可删除；目录会移到 <code>.zhiyue/trash/categories/</code>，需要时可手动找回。
+      含 PDF、来源记录或仍被索引、批次引用的目录会保留；移入 <code>.zhiyue/trash/categories/</code> 的资料可手动找回。
     </ConfirmDialog>
     <PanelHandle kind="sidebar" />
   </aside>

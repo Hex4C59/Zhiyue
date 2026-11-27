@@ -184,6 +184,7 @@ test('流式增量只更新目标消息，保留已完成内容的选择范围�
   const messages = page.$('#messages');
   Object.defineProperty(messages, 'scrollHeight', { configurable: true, value: 2000 });
   messages.scrollTop = 123;
+  messages.dispatchEvent(new Event('scroll'));
   workspace.receive({ type: 'delta', chatId: 'local-chat', messageId: 'live', delta: '的增量。' });
   await flush();
   assert.equal(page.$('[data-message="completed"] .message-body').firstChild, paragraph);
@@ -191,7 +192,8 @@ test('流式增量只更新目标消息，保留已完成内容的选择范围�
   assert.equal(document.activeElement, answer);
   assert.equal(answer.value, '尚未提交的回答');
   assert.equal(messages.scrollTop, 123);
-  assert.match(page.$('[data-message="live"]').textContent, /新回答的增量/);
+  await until(() => page.$('[data-message="live"]').textContent.includes('新回答的增量'));
+  assert.equal(messages.scrollTop, 123);
   page
     .$('[data-approval="approval-1"]')
     .dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
@@ -430,6 +432,9 @@ test('推理过程按消息折叠显示，增量流式追加到同一条消息',
   assert.equal(details.tagName, 'DETAILS');
   assert.equal(details.open, false);
   assert.match(details.querySelector('summary').textContent, /推理过程/);
+  assert.equal(details.querySelector('.message-thinking-body'), null);
+  click(details.querySelector('summary'));
+  await until(() => details.querySelector('.message-thinking-body'));
   assert.match(details.textContent, /先核对航向/);
   workspace.receive({ type: 'thinking', chatId: 'thinking-chat', messageId: 'think', delta: '再核对样本。' });
   await flush();
@@ -623,7 +628,7 @@ test('归类提案卡片显示依据与待新建目录，确认与取消按勾�
   workspace.state.chat = {
     id: 'classify-chat', messages: [], noteDrafts: [],
     classifyProposals: [
-      proposal('c1'),
+      proposal('c1', { paperId: 'L001' }),
       proposal('c2', {
         targetCategory: '新领域', targetSubcategory: '子方向', targetPath: 'papers/新领域/子方向',
         willCreateCategory: true, willCreateSubcategory: true, basis: 'translation',
@@ -632,6 +637,7 @@ test('归类提案卡片显示依据与待新建目录，确认与取消按勾�
       proposal('blocked', { paperId: 'L002', basis: 'pdf', error: '目标目录不可写。' }),
     ],
   };
+  page.chats.set('classify-chat', JSON.parse(JSON.stringify(workspace.state.chat)));
   await flush();
   assert.equal(document.querySelectorAll('.classify-proposal').length, 1);
   assert.equal(document.querySelectorAll('.classify-proposal-rows li').length, 4);
@@ -662,20 +668,38 @@ test('归类提案卡片显示依据与待新建目录，确认与取消按勾�
   click(apply);
   click(apply);
   await until(() => !workspace.state.classifySaving);
+  assert.match(page.classifyDecisions[0].body.requestId, /^[A-Za-z0-9_-]{1,128}$/);
   assert.deepEqual(page.classifyDecisions, [{
-    id: 'classify-chat', body: { action: 'apply', ids: ['c1', 'c2', 'blocked'] },
+    id: 'classify-chat', body: {
+      action: 'apply', ids: ['c1', 'c2', 'blocked'], requestId: page.classifyDecisions[0].body.requestId,
+    },
   }]);
+  assert.equal(page.$('[data-classify-apply]').disabled, true);
+  page.completeClassification('classify-chat');
+  await flush();
   // 成功项移除、失败项保留并回显原因，未选中的行原样保留（顺序按卡片原有顺序）。
   assert.deepEqual(workspace.state.chat.classifyProposals.map((item: any) => item.id), ['c3', 'blocked']);
   assert.match(page.$('[data-classify-proposal="blocked"]').textContent, /目标目录不可写/);
   assert.equal(page.$('[data-classify-proposal="c1"]'), null);
-  assert.match(page.$('#messages').textContent, /已新建文件夹/);
-  assert.match(page.$('#messages').textContent, /L001 已归类至/);
-  // SSE 与 HTTP 都送达时，同一条持久回执只显示一次。
+  const resultDetails = page.$('[data-message="classify-result-1"] .message-result');
+  assert.equal(resultDetails.tagName, 'DETAILS');
+  assert.equal(resultDetails.open, false);
+  assert.equal(resultDetails.querySelector('summary').textContent, '操作结果');
+  assert.equal(resultDetails.querySelector('.message-body'), null);
+  click(resultDetails.querySelector('summary'));
+  await until(() => resultDetails.querySelector('.message-body'));
+  assert.equal(resultDetails.open, true);
+  assert.match(resultDetails.textContent, /已新建文件夹/);
+  assert.match(resultDetails.textContent, /L001 已归类至/);
+  // SSE 与 HTTP 都送达时，同一条持久回执只显示一次，并保留用户的展开状态。
   const receipt = workspace.state.chat.messages.at(-1);
   workspace.receive({ type: 'message', chatId: 'classify-chat', message: receipt });
   await flush();
   assert.equal(document.querySelectorAll('[data-message="classify-result-1"]').length, 1);
+  assert.equal(resultDetails.open, true);
+  click(resultDetails.querySelector('summary'));
+  await flush();
+  assert.equal(resultDetails.open, false);
 
   workspace.receive({
     type: 'message', chatId: 'classify-chat',
@@ -689,7 +713,7 @@ test('归类提案卡片显示依据与待新建目录，确认与取消按勾�
     id: 'classify-chat', body: { action: 'discard', ids: ['blocked'] },
   });
   assert.deepEqual(workspace.state.chat.classifyProposals.map((item: any) => item.id), ['c3']);
-  assert.match(page.$('#messages').textContent, /已取消 L002 的归类请求/);
+  assert.ok(workspace.state.chat.messages.some(({ text }: { text: string }) => /已取消 L002 的归类请求/.test(text)));
   assert.equal(document.querySelectorAll('[data-message="classify-result-2"]').length, 1);
 });
 
@@ -704,18 +728,23 @@ test('同一论文重新提案时替换实时卡片，确认只提交最新提�
   workspace.state.chat = { id: 'classify-chat', messages: [], classifyProposals: [proposal] };
   await flush();
   workspace.receive({
-    type: 'classifyProposal', chatId: 'classify-chat',
+    type: 'classifyProposal', chatId: 'classify-chat', revision: 1,
     proposal: { ...proposal, id: 'new-proposal', reason: '重新核对后的提案' },
   });
   await flush();
   assert.equal(document.querySelectorAll('.classify-proposal-rows li').length, 1);
   assert.equal(page.$('[data-classify-proposal="old-proposal"]'), null);
   assert.match(page.$('[data-classify-proposal="new-proposal"]').textContent, /重新核对后的提案/);
+  page.chats.set('classify-chat', JSON.parse(JSON.stringify(workspace.state.chat)));
   click(page.$('[data-classify-apply]'));
   await until(() => !workspace.state.classifySaving);
   assert.deepEqual(page.classifyDecisions, [{
-    id: 'classify-chat', body: { action: 'apply', ids: ['new-proposal'] },
+    id: 'classify-chat', body: {
+      action: 'apply', ids: ['new-proposal'], requestId: page.classifyDecisions[0].body.requestId,
+    },
   }]);
+  page.completeClassification('classify-chat');
+  await flush();
   assert.deepEqual(workspace.state.chat.classifyProposals, []);
 });
 

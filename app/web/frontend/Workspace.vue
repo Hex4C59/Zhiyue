@@ -8,6 +8,7 @@ import ReaderPane from './components/ReaderPane.vue';
 import AssistantPane from './components/AssistantPane.vue';
 import DownloadPanel from './components/DownloadPanel.vue';
 import ImportPaperDialog from './components/ImportPaperDialog.vue';
+import BatchTranslationDialog from './components/BatchTranslationDialog.vue';
 import Icon from './components/Icon.vue';
 import type { WorkspaceApi } from './lib/workspace';
 
@@ -171,6 +172,13 @@ onBeforeUnmount(() => {
               <Icon name="focus" /><span>{{ focusMode ? '退出专注' : '专注模式' }}</span>
             </button>
           </div>
+          <button id="translation-tasks" type="button" class="button subtle translation-task-trigger"
+            title="查看翻译队列与批次进度" @click="workspace.openTranslationTasks">
+            翻译任务
+            <span v-if="workspace.translationActivity.value.active">
+              {{ workspace.translationActivity.value.processed }}/{{ workspace.translationActivity.value.total }}
+            </span>
+          </button>
           <span id="library-summary" class="muted"
             >{{ state.papers.length }} 篇文献 · {{ noteCount }} 篇有笔记</span
           >
@@ -207,6 +215,7 @@ onBeforeUnmount(() => {
       </section>
       <DownloadPanel v-show="state.view === 'downloads'" />
     </main>
+    <BatchTranslationDialog v-if="state.translationOpen" />
     <ImportPaperDialog
       v-if="state.importOpen"
       @close="closeImport"

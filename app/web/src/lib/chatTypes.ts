@@ -2,12 +2,12 @@ import type { SkillRuntime } from './skills.js';
 import type { Library, LibraryPaper } from './library.js';
 import type { JobManager, JobRecord } from './jobs.js';
 import type {
-  ChatAttachmentRef, ChatClassifyProposal, ChatDraftTarget, ChatFolderAction, ChatHistoryState, ChatRole,
+  ChatAttachmentRef, ChatClassifyProposal, ChatClassifyRun, ChatDraftTarget, ChatFolderAction, ChatHistoryState, ChatRole,
   ChatStatus,
 } from '../../shared/contracts.js';
 
 export type {
-  ChatAttachmentRef, ChatClassifyProposal, ChatDraftTarget, ChatFolderAction, ChatHistoryState, ChatRole,
+  ChatAttachmentRef, ChatClassifyProposal, ChatClassifyRun, ChatDraftTarget, ChatFolderAction, ChatHistoryState, ChatRole,
   ChatStatus, JobRecord, LibraryPaper,
 };
 
@@ -42,6 +42,7 @@ export interface ChatNoteDraft {
 }
 
 export interface Chat {
+  /** 应用显示记录按编号散列后存于 pi/chats/；SDK threadId 仍指向 pi-sessions/ 的独立会话。 */
   id: string;
   title: string;
   provider?: string;
@@ -50,6 +51,8 @@ export interface Chat {
   noteDrafts: ChatNoteDraft[];
   folderActions?: ChatFolderAction[];
   classifyProposals?: ChatClassifyProposal[];
+  classifyRuns?: ChatClassifyRun[];
+  classifyRevision?: number;
   /** 最近一次已在完成的模型回合中同步的系统回执；失败或中断后仍会重送未同步结果。 */
   lastContextOperationId?: string;
   createdAt: string;
@@ -138,7 +141,8 @@ export interface ChatServiceOptions {
   stateDir: string;
   library: Pick<Library, 'getPaper' | 'getLibrary' | 'safeFile' | 'readDocument' | 'refresh' |
     'createCategory' | 'renameCategory' | 'deleteCategory' | 'resolveCategory' | 'movePaper'>;
-  jobs: Pick<JobManager, 'startDownload' | 'startAction' | 'startPaperMove' | 'getJob'>;
+  jobs: Pick<JobManager, 'startDownload' | 'startAction' | 'startPaperMove' | 'startClassificationMove' |
+    'getJob' | 'listJobs'>;
   emit: (event: ChatEvent) => unknown;
   extract: (file: string, pages?: number[]) => Promise<unknown>;
   /** 单篇论文文字层检索；由服务端复用 extract.py，避免模型逐页读取。 */
@@ -199,7 +203,7 @@ export function normalizePaperContext(input: unknown): PaperContext {
 
 /**
  * 把显式提供的 paperIds 写回会话记录。
- * 只有请求带 paperIds 时才覆盖，返回是否发生改动，调用方据此决定是否落盘；阅读位置属于单轮状态，不写进 chats.json。
+ * 只有请求带 paperIds 时才覆盖，返回是否发生改动，调用方据此决定是否落盘；阅读位置属于单轮状态，不写进会话记录。
  */
 export function applyPaperContext(chat: Chat, context: PaperContext): boolean {
   if (!context.paperIds || context.paperIds.join(' ') === chat.paperIds.join(' ')) return false;

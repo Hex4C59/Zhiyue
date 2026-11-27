@@ -1,6 +1,6 @@
 import { createReadStream, existsSync } from 'node:fs';
 import { lstat, mkdir, mkdtemp, readdir, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises';
-import { createHash, randomBytes, randomUUID } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
@@ -11,8 +11,13 @@ import { libraryPaths } from './paths.js';
 import { downloaderScript, runCli } from './python.js';
 import { PDF_TRANSLATION_REVISION, runTranslationWorker, validTranslationOutput } from './pdfTranslationWorker.js';
 import type { TranslationModel } from './pdfTranslationWorker.js';
-import type {
-  PdfTranslationEvent, PdfTranslationJob, PdfTranslationMarkdown, PdfTranslationResult, PdfTranslationStatus,
+import { PdfTranslationQueue } from './pdfTranslationQueue.js';
+import type { TranslationQueueEntry } from './pdfTranslationQueue.js';
+import {
+  PDF_TRANSLATION_MAX_BATCH,
+  type PdfTranslationBatchRequest, type PdfTranslationBatchSubmission, type PdfTranslationJob,
+  type PdfTranslationMarkdown, type PdfTranslationResult, type PdfTranslationServiceEvent,
+  type PdfTranslationSnapshot, type PdfTranslationStatus,
 } from '../../shared/pdfTranslation.js';
 
 const HASH = /^[0-9a-f]{64}$/;
@@ -57,16 +62,9 @@ export interface PdfTranslationOptions {
   python: string;
   library: Pick<Library, 'getPaper' | 'safeFile'>;
   getModel(modelId?: string): TranslationModel | undefined;
-  emit(event: PdfTranslationEvent): void;
+  emit(event: PdfTranslationServiceEvent): void;
   mineruCommand?: string;
   worker?: typeof runTranslationWorker;
-}
-
-interface ActiveTranslation {
-  job: PdfTranslationJob;
-  configKey: string;
-  controller: AbortController;
-  done: Promise<void>;
 }
 
 const missing = (error: unknown): boolean => (error as NodeJS.ErrnoException).code === 'ENOENT';
@@ -89,14 +87,13 @@ export class PdfTranslationService {
   private readonly mineru: string;
   private readonly script = path.join(appPaths().pythonDir, 'parse_pdf_mineru.py');
   private readonly worker: typeof runTranslationWorker;
-  private active?: ActiveTranslation;
-  private readonly lastJobs = new Map<string, PdfTranslationJob>();
-  private closed = false;
+  private readonly queue: PdfTranslationQueue;
   private hashCache?: { file: string; stamp: string; hash: string };
 
   constructor(private readonly options: PdfTranslationOptions) {
     this.mineru = options.mineruCommand || resolveMineruCommand();
     this.worker = options.worker ?? runTranslationWorker;
+    this.queue = new PdfTranslationQueue((entry, signal) => this.run(entry, signal), options.emit);
   }
 
   private async source(id: string): Promise<string> {
@@ -178,8 +175,7 @@ export class PdfTranslationService {
   async status(id: string): Promise<PdfTranslationStatus> {
     const source = await this.source(id);
     const root = await realpath(this.options.root);
-    const lastJob = this.lastJobs.get(id);
-    const job = lastJob ? { ...lastJob } : null;
+    const job = this.queue.forPaper(id);
     const keys = await this.resultKeys(root, id);
     const model = this.options.getModel();
     let configKey: string | undefined;
@@ -267,13 +263,14 @@ export class PdfTranslationService {
     return target;
   }
 
-  private notify(job: PdfTranslationJob, patch: Partial<PdfTranslationJob>): void {
-    Object.assign(job, patch);
-    this.lastJobs.set(job.paperId, job);
-    this.options.emit({ type: 'pdfTranslation', job: { ...job } });
+  snapshot(): PdfTranslationSnapshot {
+    return {
+      engineAvailable: existsSync(this.mineru), model: this.options.getModel()?.id ?? null,
+      ...this.queue.snapshot(),
+    };
   }
 
-  async start(id: string, approvedModel: unknown, regenerate = false): Promise<PdfTranslationStatus> {
+  private requireModel(approvedModel: unknown): TranslationModel {
     if (!existsSync(this.mineru)) {
       throw statusError('请先安装 MinerU 解析环境（详见项目 README）。', 503);
     }
@@ -286,67 +283,133 @@ export class PdfTranslationService {
       throw statusError('请先在「模型与密钥」中配置 Pi 模型。', 409);
     }
     if (approvedModel !== model.id) throw statusError('默认模型已变化，请确认当前模型后重试。', 409);
+    return model;
+  }
+
+  private batchRequest(input: unknown): PdfTranslationBatchRequest {
+    if (!input || typeof input !== 'object' || Array.isArray(input)) throw statusError('批次参数无效。', 400);
+    const { requestId, paperIds, model, regenerate } = input as Record<string, unknown>;
+    if (typeof requestId !== 'string' || !/^[A-Za-z0-9_-]{8,128}$/.test(requestId)) {
+      throw statusError('批次请求编号无效。', 400);
+    }
+    if (!Array.isArray(paperIds) || !paperIds.length ||
+        paperIds.some((id) => typeof id !== 'string' || id.length > 32 || !/^L\d+$/.test(id))) {
+      throw statusError('请选择有效的文献编号。', 400);
+    }
+    const unique = [...new Set(paperIds as string[])];
+    if (unique.length > PDF_TRANSLATION_MAX_BATCH) {
+      throw statusError(`每批最多选择 ${PDF_TRANSLATION_MAX_BATCH} 篇文献。`, 400);
+    }
+    if (typeof model !== 'string' || !model.trim() || model.length > 300 || model !== model.trim()) {
+      throw statusError('请选择翻译模型。', 400);
+    }
+    if (regenerate !== undefined && typeof regenerate !== 'boolean') {
+      throw statusError('重新生成标志必须是布尔值。', 400);
+    }
+    return { requestId, paperIds: unique, model, regenerate: regenerate === true };
+  }
+
+  startBatch(input: unknown): PdfTranslationBatchSubmission {
+    const request = this.batchRequest(input);
+    const replayed = this.queue.replay(request);
+    if (replayed) return { batch: replayed, snapshot: this.snapshot(), replayed: true };
+    const model = this.requireModel(request.model);
+    const batch = this.queue.batch(request, model.fingerprint);
+    return { batch, snapshot: this.snapshot(), replayed: false };
+  }
+
+  cancelBatch(id: string): PdfTranslationSnapshot {
+    this.queue.cancelBatch(id);
+    return this.snapshot();
+  }
+
+  async start(id: string, approvedModel: unknown, regenerate = false): Promise<PdfTranslationStatus> {
+    const model = this.requireModel(approvedModel);
     const source = await this.source(id);
     const root = await realpath(this.options.root);
     const sourceHash = await this.hash(source);
     const configKey = translationConfigKey(sourceHash, model);
     const prefix = configPrefix(configKey);
     const keys = await this.resultKeys(root, id);
-    if (!regenerate) {
-      const cached = await this.latestResult(root, id, sourceHash, keys.filter((key) => key.startsWith(prefix)));
-      if (cached) return { engineAvailable: true, model: model.id, result: cached, updateAvailable: false, job: null };
-    }
     const result = await this.latestResult(root, id, sourceHash, keys);
     const status = {
       engineAvailable: true, model: model.id, result, updateAvailable: !!result && !result.key.startsWith(prefix),
     };
-    if (this.closed) throw statusError('应用正在退出。', 503);
-    if (this.active) {
-      const { job, configKey: runningConfigKey } = this.active;
-      if (job.paperId === id && runningConfigKey === configKey) return { ...status, job: { ...job } };
-      throw statusError(`正在处理 ${job.paperId}，请等当前翻译完成。`, 409);
+    const existing = this.queue.unfinished(id);
+    if (existing) {
+      this.queue.assertSame(existing, model.id, model.fingerprint, regenerate);
+      if (existing.job.key && !existing.job.key.startsWith(prefix)) {
+        throw statusError('该文献的旧原文仍在翻译，请先取消原任务。', 409);
+      }
+      return { ...status, job: this.queue.forPaper(id) };
+    }
+    if (!regenerate) {
+      const cached = await this.latestResult(root, id, sourceHash, keys.filter((key) => key.startsWith(prefix)));
+      if (cached) return { ...status, result: cached, updateAvailable: false, job: null };
     }
     const key = regenerate ? prefix + randomBytes(12).toString('hex') : configKey;
-    const job: PdfTranslationJob = {
-      id: randomUUID(), paperId: id, key, status: 'running', percent: 0, stage: '准备翻译',
-    };
-    const minCompletedAt = result ? Date.parse(result.completedAt) + 1 : 0;
-    const controller = new AbortController();
-    const done = this.run(root, source, sourceHash, model, job, controller.signal, minCompletedAt);
-    this.active = { job, configKey, controller, done };
-    this.notify(job, {});
-    return { ...status, job: { ...job } };
+    const job = this.queue.single(id, model.id, model.fingerprint, regenerate, key);
+    return { ...status, job };
   }
 
-  private async run(
-    root: string, source: string, sourceHash: string, model: TranslationModel,
-    job: PdfTranslationJob, signal: AbortSignal, minCompletedAt: number,
-  ): Promise<void> {
-    const { key } = job;
+  private async run(entry: TranslationQueueEntry, signal: AbortSignal): Promise<void> {
+    const { job } = entry;
     let terminal: Partial<PdfTranslationJob>;
     let work: string | undefined;
     try {
+      signal.throwIfAborted();
+      // 每篇重新创建模型会话，核对提交时的配置，避免队列等待期间悄悄换模型或跨论文共享上下文。
+      const model = this.requireModel(job.model);
+      if (model.fingerprint !== entry.fingerprint) {
+        throw statusError('所选翻译模型配置已变化，请重新提交该论文。', 409);
+      }
+      const source = await this.source(job.paperId);
+      const root = await realpath(this.options.root);
+      const sourceHash = await this.hash(source);
+      const configKey = translationConfigKey(sourceHash, model);
+      const prefix = configPrefix(configKey);
+      const keys = await this.resultKeys(root, job.paperId);
+      const previous = await this.latestResult(root, job.paperId, sourceHash, keys);
+      signal.throwIfAborted();
+      if (!entry.regenerate) {
+        const cached = entry.skipAnyCached ? previous : await this.latestResult(
+          root, job.paperId, sourceHash, keys.filter((key) => key.startsWith(prefix)),
+        );
+        if (cached) {
+          this.queue.update(entry, {
+            key: cached.key, status: job.batchId ? 'skipped' : 'completed', percent: 100,
+            stage: job.batchId ? '已跳过' : '已有有效译本', reason: '已有与当前原文匹配的译本',
+          });
+          return;
+        }
+      }
+      const key = entry.regenerate
+        ? job.key?.startsWith(prefix) ? job.key : prefix + randomBytes(12).toString('hex')
+        : configKey;
+      this.queue.update(entry, { key, stage: '准备翻译' });
       const tmp = libraryPaths(root).tmp;
       await checkPath(root, tmp, true);
       work = await mkdtemp(path.join(tmp, 'translate-'));
+      signal.throwIfAborted();
       const output = await this.worker({
         python: this.options.python, mineru: this.mineru, script: this.script,
         source, sourceHash, work, model, signal,
         progress: (percent, stage) => {
           if (!signal.aborted && (percent > job.percent || job.stage !== stage)) {
-            this.notify(job, { percent: Math.max(percent, job.percent), stage });
+            this.queue.update(entry, { percent: Math.max(percent, job.percent), stage });
           }
         },
       });
       signal.throwIfAborted();
       const resultDir = path.join(work, 'result');
       await checkPath(root, path.join(resultDir, 'zh.md'), false);
-      const completedAt = new Date(Math.max(Date.now(), minCompletedAt)).toISOString();
+      const minimum = previous ? Date.parse(previous.completedAt) + 1 : 0;
+      const completedAt = new Date(Math.max(Date.now(), minimum)).toISOString();
       const result: PdfTranslationResult = { key, sourceHash, model: model.id, completedAt, ...output };
       await writeFile(path.join(resultDir, 'result.json'), JSON.stringify(result), { flag: 'wx' });
       const currentSource = await this.source(job.paperId);
       signal.throwIfAborted();
-      this.notify(job, { status: 'saving', stage: '保存译本', percent: 99 });
+      this.queue.update(entry, { status: 'saving', stage: '保存译本', percent: 99 });
       await runCli({
         python: this.options.python, root, script: this.script, timeout: 20_000,
         args: ['publish', '--work', work, '--source', currentSource, '--source-hash', sourceHash,
@@ -362,27 +425,18 @@ export class PdfTranslationService {
         if (work) await rm(work, { recursive: true, force: true });
       } catch (error) {
         console.error('无法清理 PDF 翻译临时目录。', (error as NodeJS.ErrnoException).code);
-      } finally {
-        this.active = undefined;
       }
     }
-    this.notify(job, terminal);
+    this.queue.update(entry, terminal);
   }
 
   async cancel(id: string, jobId: unknown): Promise<PdfTranslationStatus> {
-    const active = this.active;
-    if (!active || active.job.paperId !== id || active.job.id !== jobId || active.job.status !== 'running') {
-      throw statusError('该翻译任务已结束或正在保存。', 409);
-    }
-    this.notify(active.job, { status: 'cancelling', stage: '正在取消' });
-    active.controller.abort();
+    if (typeof jobId !== 'string') throw statusError('翻译任务编号无效。', 400);
+    this.queue.cancel(id, jobId);
     return this.status(id);
   }
 
   async close(): Promise<void> {
-    this.closed = true;
-    const active = this.active;
-    if (active?.job.status === 'running') active.controller.abort();
-    await active?.done;
+    await this.queue.close();
   }
 }

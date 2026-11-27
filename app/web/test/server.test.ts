@@ -471,26 +471,32 @@ test('归类提案路由透传确认与取消，并校验动作和编号', async
       { literature_id: 'L002', title: '待归类续', authors: [], file: 'papers/01_综述/second.pdf', versions: [] },
     ],
   }));
-  // 只记录移动参数并真的改文件，避免在路由测试里依赖 Python 归档脚本。
+  // 在真实后台队列中阻塞批量工作器，确认 HTTP 不等待文件移动完成。
   const calls: string[][] = [];
-  const categoryCli = async (args: string[]): Promise<unknown> => {
-    if (args[0] !== 'move-paper') throw new Error('unexpected category command');
-    calls.push(args);
-    const id = args[args.indexOf('--literature-id') + 1] as string;
-    const target = args[args.indexOf('--category') + 1] as string;
-    const name = id === 'L001' ? 'paper.pdf' : 'second.pdf';
-    await fs.rename(path.join(root, 'papers/01_综述', name), path.join(root, ...target.split('/'), name));
-    return { literature_id: id, from: 'papers/01_综述', to: target, moved: [] };
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const app = await createApp({ root, stateDir: path.join(root, '.zhiyue/data'), connectPi: false });
+  app.jobs._run = async (job, command, args = [], onOutput) => {
+    assert.equal(command, 'move-papers');
+    calls.push([command, ...args]);
+    const moves = JSON.parse(await fs.readFile(args[0]!, 'utf8')) as Array<{ paperId: string; category: string }>;
+    await gate;
+    for (const { paperId, category } of moves) {
+      const name = paperId === 'L001' ? 'paper.pdf' : 'second.pdf';
+      await fs.rename(path.join(root, 'papers/01_综述', name), path.join(root, category, name));
+    }
+    onOutput?.(JSON.stringify({ items: moves.map((item) => ({ ...item, status: 'moved' })) }));
+    job.steps.push({ action: command, status: 'completed', startedAt: '', finishedAt: '' });
   };
-  const app = await createApp({ root, stateDir: path.join(root, '.zhiyue/data'), connectPi: false, categoryCli });
   await new Promise<void>((resolve) => app.server.listen(0, '127.0.0.1', () => resolve()));
   const address = app.server.address();
   assert.ok(address && typeof address === 'object');
   const base = `http://127.0.0.1:${address.port}`;
-  t.after(async () => { await app.close(); await fs.rm(root, { recursive: true, force: true }); });
+  t.after(async () => { release(); await app.close(); await fs.rm(root, { recursive: true, force: true }); });
   const chat = app.chats.create();
-  const decide = (body: unknown, id = chat.id) => fetch(`${base}/api/chats/${id}/classify-proposals`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  const decide = (body: Record<string, unknown>, id = chat.id) => fetch(`${base}/api/chats/${id}/classify-proposals`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ requestId: 'route-request', ...body }),
   });
   const pending = (paperId: string, id: string): ChatClassifyProposal => ({
     id, paperId, title: `论文 ${paperId}`, fromPath: 'papers/01_综述',
@@ -512,9 +518,27 @@ test('归类提案路由透传确认与取消，并校验动作和编号', async
   assert.equal(calls.length, 0);
   // 未知会话同样不能执行；重复编号去重后只处理一次。
   assert.equal((await decide({ action: 'apply', ids: ['classify-1'] }, 'missing-chat')).status, 404);
-  assert.equal((await decide({ action: 'apply', ids: ['classify-1', 'classify-1'] })).status, 200);
+  const submitted = await decide({ action: 'apply', ids: ['classify-1', 'classify-1'] });
+  assert.equal(submitted.status, 202);
+  const accepted = await readJson<{ run: { id: string; jobId: string }; job: { id: string } }>(submitted);
+  assert.ok(accepted.run.jobId);
+  assert.equal(app.chats.get(chat.id).classifyProposals?.length, 1);
+  assert.ok(existsSync(path.join(root, 'papers/01_综述/paper.pdf')));
+  const replay = await decide({ action: 'apply', ids: ['classify-1'] });
+  assert.equal(replay.status, 200);
+  assert.equal((await readJson<{ run: { id: string } }>(replay)).run.id, accepted.run.id);
+  assert.equal((await decide({ action: 'apply', ids: ['other'] })).status, 409);
+  assert.throws(() => app.chats.changeHistory(chat.id, 'archived'), /正在处理/);
+  release();
+  for (let index = 0; index < 100 && app.jobs.getJob(accepted.job.id)?.status !== 'completed'; index++) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.equal(app.jobs.getJob(accepted.job.id)?.status, 'completed');
   assert.equal(app.chats.get(chat.id).classifyProposals?.length, 0);
-  assert.deepEqual(calls[0]?.slice(0, 5), ['move-paper', '--literature-id', 'L001', '--category', 'papers/02_方法']);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0]?.[0], 'move-papers');
+  assert.equal(existsSync(calls[0]![1]!), false);
+  assert.equal((await decide({ action: 'apply', ids: ['classify-1'] })).status, 200);
   assert.equal(existsSync(path.join(root, 'papers/01_综述/paper.pdf')), false);
   assert.ok(existsSync(path.join(root, 'papers/02_方法/paper.pdf')));
 

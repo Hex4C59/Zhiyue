@@ -4,6 +4,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { JSDOM } from 'jsdom';
+import { activeClassifyRun, type ChatClassifyRun } from '../../shared/contracts.js';
+import {
+  translationCounts,
+  type PdfTranslationBatch, type PdfTranslationBatchRequest, type PdfTranslationSnapshot,
+} from '../../shared/pdfTranslation.js';
 
 // 编译后的测试位于 build/app/web/test；从自身位置向上找到项目清单，源码与产物指向同一份 dist。
 function repoRoot(): string {
@@ -24,6 +29,34 @@ function repoRoot(): string {
 
 // 测试夹具允许宽松类型：HTTP 响应按真实载荷断言，未用到的字段不做静态建模。
 export type Json = Record<string, any>;
+export interface FixturePaper extends Json {
+  literature_id: string;
+  notes: Array<{ path: string; title?: string }>;
+}
+export interface TranslationApiCall {
+  path: string;
+  method: string;
+  body?: any;
+}
+export interface VirtualLayout {
+  width?: number;
+  height?: number;
+  rowHeight?: (key: string, width: number) => number;
+}
+export interface FrontendFixtureOptions {
+  virtualLayout?: VirtualLayout;
+  ui?: Json;
+  uiPatchError?: string;
+  pdfTextLines?: Json[];
+  pdfTranslation?: Json;
+  papers?: FixturePaper[];
+  chats?: Json[];
+  // 归类接口及会话补查可延迟或丢失响应；next 使用持久化运行记录的模拟服务。
+  classificationApi?: (call: TranslationApiCall, next: () => Promise<any>) => any;
+  translations?: PdfTranslationSnapshot;
+  // next 使用默认模拟服务；覆盖函数可以延迟返回，或先受理再抛错以模拟响应丢失。
+  translationApi?: (call: TranslationApiCall, next: () => Promise<any>) => any;
+}
 interface MountedWorkspace {
   version: string;
   workspace: Json & { receive: (event: Json) => void };
@@ -57,10 +90,41 @@ globalThis.getComputedStyle = window.getComputedStyle as typeof globalThis.getCo
 globalThis.requestAnimationFrame = window.requestAnimationFrame.bind(window);
 globalThis.cancelAnimationFrame = window.cancelAnimationFrame.bind(window);
 window.matchMedia = (() => ({ matches: false })) as unknown as typeof window.matchMedia;
-globalThis.ResizeObserver = class {
-  observe() {}
-  disconnect() {}
-} as unknown as typeof ResizeObserver;
+const virtualLayouts = new WeakMap<Element, VirtualLayout>();
+const resizeObservers = new Set<FixtureResizeObserver>();
+function virtualLayoutOf(element: Element): VirtualLayout {
+  const chain: VirtualLayout[] = [];
+  for (let current: Element | null = element; current; current = current.parentElement) {
+    const layout = virtualLayouts.get(current);
+    if (layout) chain.unshift(layout);
+  }
+  return Object.assign({}, ...chain);
+}
+class FixtureResizeObserver {
+  readonly targets = new Set<Element>();
+  constructor(private readonly callback: ResizeObserverCallback) {}
+  observe(element: Element): void { this.targets.add(element); resizeObservers.add(this); }
+  unobserve(element: Element): void { this.targets.delete(element); }
+  disconnect(): void { this.targets.clear(); resizeObservers.delete(this); }
+  deliver(elements: Element[]): void {
+    const entries = elements.filter((element) => this.targets.has(element)).map((target) => {
+      const contentRect = target.getBoundingClientRect();
+      const size = { inlineSize: contentRect.width, blockSize: contentRect.height };
+      return { target, contentRect, borderBoxSize: [size], contentBoxSize: [size], devicePixelContentBoxSize: [size] };
+    });
+    if (entries.length) this.callback(entries, this as unknown as ResizeObserver);
+  }
+}
+globalThis.ResizeObserver = FixtureResizeObserver as unknown as typeof ResizeObserver;
+/** 显式触发观察中的视口与行，测试可改变宽度及换行后的高度，无需真实排版或毫秒耗时断言。 */
+export function resizeVirtualList(element: HTMLElement, layout: VirtualLayout): void {
+  virtualLayouts.set(element, { ...virtualLayouts.get(element), ...layout });
+  const elements = [element, ...element.querySelectorAll<HTMLElement>('.virtual-row')];
+  for (const observer of resizeObservers) observer.deliver(elements);
+}
+export function resizeObservationCount(element: Element): number {
+  return [...resizeObservers].filter((observer) => observer.targets.has(element)).length;
+}
 globalThis.IntersectionObserver = class {
   observe() {}
   disconnect() {}
@@ -69,15 +133,31 @@ Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1440 })
 Object.defineProperty(window.HTMLElement.prototype, 'clientWidth', {
   configurable: true,
   get() {
+    if (this.classList.contains('virtual-list')) return virtualLayoutOf(this).width ?? 600;
     return this.classList.contains('shell') ? 1440 : 600;
   },
 });
 Object.defineProperty(window.HTMLElement.prototype, 'clientHeight', {
   configurable: true,
   get() {
+    if (this.classList.contains('virtual-list')) return virtualLayoutOf(this).height ?? 800;
     return 800;
   },
 });
+const originalBoundingRect = window.HTMLElement.prototype.getBoundingClientRect;
+window.HTMLElement.prototype.getBoundingClientRect = function () {
+  if (this.classList.contains('virtual-list')) return new window.DOMRect(0, 0, this.clientWidth, this.clientHeight);
+  if (this.classList.contains('virtual-row')) {
+    const list = this.closest<HTMLElement>('.virtual-list');
+    const layout = virtualLayoutOf(this);
+    if (list && layout.rowHeight) {
+      const offset = Number(/translateY\(([-.\d]+)px\)/.exec(this.style.transform)?.[1]) || 0;
+      return new window.DOMRect(0, offset - list.scrollTop, list.clientWidth,
+        layout.rowHeight(this.dataset.virtualKey ?? '', list.clientWidth));
+    }
+  }
+  return originalBoundingRect.call(this);
+};
 window.HTMLCanvasElement.prototype.getContext = (() => ({
   font: '',
   measureText: (text: string) => ({ width: text.length * 7 }),
@@ -96,6 +176,12 @@ const { mountWorkspace } = await import(distUrl) as {
 export const flush = async () => {
   await new Promise((resolve) => setTimeout(resolve, 0));
 };
+export async function frames(count = 3): Promise<void> {
+  for (let index = 0; index < count; index++) {
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    await flush();
+  }
+}
 export const until = async (predicate: () => boolean) => {
   for (let index = 0; index < 100; index++) {
     if (predicate()) return;
@@ -112,19 +198,28 @@ export const click = (element: any): boolean => element.dispatchEvent(new MouseE
 // `ui` 模拟文献库里的界面状态：传入上一次写回的值即可模拟重启后读回。
 export async function fixture(
   t: test.TestContext,
-  { ui = {}, uiPatchError = '', pdfTextLines, pdfTranslation }: {
-    ui?: Json; uiPatchError?: string; pdfTextLines?: Json[]; pdfTranslation?: Json;
-  } = {},
+  {
+    ui = {}, uiPatchError = '', pdfTextLines, pdfTranslation, papers: suppliedPapers, virtualLayout,
+    chats: suppliedChats = [], classificationApi,
+    translations = {
+      engineAvailable: pdfTranslation?.engineAvailable ?? false,
+      model: pdfTranslation?.model ?? null, batches: [], jobs: [],
+    },
+    translationApi,
+  }: FrontendFixtureOptions = {},
 ) {
   let translationSequence = 0;
+  let batchSequence = 0;
+  let classifySequence = suppliedChats.reduce((sequence, chat) => Math.max(sequence,
+    ...(chat.classifyRuns ?? []).map((run: ChatClassifyRun) => Number(run.id.split('-').at(-1)) || 0)), 0);
   const calls: any[] = [];
   const uiState: Json = { chatId: null, paperId: null, panelWidths: {}, ...ui };
   const decisions: any[] = [];
   const noteDecisions: any[] = [];
   const folderDecisions: any[] = [];
   const classifyDecisions: any[] = [];
-  const chats = new Map<string, any>();
-  const papers = [
+  const chats = new Map<string, any>(suppliedChats.map((chat) => [chat.id, structuredClone(chat)]));
+  const papers: FixturePaper[] = suppliedPapers ? structuredClone(suppliedPapers) : [
     {
       literature_id: 'L001',
       title: '测试超声论文',
@@ -189,19 +284,119 @@ export async function fixture(
     },
   };
   const jobs = new Map([['job-1', { id: 'job-1', title: '测试下载', status: 'running', log: 'start' }]]);
+  const eventSources: Events[] = [];
   class Events {
     onopen?: () => void;
+    onerror?: () => void;
+    onmessage?: (event: { data: string }) => void;
     closed = false;
     constructor() {
-      queueMicrotask(() => this.onopen?.());
+      eventSources.push(this);
+      queueMicrotask(() => this.open());
+    }
+    open(): void {
+      if (!this.closed) this.onopen?.();
+    }
+    error(): void {
+      if (!this.closed) this.onerror?.();
+    }
+    message(data: Json): void {
+      if (!this.closed) this.onmessage?.({ data: JSON.stringify(data) });
     }
     close(): void {
       this.closed = true;
     }
   }
+  async function translationResponse({ path, method, body }: TranslationApiCall) {
+    if (path === '/api/translations') return structuredClone(translations);
+    if (path === '/api/translations/batches' && method === 'POST') {
+      const request = body as PdfTranslationBatchRequest;
+      const previous = translations.batches.find(({ requestId }) => requestId === request.requestId);
+      if (previous) {
+        return { batch: structuredClone(previous), snapshot: structuredClone(translations), replayed: true };
+      }
+      const id = `batch-${++batchSequence}`;
+      const createdAt = new Date().toISOString();
+      const queued = translations.jobs.filter(({ status }) => status === 'queued').length;
+      const jobs = request.paperIds.map((paperId, index) => ({
+        id: `${id}-job-${index + 1}`, paperId, model: request.model, batchId: id, key: null,
+        status: 'queued' as const, percent: 0, stage: '等待翻译', queuePosition: queued + index + 1,
+        createdAt, updatedAt: createdAt,
+      }));
+      const batch: PdfTranslationBatch = {
+        id, requestId: request.requestId, paperIds: [...request.paperIds], jobIds: jobs.map(({ id }) => id),
+        model: request.model, regenerate: request.regenerate === true, createdAt, status: 'queued',
+        counts: translationCounts(jobs),
+      };
+      translations.jobs.push(...jobs);
+      translations.batches.unshift(batch);
+      return { batch: structuredClone(batch), snapshot: structuredClone(translations), replayed: false };
+    }
+    const cancel = /^\/api\/translations\/batches\/([^/]+)\/cancel$/.exec(path);
+    if (cancel && method === 'POST') {
+      const batch = translations.batches.find(({ id }) => id === decodeURIComponent(cancel[1]));
+      assert.ok(batch, '取消的翻译批次必须存在');
+      const jobs = translations.jobs.filter(({ id }) => batch.jobIds.includes(id));
+      for (const job of jobs) {
+        if (job.status === 'queued') Object.assign(job, { status: 'cancelled', stage: '已取消' });
+        else if (job.status === 'running') Object.assign(job, { status: 'cancelling', stage: '正在取消' });
+      }
+      batch.counts = translationCounts(jobs);
+      batch.status = batch.counts.running ? 'cancelling'
+        : batch.counts.cancelled === batch.counts.total ? 'cancelled' : 'partial';
+      return structuredClone(translations);
+    }
+    if (/^\/api\/papers\/L\d+\/translation\/markdown\?/.test(path)) {
+      const key = new URL(path, 'http://localhost').searchParams.get('key') || '';
+      return {
+        key,
+        text: [
+          '# Original Paper Title',
+          '',
+          `这是译本 ${key.slice(0, 8)} 的中文正文，包含公式 $E=mc^2$。`,
+          '',
+          '![](images/fig1.png)',
+          '',
+          '<table><tr><th>Metric</th><th>Score</th></tr>' +
+            '<tr><td>AUROC</td><td>0.95 &#x110000; &#1114112; &#x1F4D6;</td></tr></table>',
+        ].join('\n'),
+        result: pdfTranslation?.result ?? null,
+      };
+    }
+    const route = /^\/api\/papers\/(L\d+)\/translation(\/cancel)?$/.exec(path);
+    if (route) {
+      if (!pdfTranslation || route[1] !== 'L001') {
+        return { engineAvailable: false, model: null, job: null, result: null, updateAvailable: false };
+      }
+      if (method === 'POST' && route[2]) {
+        assert.equal(body.jobId, pdfTranslation.job.id);
+        Object.assign(pdfTranslation.job, { status: 'cancelling', stage: '正在取消' });
+      } else if (method === 'POST') {
+        const sequence = ++translationSequence;
+        pdfTranslation.job = {
+          id: `translation-${sequence}`, paperId: 'L001', key: sequence.toString(16).padStart(64, '0'),
+          status: 'running', percent: 25, stage: '翻译与排版',
+        };
+      }
+      return structuredClone(pdfTranslation);
+    }
+    throw new Error(`未定义的测试翻译接口：${path}`);
+  }
   async function api(path: string, options: any = {}) {
     const body = typeof options.body === 'string' ? JSON.parse(options.body) : options.body;
-    calls.push({ path, method: options.method || 'GET', body });
+    const call = { path, method: options.method || 'GET', body };
+    calls.push(call);
+    if (classificationApi && (path.startsWith('/api/chats') || path.startsWith('/api/jobs/'))) {
+      return classificationApi(call, async () => response(path, options, body, call));
+    }
+    return response(path, options, body, call);
+  }
+  function response(path: string, options: any, body: any, call: TranslationApiCall) {
+    if (path === '/api/translations' || path.startsWith('/api/translations/') ||
+      /^\/api\/papers\/L\d+\/translation(?:[/?]|$)/.test(path)) {
+      const next = () => translationResponse(call);
+      return translationApi ? translationApi(call, next) : next();
+    }
     if (path === '/api/status') return structuredClone(status);
     if (path === '/api/ui') {
       if (options.method === 'PATCH') {
@@ -246,11 +441,16 @@ export async function fixture(
     }
     if (path === '/api/downloads') return { jobs: structuredClone([...jobs.values()]), batches: [] };
     if (path === '/api/chats' && options.method === 'POST') {
-      const chat = { ...body, id: 'chat-1', messages: [], createdAt: new Date().toISOString() };
+      const chat = {
+        ...body, id: 'chat-1', messages: [], classifyRuns: [], classifyRevision: 0, createdAt: new Date().toISOString(),
+      };
       chats.set(chat.id, chat);
       return structuredClone(chat);
     }
-    if (path === '/api/chats') return structuredClone([...chats.values()]);
+    if (path === '/api/chats') return [...chats.values()].map((chat) => {
+      const { classifyRuns, classifyProposals, classifyRevision, ...summary } = chat;
+      return structuredClone({ ...summary, classifyRunning: (classifyRuns ?? []).some(activeClassifyRun) });
+    });
     if (path === '/api/agents/pi/settings') return structuredClone(piSettings);
     if (path === '/api/agents/pi/settings/thinking') {
       Object.assign(piSettings.thinking, { level: body.level, default: body.level });
@@ -327,20 +527,45 @@ export async function fixture(
       };
     }
     if (/^\/api\/chats\/[^/]+\/classify-proposals$/.test(path)) {
-      classifyDecisions.push({ id: path.split('/')[3], body });
-      return {
-        applied: body.action === 'apply' ? body.ids.filter((id: string) => id !== 'blocked') : [],
-        discarded: body.action === 'discard' ? body.ids : [],
-        failed: body.action === 'apply' && body.ids.includes('blocked')
-          ? [{ id: 'blocked', paperId: 'L002', error: '目标目录不可写。' }] : [],
-        remaining: [],
-        message: {
-          id: `classify-result-${classifyDecisions.length}`, role: 'system', status: 'completed',
-          text: body.action === 'apply'
-            ? '已新建文件夹：`papers/03_新领域/01_子方向`。\n\nL001 已归类至 `papers/03_新领域/01_子方向`。'
-            : '已取消 L002 的归类请求，本次未新建文件夹或移动论文。',
-        },
+      const chatId = path.split('/')[3];
+      const chat = chats.get(chatId);
+      assert.ok(chat, '归类请求所属的测试会话必须存在');
+      classifyDecisions.push({ id: chatId, body });
+      if (body.action === 'discard') {
+        chat.classifyProposals = (chat.classifyProposals ?? []).filter((item: Json) => !body.ids.includes(item.id));
+        chat.classifyRevision = (chat.classifyRevision ?? 0) + 1;
+        const message = {
+          id: `classify-result-${++classifySequence}`, role: 'system', status: 'completed',
+          text: '已取消 L002 的归类请求，本次未新建文件夹或移动论文。',
+        };
+        chat.messages.push(message);
+        return { applied: [], discarded: body.ids, failed: [], remaining: [], message };
+      }
+      assert.match(body.requestId, /^[A-Za-z0-9_-]{1,128}$/);
+      const previous = (chat.classifyRuns ?? []).find((run: ChatClassifyRun) => run.requestId === body.requestId);
+      if (previous) {
+        assert.deepEqual([...previous.proposalIds].sort(), [...body.ids].sort());
+        return { run: structuredClone(previous), job: structuredClone(jobs.get(previous.jobId)), replayed: true };
+      }
+      const sequence = ++classifySequence;
+      const proposals = chat.classifyProposals.filter((proposal: Json) => body.ids.includes(proposal.id));
+      assert.equal(proposals.length, body.ids.length);
+      const revision = chat.classifyRevision = (chat.classifyRevision ?? 0) + 1;
+      const createdAt = new Date().toISOString();
+      const run: ChatClassifyRun = {
+        id: `classify-run-${sequence}`, requestId: body.requestId, proposalIds: [...body.ids].sort(),
+        proposals: structuredClone(proposals), jobId: `classify-job-${sequence}`, status: 'queued', stage: '排队中',
+        revision, createdFolders: [], items: proposals.map((proposal: Json) => ({
+          proposalId: proposal.id, paperId: proposal.paperId, category: proposal.targetPath, status: 'pending',
+        })), messageId: `classify-result-${sequence}`, createdAt, updatedAt: createdAt,
       };
+      (chat.classifyRuns ??= []).push(run);
+      const job = {
+        id: run.jobId!, title: `归类 ${proposals.length} 篇论文`, status: 'queued', log: '',
+        classification: { chatId, runId: run.id }, createdAt, updatedAt: createdAt,
+      };
+      jobs.set(job.id, job);
+      return { run: structuredClone(run), job: structuredClone(job), replayed: false };
     }
     if (options.method === 'POST' && /^\/api\/papers\/L\d+\/move$/.test(path)) {
       const paper = papers.find((item) => path.includes(item.literature_id));
@@ -351,40 +576,6 @@ export async function fixture(
       const paper = papers.find((item) => path.endsWith(item.literature_id))!;
       Object.assign(paper, body);
       return structuredClone(paper);
-    }
-    if (/^\/api\/papers\/L\d+\/translation\/markdown\?/.test(path)) {
-      const key = new URL(path, 'http://localhost').searchParams.get('key') || '';
-      return {
-        key,
-        text: [
-          '# Original Paper Title',
-          '',
-          `这是译本 ${key.slice(0, 8)} 的中文正文，包含公式 $E=mc^2$。`,
-          '',
-          '![](images/fig1.png)',
-          '',
-          '<table><tr><th>Metric</th><th>Score</th></tr>' +
-            '<tr><td>AUROC</td><td>0.95 &#x110000; &#1114112; &#x1F4D6;</td></tr></table>',
-        ].join('\n'),
-        result: pdfTranslation?.result ?? null,
-      };
-    }
-    const translationRoute = /^\/api\/papers\/(L\d+)\/translation(\/cancel)?$/.exec(path);
-    if (translationRoute) {
-      if (!pdfTranslation || translationRoute[1] !== 'L001') {
-        return { engineAvailable: false, model: null, job: null, result: null, updateAvailable: false };
-      }
-      if (options.method === 'POST' && translationRoute[2]) {
-        assert.equal(body.jobId, pdfTranslation.job.id);
-        Object.assign(pdfTranslation.job, { status: 'cancelling', stage: '正在取消' });
-      } else if (options.method === 'POST') {
-        const sequence = ++translationSequence;
-        pdfTranslation.job = {
-          id: `translation-${sequence}`, paperId: 'L001', key: sequence.toString(16).padStart(64, '0'),
-          status: 'running', percent: 25, stage: '翻译与排版',
-        };
-      }
-      return structuredClone(pdfTranslation);
     }
     if (path.includes('/text-layer?'))
       return {
@@ -403,6 +594,7 @@ export async function fixture(
           },
         ],
       };
+    if (path.startsWith('/api/jobs/')) return structuredClone(jobs.get(decodeURIComponent(path.split('/')[3])));
     const chatMatch = /^\/api\/chats\/([^/]+)(?:\/(messages|interrupt))?$/.exec(path);
     if (chatMatch) {
       const chat = chats.get(chatMatch[1]);
@@ -425,7 +617,50 @@ export async function fixture(
     }
     throw new Error(`未定义的测试接口：${path}`);
   }
+  function completeClassification(chatId: string, patch: Partial<ChatClassifyRun> = {}): ChatClassifyRun {
+    const chat = chats.get(chatId);
+    const run = chat?.classifyRuns?.at(-1) as ChatClassifyRun | undefined;
+    assert.ok(run, '完成的测试归类任务必须已经受理');
+    const items = patch.items ?? run.items.map((item) => ({
+      ...item, status: item.proposalId === 'blocked' ? 'blocked' as const : 'moved' as const,
+      ...(item.proposalId === 'blocked' ? { error: '目标目录不可写。' } : {}),
+    }));
+    Object.assign(run, {
+      items, status: items.some((item) => item.status === 'blocked') ? 'partial' : 'completed',
+      stage: '归类已完成', createdFolders: [...new Set(run.proposals.filter((item) => item.willCreateCategory ||
+        item.willCreateSubcategory).map((item) => item.targetPath))], ...patch,
+      revision: chat.classifyRevision = (chat.classifyRevision ?? 0) + 1, updatedAt: new Date().toISOString(),
+    });
+    const successful = new Set(run.items.filter((item) => ['moved', 'unchanged'].includes(item.status))
+      .map((item) => item.proposalId));
+    chat.classifyProposals = chat.classifyProposals.filter((item: Json) => !successful.has(item.id));
+    for (const proposal of chat.classifyProposals) {
+      const item = run.items.find((item) => item.proposalId === proposal.id);
+      if (item?.error) proposal.error = item.error;
+    }
+    const message = {
+      id: run.messageId, role: 'system', status: 'completed', text: [
+        ...run.createdFolders.map((folder) => `已新建文件夹：\`${folder}\`。`),
+        ...run.items.map((item) => ['moved', 'unchanged'].includes(item.status)
+          ? `${item.paperId} 已归类至 \`${item.category}\`。` : `${item.paperId}：${item.error ?? '归类失败'}`),
+      ].join('\n\n'),
+    };
+    const existing = chat.messages.find((item: Json) => item.id === message.id);
+    if (existing) Object.assign(existing, message);
+    else chat.messages.push(message);
+    const job = jobs.get(run.jobId!);
+    if (job) Object.assign(job, { status: run.status, updatedAt: run.updatedAt });
+    const events = eventSources[0];
+    events?.message({
+      type: 'classifyRun', chatId, run, revision: run.revision, proposals: chat.classifyProposals,
+    });
+    events?.message({ type: 'message', chatId, message });
+    if (job) events?.message({ type: 'job', job });
+    events?.message({ type: 'library' });
+    return structuredClone(run);
+  }
   const target = document.createElement('div');
+  if (virtualLayout) virtualLayouts.set(target, virtualLayout);
   document.body.append(target);
   const mounted = mountWorkspace(target, { api, EventSourceImpl: Events, pollInterval: 0 });
   await mounted.ready;
@@ -440,10 +675,14 @@ export async function fixture(
     target,
     $: (selector: string) => target.querySelector(selector) as any,
     calls,
+    papers,
+    translations,
+    events: eventSources[0]!,
     decisions,
     noteDecisions,
     folderDecisions,
     classifyDecisions,
+    completeClassification,
     chats,
     status,
     piSettings,

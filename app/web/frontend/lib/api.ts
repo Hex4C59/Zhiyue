@@ -13,7 +13,9 @@ export async function request<T = unknown>(path: string, options: RequestInit = 
     if (!response.ok) {
       const body = typeof data === 'object' && data ? data as ErrorBody : null;
       const detail = typeof body?.error === 'object' ? body.error?.message : body?.error;
-      throw new Error(detail || body?.message || `请求失败 (${response.status})`);
+      throw Object.assign(new Error(detail || body?.message || `请求失败 (${response.status})`), {
+        statusCode: response.status,
+      });
     }
     return data as T;
   } catch (error) {

@@ -1,11 +1,12 @@
-import type { PdfTranslationEvent } from '../../shared/pdfTranslation.js';
+import type { PdfTranslationEvent, PdfTranslationSnapshot } from '../../shared/pdfTranslation.js';
 import type {
-  ChatClassifyProposal, ChatDraftTarget, ChatFolderAction, ChatHistoryState, CommandInfo, TextLayer, TextWord, UiState,
+  ChatClassifyProposal, ChatClassifyRun, ChatDraftTarget, ChatFolderAction, ChatHistoryState, CommandInfo,
+  TextLayer, TextWord, UiState,
 } from '../../shared/contracts.js';
 import type { ReadStatus } from './content';
 
 export type {
-  ChatClassifyProposal, ChatDraftTarget, ChatFolderAction, ChatHistoryState, CommandInfo, TextWord, UiState,
+  ChatClassifyProposal, ChatClassifyRun, ChatDraftTarget, ChatFolderAction, ChatHistoryState, CommandInfo, TextWord, UiState,
 };
 export type TextLayerData = TextLayer;
 
@@ -66,9 +67,20 @@ export interface Chat {
   noteDrafts?: ChatNoteDraft[];
   folderActions?: ChatFolderAction[];
   classifyProposals?: ChatClassifyProposal[];
+  classifyRuns?: ChatClassifyRun[];
+  classifyRevision?: number;
+  /** 列表摘要只携带运行标记，完整会话由 classifyRuns 判断。 */
+  classifyRunning?: boolean;
   threadId?: string | null;
   paperIds?: string[];
   historyState?: ChatHistoryState;
+}
+
+export interface ClassifyRequest {
+  requestId: string;
+  ids: string[];
+  status: 'submitting' | 'uncertain';
+  error: string;
 }
 
 export interface AttachmentItem {
@@ -98,6 +110,7 @@ export interface JobRecord {
   batch?: string | null;
   message?: string;
   action?: string;
+  classification?: { chatId: string; runId: string };
   log?: unknown;
   error?: string;
   steps?: Array<{ action?: string; status?: string }>;
@@ -225,6 +238,8 @@ export interface WorkspaceState {
   folderActionSaving: string;
   /** 正在提交的归类卡片所属会话；同一时间只允许一次归类请求。 */
   classifySaving: string;
+  /** 未确认受理的提交快照；重试时保持编号和所选提案不变。 */
+  classifyRequests: Map<string, ClassifyRequest>;
   draggingPaper: string;
   movingPaper: string;
   creating: boolean;
@@ -238,6 +253,20 @@ export interface WorkspaceState {
   pdfBrowser: boolean;
   pdfTranslation: string;
   pdfTranslationEvent: PdfTranslationEvent | null;
+  translationModel: string;
+  translationSnapshot: PdfTranslationSnapshot;
+  translationReady: boolean;
+  translationLoading: boolean;
+  translationOpen: boolean;
+  translationMode: 'new' | 'tasks';
+  translationCandidates: string[];
+  translationSelected: Set<string>;
+  translationRegenerate: boolean;
+  translationSubmitting: boolean;
+  translationCancelling: Set<string>;
+  translationBatchId: string;
+  translationError: string;
+  translationLoadError: string;
   pdfSession: PDFSession | null;
   previewLoading: boolean;
   toasts: ToastItem[];

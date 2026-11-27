@@ -37,7 +37,9 @@ export interface PreviewResult {
 }
 
 const script = (): string => path.join(appPaths().pythonDir, 'render.py');
-const inflight = new Map<string, Promise<PreviewResult>>();
+const sourceChanged = Symbol('source-changed');
+type PreviewWork = PreviewResult | typeof sourceChanged;
+const inflight = new Map<string, Promise<PreviewWork>>();
 const waiting: Array<() => void> = [];
 let running = 0;
 const inside = (root: string, file: string): boolean => {
@@ -172,6 +174,77 @@ function render(
   });
 }
 
+interface CacheLocation {
+  base: string;
+  source: string;
+  size: number;
+  mtimeMs: number;
+  key: string;
+  directory: string;
+  png: string;
+  metaFile: string;
+  page: number;
+  scale: PDFPreviewScale;
+}
+
+async function readCache(location: CacheLocation): Promise<{ meta?: CacheMeta; result?: PreviewResult }> {
+  const { base, directory, metaFile, png, page, scale, key, source, size, mtimeMs } = location;
+  await validateCachePath(base, directory);
+  await validateCachePath(base, metaFile, true);
+  await validateCachePath(base, png, true);
+  let meta: CacheMeta | undefined;
+  try {
+    const value = JSON.parse(await readFile(metaFile, 'utf8')) as CacheMeta | null;
+    if (value && value.page === page && Number.isSafeInteger(value.totalPages) && value.totalPages >= page &&
+      value.key === key && value.source === source && value.size === size && value.mtimeMs === mtimeMs &&
+      validTextLayer(value.textLayer)) meta = value;
+  } catch (error) {
+    // 缺失或损坏的元数据可重建；权限、设备等未知故障保留给调用方。
+    if (!(error instanceof SyntaxError) && (error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+  }
+  return meta && await isPng(png, scale)
+    ? { meta, result: { file: png, totalPages: meta.totalPages, page, textLayer: meta.textLayer } }
+    : { meta };
+}
+
+async function sourceInfo(base: string, source: string) {
+  const resolved = await realpath(source);
+  const same = process.platform === 'win32'
+    ? resolved.toLowerCase() === source.toLowerCase()
+    : resolved === source;
+  // 排队和重试期间目录可能被替换为链接，不能仅凭 stat 接受新的路径目标。
+  if (!same || !inside(base, resolved)) throw statusError('PDF原文路径已变化，请重新打开文献。', 403);
+  return stat(resolved);
+}
+
+async function sourceMatches(location: CacheLocation): Promise<boolean> {
+  const current = await sourceInfo(location.base, location.source);
+  return current.isFile() && current.size === location.size && current.mtimeMs === location.mtimeMs;
+}
+
+async function renderMissing(location: CacheLocation, python: string): Promise<PreviewWork> {
+  const { base, source, directory, metaFile, png, page, scale, key, size, mtimeMs } = location;
+  // 等待名额期间可能有人替换原文；先释放旧请求的名额，再由外层用新签名重试。
+  if (!await sourceMatches(location)) return sourceChanged;
+  const cached = await readCache(location);
+  if (cached.result) return await sourceMatches(location) ? cached.result : sourceChanged;
+  await mkdir(directory, { recursive: true });
+  await validateCachePath(base, directory);
+  const data = await render(python, base, source, page, png, scale, !!cached.meta);
+  const textLayer = cached.meta?.textLayer ?? data.textLayer;
+  const invalid = data.page !== page || !Number.isSafeInteger(data.totalPages) || data.totalPages < page ||
+    !validTextLayer(textLayer) || !await isPng(png, scale);
+  if (invalid) throw statusError('PDF预览输出无效。', 500);
+  if (!await sourceMatches(location)) return sourceChanged;
+  if (!cached.meta) {
+    const meta: CacheMeta = { key, page, totalPages: data.totalPages, source, size, mtimeMs, textLayer };
+    const temp = `${metaFile}.${randomUUID()}.tmp`;
+    await writeFile(temp, JSON.stringify(meta, null, 2));
+    await rename(temp, metaFile);
+  }
+  return { file: png, totalPages: data.totalPages, page, textLayer };
+}
+
 // file 必须先经过 Library.safeFile 校验，预览只写派生缓存。
 export async function previewPaper({
   root, python, file, page: requestedPage = 1, scale: requestedScale = DEFAULT_PDF_PREVIEW_SCALE,
@@ -191,56 +264,36 @@ export async function previewPaper({
     if (!scale) throw statusError('不支持的 PDF 预览分辨率。');
     const [base, source] = await Promise.all([realpath(root), realpath(file)]);
     if (!inside(base, source) || path.extname(source).toLowerCase() !== '.pdf') throw statusError('只允许预览项目内已验证的PDF。');
-    const info = await stat(source);
-    if (!info.isFile()) throw statusError('PDF文件不存在。');
-    const key = createHash('sha256').update(JSON.stringify([source, info.size, info.mtimeMs, page])).digest('hex');
-    const directory = path.join(libraryPaths(base).pdfPreview, key);
-    const png = path.join(directory, scale === DEFAULT_PDF_PREVIEW_SCALE ? 'page.png' : `page-${scale}.png`);
-    const metaFile = path.join(directory, 'meta.json');
-    await validateCachePath(base, directory);
-    const existing = inflight.get(png);
-    if (existing) return await existing;
-    const work = limited(async (): Promise<PreviewResult> => {
-      // 等到渲染名额后，再校验目录和即将读取的缓存。
-      await validateCachePath(base, directory);
-      await validateCachePath(base, metaFile, true);
-      await validateCachePath(base, png, true);
-      let cached: CacheMeta | undefined;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const info = await sourceInfo(base, source);
+      if (!info.isFile()) throw statusError('PDF文件不存在。');
+      const key = createHash('sha256').update(JSON.stringify([source, info.size, info.mtimeMs, page])).digest('hex');
+      const directory = path.join(libraryPaths(base).pdfPreview, key);
+      const png = path.join(directory, scale === DEFAULT_PDF_PREVIEW_SCALE ? 'page.png' : `page-${scale}.png`);
+      const location: CacheLocation = {
+        base, source, key, directory, png, metaFile: path.join(directory, 'meta.json'),
+        size: info.size, mtimeMs: info.mtimeMs, page, scale,
+      };
+      // 有效缓存只做文件与内容校验，不等待两个慢渲染名额。
+      const cached = await readCache(location);
+      if (cached.result) {
+        if (await sourceMatches(location)) return cached.result;
+        continue;
+      }
+      let work = inflight.get(png);
+      const ownsWork = !work;
+      if (!work) {
+        work = limited(() => renderMissing(location, python));
+        inflight.set(png, work);
+      }
       try {
-        const meta = JSON.parse(await readFile(metaFile, 'utf8')) as CacheMeta;
-        if (meta.page === page && Number.isSafeInteger(meta.totalPages) && meta.totalPages >= page &&
-          meta.key === key && validTextLayer(meta.textLayer)) {
-          cached = meta;
-        }
-      } catch { /* 元数据不完整时重新生成。 */ }
-      if (cached && await isPng(png, scale)) {
-        return { file: png, totalPages: cached.totalPages, page, textLayer: cached.textLayer };
+        const result = await work;
+        if (result !== sourceChanged) return result;
+      } finally {
+        if (ownsWork && inflight.get(png) === work) inflight.delete(png);
       }
-      await validateCachePath(base, directory);
-      await mkdir(directory, { recursive: true });
-      await validateCachePath(base, directory);
-      const data = await render(python, base, source, page, png, scale, !!cached);
-      const textLayer = cached?.textLayer ?? data.textLayer;
-      const invalid = data.page !== page || !Number.isSafeInteger(data.totalPages) || data.totalPages < page ||
-        !validTextLayer(textLayer) || !await isPng(png, scale);
-      if (invalid) throw statusError('PDF预览输出无效。', 500);
-      const after = await stat(source);
-      const changed = after.size !== info.size || after.mtimeMs !== info.mtimeMs;
-      if (changed) throw statusError('渲染过程中PDF已变化，请重新请求。', 409);
-      if (!cached) {
-        const meta: CacheMeta = {
-          key, page, totalPages: data.totalPages, source, size: info.size,
-          mtimeMs: info.mtimeMs, textLayer,
-        };
-        const temp = `${metaFile}.${randomUUID()}.tmp`;
-        await writeFile(temp, JSON.stringify(meta, null, 2));
-        await rename(temp, metaFile);
-      }
-      return { file: png, totalPages: data.totalPages, page, textLayer };
-    });
-    inflight.set(png, work);
-    try { return await work; }
-    finally { inflight.delete(png); }
+    }
+    throw statusError('PDF原文正在变化，请稍后重新打开。', 409);
   } catch (e) {
     if (e && typeof e === 'object' && 'statusCode' in e) throw e;
     const statusCode = (e as NodeJS.ErrnoException).code === 'ENOENT' ? 404 : 500;

@@ -17,7 +17,7 @@ import type { ThinkingLevel } from './lib/pi.js';
 import { previewPaper } from './lib/preview.js';
 import { PdfTranslationService } from './lib/pdfTranslation.js';
 import type { PdfTranslationOptions } from './lib/pdfTranslation.js';
-import type { PdfTranslationEvent } from '../shared/pdfTranslation.js';
+import type { PdfTranslationServiceEvent } from '../shared/pdfTranslation.js';
 import { UiStateStore } from './lib/uiState.js';
 import { libraryPaths, resolveLibraryRoot, ensureLibrary } from './lib/paths.js';
 import { appPaths } from './lib/appPaths.js';
@@ -66,7 +66,7 @@ interface RouteContext {
   uploads: UploadService;
   ui: UiStateStore;
   connections: Set<ServerResponse>;
-  emit: (event: ChatEvent | JobEvent | PdfTranslationEvent) => void;
+  emit: (event: ChatEvent | JobEvent | PdfTranslationServiceEvent) => void;
 }
 
 async function handleAgentRoutes(
@@ -168,7 +168,15 @@ async function handleChatRoutes(
   const chatMatch = /^\/api\/chats\/([\w-]+)(?:\/(messages|interrupt|commands|folder-actions|classify-proposals))?$/.exec(route);
   if (chatMatch) {
     const [, id, action] = chatMatch as unknown as [string, string, string | undefined];
-    if (method === 'GET' && !action) { json(res, chats.get(id)); return true; }
+    if (method === 'GET' && !action) {
+      // 补查时补齐回执会写盘；落盘失败属于服务端故障，不能按未标注错误的默认 400 返回。
+      try { chats.reconcileClassifications(); }
+      catch (cause) {
+        if (httpStatus(cause, 500) < 500) throw cause;
+        throw statusError(`补齐归类回执失败：${errorMessage(cause)}`, 500);
+      }
+      json(res, chats.get(id)); return true;
+    }
     if (method === 'PATCH' && !action) {
       const { historyState } = await readJson(req);
       if (historyState !== 'active' && historyState !== 'archived') throw error('无效的会话状态。');
@@ -201,7 +209,8 @@ async function handleChatRoutes(
     }
     if (method === 'POST' && action === 'classify-proposals') {
       const decision = await readJson(req);
-      json(res, await chats.resolveClassifyProposals(id, decision.action, decision.ids));
+      const result = await chats.resolveClassifyProposals(id, decision.action, decision.ids, decision.requestId);
+      json(res, result, 'run' in result && !result.replayed ? 202 : 200);
       return true;
     }
     if (method === 'POST' && action === 'interrupt') { json(res, await chats.interrupt(id)); return true; }
@@ -227,6 +236,20 @@ async function handleLibraryAndJobRoutes(
   req: IncomingMessage, res: ServerResponse, url: URL, method: string, route: string, ctx: RouteContext,
 ): Promise<boolean> {
   const { root, python, library, jobs, translations, uploads, emit } = ctx;
+  if (method === 'GET' && route === '/api/translations') {
+    json(res, translations.snapshot());
+    return true;
+  }
+  if (method === 'POST' && route === '/api/translations/batches') {
+    const submitted = translations.startBatch(await readJson(req));
+    json(res, submitted, submitted.replayed ? 200 : 202);
+    return true;
+  }
+  const batchCancel = /^\/api\/translations\/batches\/([A-Za-z0-9_-]{1,128})\/cancel$/.exec(route);
+  if (method === 'POST' && batchCancel) {
+    json(res, translations.cancelBatch(batchCancel[1] as string), 202);
+    return true;
+  }
   if (method === 'GET' && route === '/api/library') { json(res, await library.getLibrary()); return true; }
   if (method === 'POST' && route === '/api/categories') {
     const { name, parent } = await readJson(req) as { name?: unknown; parent?: unknown };
@@ -410,8 +433,10 @@ export async function createApp({
     root, stateDir,
     categoryCommand: categoryCli ?? ((args: string[]) => runCli({ python, root, args })),
   });
-  const emit = (event: ChatEvent | JobEvent | PdfTranslationEvent): void => {
+  let reconcileJob: ((job: JobRecord) => void) | undefined;
+  const emit = (event: ChatEvent | JobEvent | PdfTranslationServiceEvent): void => {
     const job = event.type === 'job' ? event.job as JobRecord : null;
+    if (job) reconcileJob?.(job);
     if (job && ['completed', 'partial', 'failed'].includes(job.status)) void library.refresh();
     const data = `data: ${JSON.stringify(event)}\n\n`;
     for (const res of connections) if (!res.writableEnded) res.write(data);
@@ -436,6 +461,9 @@ export async function createApp({
     readPaperTranslation: (paperId, offset, limit) => translations.readLatestMarkdown(paperId, offset, limit),
     piClient,
   });
+  reconcileJob = (job) => chats.reconcileClassifications(false, job);
+  await jobs.ready;
+  chats.reconcileClassifications(true);
   translations = new PdfTranslationService({
     root, python, library, emit, getModel: (modelId?: string) => chats.pi.translationModel(modelId), ...translation,
   });

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, inject, nextTick, ref, watch } from 'vue';
+import { computed, inject, nextTick, onBeforeUnmount, ref, watch } from 'vue';
 import { titleOf } from '../lib/content';
 import Icon from './Icon.vue';
 import PanelHandle from './PanelHandle.vue';
@@ -64,22 +64,42 @@ const promptTemplates: Array<[string, string, string]> = [
   ['download', '查找与下载', '请帮我检索并下载相关论文，先核对来源与版本，按项目约定归档并更新索引。'],
 ];
 const paperTitle = (id: string): string =>
-  titleOf((state.papers.find((paper) => paper.literature_id === id) || { literature_id: id }) as PaperLike);
-watch(
-  () => {
-    const items = state.chat?.messages || [];
-    const last = items.at(-1);
-    return [state.chat?.id, items.length, last?.id, last?.text?.length, last?.status, state.historyOpen];
-  },
-  async (value, previous) => {
-    const element = messages.value;
-    const atEnd = !element || element.scrollHeight - element.scrollTop - element.clientHeight < 100;
-    await nextTick();
-    if (messages.value && (value[0] !== previous?.[0] || atEnd)) {
-      messages.value.scrollTop = messages.value.scrollHeight;
-    }
-  },
-);
+  titleOf((workspace.paperById.value.get(id) || { literature_id: id }) as PaperLike);
+let scrollFrame: number | null = null;
+let following = true;
+let forceScroll = false;
+
+function queueScroll(force = false): void {
+  forceScroll ||= force;
+  if (force) following = true;
+  if (scrollFrame !== null || !following && !forceScroll) return;
+  scrollFrame = requestAnimationFrame(() => {
+    scrollFrame = null;
+    if (messages.value && (following || forceScroll)) messages.value.scrollTop = messages.value.scrollHeight;
+    forceScroll = false;
+  });
+}
+function messageScroll(): void {
+  const element = messages.value;
+  if (element) following = element.scrollHeight - element.scrollTop - element.clientHeight < 100;
+  if (!following) forceScroll = false;
+}
+function rendered(): void { queueScroll(); }
+watch([
+  () => state.chat?.id,
+  () => state.chat?.messages?.length,
+  () => state.chat?.messages?.at(-1)?.id,
+  () => state.chat?.messages?.at(-1)?.text?.length,
+  () => state.chat?.messages?.at(-1)?.thinking?.length,
+  () => state.chat?.messages?.at(-1)?.status,
+  () => state.historyOpen,
+], async (value, previous) => {
+  const changedChat = value[0] !== previous?.[0];
+  if (!changedChat && !forceScroll) messageScroll();
+  await nextTick();
+  queueScroll(changedChat);
+});
+onBeforeUnmount(() => { if (scrollFrame !== null) cancelAnimationFrame(scrollFrame); });
 function history(): void {
   state.historyOpen = !state.historyOpen;
   if (state.historyOpen) workspace.loadChats();
@@ -161,6 +181,7 @@ function historyDate(chat: Chat): string {
           @click="historyView !== 'trashed' && workspace.openChat(chat.id)"
         >
           <span class="history-title">{{ chat.title || '新会话' }}</span>
+          <small v-if="chat.classifyRunning" role="status">归类中</small>
           <small>{{ historyDate(chat) }} {{ (chat.paperIds || []).join(' · ') }}</small>
         </component>
         <div class="history-actions">
@@ -226,8 +247,10 @@ function historyDate(chat: Chat): string {
       </button>
     </div>
     <PaperActions v-if="!isArchived" />
-    <div id="messages" ref="messages" class="messages" role="log" aria-label="对话消息" aria-live="off">
-      <ChatMessage v-for="message in state.chat?.messages || []" :key="message.id" :message="message" />
+    <div id="messages" ref="messages" class="messages" role="log" aria-label="对话消息" aria-live="off"
+      @scroll.passive="messageScroll">
+      <ChatMessage v-for="message in state.chat?.messages || []" :key="message.id" :message="message"
+        @rendered="rendered" />
       <section v-if="!isArchived && !state.chat?.messages?.length" class="prompt-shortcuts" aria-label="提问模板">
         <div class="assistant-welcome">
           <span class="welcome-mark"><Icon name="spark" /></span>
@@ -249,7 +272,8 @@ function historyDate(chat: Chat): string {
         </div>
       </section>
     </div>
-    <div v-if="!isArchived && classifyProposals.length" id="classify-proposals" class="classify-proposals"
+    <div v-if="!isArchived && (classifyProposals.length || workspace.classifying.value)"
+      id="classify-proposals" class="classify-proposals"
       aria-live="polite">
       <ClassifyProposalCard :key="state.chat?.id" :proposals="classifyProposals" />
     </div>

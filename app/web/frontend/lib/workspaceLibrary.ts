@@ -1,4 +1,4 @@
-import { endpoint, json } from './content';
+import { endpoint, json, readKey } from './content';
 import type { Category, JobRecord, Paper, UiState, WorkspaceState } from './types';
 
 export type ApiFn = <T = unknown>(path: string, options?: RequestInit) => Promise<T>;
@@ -120,9 +120,21 @@ export function createWorkspaceLibraryActions({ state, api, toast, setPanel }: L
     if (state.pendingPatches.has(id)) return false;
     state.pendingPatches.add(id);
     try {
-      await api(`/api/papers/${endpoint(id)}`, json('PATCH', update));
+      const updated = await api<Paper>(`/api/papers/${endpoint(id)}`, json('PATCH', update));
       const paper = state.papers.find((item) => item.literature_id === id);
-      if (paper) Object.assign(paper, update);
+      if (paper) {
+        const previousRead = readKey(paper.readStatus);
+        const previousStarred = !!paper.starred;
+        Object.assign(paper, updated);
+        const nextRead = readKey(paper.readStatus);
+        if (previousRead !== nextRead) {
+          state.stats[previousRead] = Math.max(0, (state.stats[previousRead] ?? 0) - 1);
+          state.stats[nextRead] = (state.stats[nextRead] ?? 0) + 1;
+        }
+        if (previousStarred !== !!paper.starred) {
+          state.stats.starred = Math.max(0, (state.stats.starred ?? 0) + (paper.starred ? 1 : -1));
+        }
+      }
       return true;
     } catch (error) {
       toast(messageOf(error), true);

@@ -2,8 +2,7 @@ import type { ComputedRef } from 'vue';
 import type { PdfTranslationEvent } from '../../shared/pdfTranslation.js';
 import { endpoint } from './content';
 import type {
-  Chat, ChatClassifyProposal, ChatFolderAction, ChatHistoryState, ChatMessage, JobRecord, StatusInfo, WorkspaceEvent,
-  WorkspaceState,
+  Chat, ChatFolderAction, ChatHistoryState, ChatMessage, JobRecord, StatusInfo, WorkspaceEvent, WorkspaceState,
 } from './types';
 import type { ApiFn } from './workspaceLibrary';
 
@@ -24,8 +23,12 @@ export interface EventsDeps {
   loadDownloads: () => Promise<void>;
   loadCommands: () => Promise<void>;
   loadUiState: () => Promise<void>;
+  loadTranslations: () => Promise<void>;
+  receiveTranslation: (data: WorkspaceEvent) => boolean;
   openChat: (id: string) => Promise<void>;
   syncChat: (id: string) => Promise<void>;
+  receiveClassification: (data: WorkspaceEvent) => boolean;
+  needsClassifySync: (id: string) => boolean;
   selectPaper: (id: string) => void;
   applyChatHistory: (id: string, historyState: ChatHistoryState) => void;
   clearToasts: () => void;
@@ -34,7 +37,8 @@ export interface EventsDeps {
 export function createWorkspaceEvents({
   state, api, EventSourceImpl, pollInterval, busy, statusLabels, activeJob, isStopped, markStopped,
   toast, loadLibrary, loadStatus, loadChats, loadDownloads, loadCommands, loadUiState, openChat, syncChat,
-  selectPaper, applyChatHistory, clearToasts,
+  selectPaper, applyChatHistory, clearToasts, loadTranslations, receiveTranslation,
+  receiveClassification, needsClassifySync,
 }: EventsDeps) {
   let source: EventSource | undefined;
   let polling = false;
@@ -48,12 +52,22 @@ export function createWorkspaceEvents({
     else Object.assign(messages[index] as ChatMessage, message);
   }
 
+  function mergeJob(job: JobRecord): boolean {
+    const previous = state.jobs.get(job.id);
+    if (previous && ((!activeJob(previous) && activeJob(job)) ||
+      (previous.updatedAt && job.updatedAt && job.updatedAt < previous.updatedAt))) return false;
+    state.jobs.set(job.id, { ...previous, ...job });
+    return true;
+  }
+
   function receive(data: WorkspaceEvent): void {
     if (isStopped()) return;
     if (data.type === 'pdfTranslation' && (data.job as PdfTranslationEvent['job'] | undefined)?.paperId) {
       state.pdfTranslationEvent = data as unknown as PdfTranslationEvent;
+      receiveTranslation(data);
       return;
     }
+    if (receiveTranslation(data) || receiveClassification(data)) return;
     const chat = state.chat;
     const history = data.historyState;
     if (data.type === 'chatHistory' && typeof data.chatId === 'string' &&
@@ -91,18 +105,6 @@ export function createWorkspaceEvents({
     }
     if (data.type === 'folderActionResolved' && data.chatId === chat?.id) {
       chat!.folderActions = (chat!.folderActions || []).filter((item) => item.id !== data.id);
-    }
-    if (data.type === 'classifyProposal' && data.chatId === chat?.id &&
-      (data.proposal as { id?: string } | undefined)?.id) {
-      const proposal = data.proposal as ChatClassifyProposal;
-      const proposals = (chat!.classifyProposals ||= []);
-      // 服务端按文献替换提案并分配新 ID，实时更新也必须移除该文献的旧行。
-      const index = proposals.findIndex((item) => item.id === proposal.id || item.paperId === proposal.paperId);
-      if (index < 0) proposals.push(proposal);
-      else proposals[index] = proposal;
-    }
-    if (data.type === 'classifyProposalResolved' && data.chatId === chat?.id) {
-      chat!.classifyProposals = (chat!.classifyProposals || []).filter((item) => item.id !== data.id);
     }
     // 助手在聊天里新建/改名/删除分类或移动文献后，侧栏与分类计数需要跟着刷新。
     if (data.type === 'library') void loadLibrary();
@@ -149,7 +151,10 @@ export function createWorkspaceEvents({
     const job = data.job as JobRecord | undefined;
     if (data.type === 'job' && job?.id) {
       const previous = state.jobs.get(job.id);
-      state.jobs.set(job.id, { ...previous, ...job });
+      if (!mergeJob(job)) return;
+      if (job.classification?.chatId && !activeJob(job)) {
+        void syncChat(job.classification.chatId).catch(() => {});
+      }
       if (previous && activeJob(previous) && !activeJob(job)) {
         toast(
           `任务${statusLabels[job.status] || job.status}：${job.title || job.id}`,
@@ -165,16 +170,17 @@ export function createWorkspaceEvents({
     if (document.hidden || polling || isStopped()) return;
     polling = true;
     try {
-      const work: Array<Promise<unknown>> = [loadStatus()];
+      const work: Array<Promise<unknown>> = [loadStatus(), loadTranslations()];
       const chat = state.chat;
-      if (chat && (!state.eventsOpen || busy.value)) work.push(syncChat(chat.id));
-      if (state.historyOpen && !state.eventsOpen) work.push(loadChats());
+      if (chat && (!state.eventsOpen || busy.value || needsClassifySync(chat.id))) work.push(syncChat(chat.id));
+      if (state.historyOpen) work.push(loadChats());
       for (const job of state.jobs.values()) {
         if (activeJob(job)) {
           work.push(
             api<JobRecord>(`/api/jobs/${endpoint(job.id)}`).then((data) => {
-              state.jobs.set(data.id, data);
+              if (!mergeJob(data)) return;
               if (!activeJob(data)) {
+                if (data.classification?.chatId) void syncChat(data.classification.chatId).catch(() => {});
                 loadLibrary();
                 if (state.view === 'downloads') loadDownloads();
               }
@@ -195,12 +201,14 @@ export function createWorkspaceEvents({
       source.onopen = () => {
         state.eventsOpen = true;
         loadStatus();
+        void loadTranslations();
         if (connectedBefore) void loadChats();
         connectedBefore = true;
         if (state.chat) syncChat(state.chat.id).catch(() => {});
       };
       source.onerror = () => {
         state.eventsOpen = false;
+        void loadTranslations();
       };
       source.onmessage = (event) => {
         let data: WorkspaceEvent;
@@ -213,7 +221,7 @@ export function createWorkspaceEvents({
       };
     }
     await Promise.allSettled([
-      loadLibrary(), loadStatus(), loadChats(), loadDownloads(), loadCommands(), loadUiState(),
+      loadLibrary(), loadStatus(), loadChats(), loadDownloads(), loadCommands(), loadUiState(), loadTranslations(),
     ]);
     if (isStopped()) return;
     const saved = state.ui.chatId;
@@ -233,5 +241,5 @@ export function createWorkspaceEvents({
     clearToasts();
   }
 
-  return { receive, start, stop };
+  return { receive, start, stop, poll };
 }

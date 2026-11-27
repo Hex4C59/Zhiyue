@@ -1,10 +1,14 @@
-import { computed, reactive } from 'vue';
+import { computed, inject, reactive } from 'vue';
 import { request } from './api';
-import type { JobRecord, ModelOption, PiAgentStatus, WorkspaceState } from './types';
+import type { ComputedRef } from 'vue';
+import { authorText, readKey, titleOf } from './content';
+import type { JobRecord, ModelOption, Paper, PiAgentStatus, WorkspaceState } from './types';
 import { createWorkspaceLibraryActions } from './workspaceLibrary';
 import type { ApiFn } from './workspaceLibrary';
 import { createWorkspaceChatActions } from './workspaceChat';
+import { createWorkspaceClassificationActions } from './workspaceClassifications';
 import { createWorkspaceEvents } from './workspaceEvents';
+import { createWorkspaceTranslationActions, storedTranslationModel } from './workspaceTranslations';
 
 export type { WorkspaceState, UiState } from './types';
 export type { ApiFn } from './workspaceLibrary';
@@ -83,6 +87,7 @@ export function createWorkspace({
     noteSaving: '',
     folderActionSaving: '',
     classifySaving: '',
+    classifyRequests: new Map(),
     draggingPaper: '',
     movingPaper: '',
     commands: [],
@@ -99,6 +104,20 @@ export function createWorkspace({
     pdfBrowser: false,
     pdfTranslation: '',
     pdfTranslationEvent: null,
+    translationModel: storedTranslationModel(),
+    translationSnapshot: { engineAvailable: false, model: null, batches: [], jobs: [] },
+    translationReady: false,
+    translationLoading: false,
+    translationOpen: false,
+    translationMode: 'new',
+    translationCandidates: [],
+    translationSelected: new Set(),
+    translationRegenerate: false,
+    translationSubmitting: false,
+    translationCancelling: new Set(),
+    translationBatchId: '',
+    translationError: '',
+    translationLoadError: '',
     pdfSession: null,
     previewLoading: false,
     toasts: [],
@@ -112,7 +131,47 @@ export function createWorkspace({
     uiError: '',
   }) as unknown as WorkspaceState;
 
-  const currentPaper = computed(() => state.papers.find((paper) => paper.literature_id === state.current));
+  const paperById = computed<ReadonlyMap<string, Paper>>(() =>
+    new Map(state.papers.map((paper) => [paper.literature_id, paper])));
+  const currentPaper = computed(() => paperById.value.get(state.current ?? ''));
+  const titleCollator = new Intl.Collator();
+  const idCollator = new Intl.Collator(undefined, { numeric: true });
+  const searchCache = new WeakMap<Paper, ComputedRef<string>>();
+
+  function searchText(paper: Paper): string {
+    let cached = searchCache.get(paper);
+    if (!cached) {
+      // 搜索串只依赖书目元数据；收藏和阅读进度更新复用缓存，空查询不会建立缓存。
+      cached = computed(() => [
+        paper.title, paper.titleZh, authorText(paper), paper.literature_id,
+        paper.venue, paper.category, paper.subcategory,
+      ].join(' ').toLocaleLowerCase());
+      searchCache.set(paper, cached);
+    }
+    return cached.value;
+  }
+
+  // 先缓存全库排序，再筛选，输入关键词时无需重复比较题名或编号。
+  const sortedPapers = computed(() => {
+    const result = [...state.papers];
+    const sort = state.sort;
+    result.sort((a, b) => sort.startsWith('year')
+      ? (Number(a.year) || 0) - (Number(b.year) || 0)
+      : sort === 'title'
+        ? titleCollator.compare(titleOf(a), titleOf(b))
+        : idCollator.compare(a.literature_id, b.literature_id));
+    return sort === 'year-desc' ? result.reverse() : result;
+  });
+  const filteredPapers = computed(() => {
+    const query = state.query.trim().toLocaleLowerCase();
+    return sortedPapers.value.filter((paper) =>
+      (!query || searchText(paper).includes(query)) &&
+      (!state.year || String(paper.year) === state.year) &&
+      (!state.read || readKey(paper.readStatus) === state.read) &&
+      (!state.starred || paper.starred) &&
+      (!state.category || (paper.category || '未分类') === state.category) &&
+      (!state.subcategory || paper.subcategory === state.subcategory));
+  });
   const agent = computed<PiAgentStatus>(() => state.status.agents?.pi || {});
   const models = computed<ModelOption[]>(() =>
     (agent.value.models || [])
@@ -130,7 +189,7 @@ export function createWorkspace({
   const generating = computed(
     () => state.chat?.messages?.some((message) => activeStatuses.includes(message.status)) || false,
   );
-  const busy = computed(() => state.sending || generating.value);
+  const busy = computed(() => state.sending || generating.value || classifications.classifying.value);
   const pendingChatChanges = reactive(new Set<string>());
   const modelReady = computed(
     () => !state.statusError && agent.value.available === true && agent.value.authenticated === true && state.eventsOpen,
@@ -180,11 +239,24 @@ export function createWorkspace({
     if (view === 'downloads') library.loadDownloads();
   }
 
+  const classifications = createWorkspaceClassificationActions({
+    state, api, isStopped: () => stopped, toast, syncChat: (id) => chat.syncChat(id),
+    loadLibrary: library.loadLibrary,
+  });
+
   const chat = createWorkspaceChatActions({
     state, api, activeStatuses, pendingChatChanges, currentPaper, agent, models, busy, modelReady, canStartTurn,
     canRunPaperSkill, canSend, isStopped: () => stopped, toast,
     saveUiState: library.saveUiState,
     loadLibrary: library.loadLibrary,
+    classificationBusy: classifications.classificationBusy,
+    mergeClassifyChat: classifications.mergeClassifyChat,
+    classifySummaryVersion: classifications.classifySummaryVersion,
+    mergeClassifySummaries: classifications.mergeClassifySummaries,
+  });
+
+  const translations = createWorkspaceTranslationActions({
+    state, api, paperById: () => paperById.value, models: () => models.value, isStopped: () => stopped, toast,
   });
 
   const events = createWorkspaceEvents({
@@ -198,8 +270,12 @@ export function createWorkspace({
     loadDownloads: library.loadDownloads,
     loadCommands: chat.loadCommands,
     loadUiState: library.loadUiState,
+    loadTranslations: translations.loadTranslations,
+    receiveTranslation: translations.receiveTranslation,
     openChat: chat.openChat,
     syncChat: chat.syncChat,
+    receiveClassification: classifications.receiveClassification,
+    needsClassifySync: classifications.needsClassifySync,
     selectPaper: library.selectPaper,
     applyChatHistory: chat.applyChatHistory,
     clearToasts: () => { for (const timer of toastTimers) clearTimeout(timer); },
@@ -209,6 +285,9 @@ export function createWorkspace({
     state,
     api,
     currentPaper,
+    paperById,
+    sortedPapers,
+    filteredPapers,
     agent,
     models,
     busy,
@@ -221,8 +300,16 @@ export function createWorkspace({
     setDraft,
     ...library,
     ...chat,
+    ...classifications,
+    ...translations,
     ...events,
   };
 }
 
 export type WorkspaceApi = ReturnType<typeof createWorkspace>;
+
+export function useWorkspace(): WorkspaceApi {
+  const workspace = inject<WorkspaceApi>('workspace');
+  if (!workspace) throw new Error('工作区尚未初始化。');
+  return workspace;
+}

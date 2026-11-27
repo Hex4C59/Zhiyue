@@ -416,13 +416,42 @@ def _move_conflicts(files, owners, targets):
     return None
 
 
+def _unfinished_paper_moves(root, requests):
+    """只读现有单篇/批量事务的编号；调用方持有库写锁，显式 repair 才能续做或清理。"""
+    pending = defaultdict(list)
+    directory = meta(root).joinpath(*MOVE_JOURNAL_PARTS)
+    for path in sorted(directory.glob('*.json')):
+        journal = load(path, {})
+        if not isinstance(journal, dict) or journal.get('stage') == 'done':
+            continue
+        ids = journal.get('paper_ids')
+        involved = {lid for lid in ids if isinstance(lid, str)} if isinstance(ids, list) else set()
+        lid = journal.get('literature_id')
+        if isinstance(lid, str):
+            involved.add(lid)
+        for lid in involved.intersection(requests):
+            pending[lid].append(rel(root, path))
+    return pending
+
+
 def move_papers(root, items, timeout=RENAME_TIMEOUT):
-    """在一把库写锁下预检整组，移动互不冲突的文献并返回逐项结果。"""
+    """在一把库写锁下检查未完成事务，再预检整组并移动互不冲突的文献。"""
     requests = _move_requests(items)
     root = Path(root).resolve()
     results = {lid: {'paperId': lid, 'category': category} for lid, category in requests.items()}
     summary = {'items': list(results.values())}
     with library_lock(root, timeout):
+        # README 已改写时索引读取可能指向目标；必须先查事务，避免被 unchanged 当作成功。
+        pending = _unfinished_paper_moves(root, requests)
+        if pending:
+            summary['repair'] = min(paths[0] for paths in pending.values())
+            for lid, result in results.items():
+                if lid in pending:
+                    journals = '、'.join(pending[lid])
+                    result.update(status='failed', error=f'{lid} 涉及未完成的移动事务，需核实并显式修复：{journals}')
+                else:
+                    result.update(status='blocked', error='本批包含待修复的移动事务，请先完成 repair 后重试。')
+            return summary
         records = library_index.read(root)['records']
         by_id = {record['literature_id']: record for record in records}
         source_cache = {}
@@ -482,6 +511,10 @@ def move_paper(root, literature_id, category, timeout=RENAME_TIMEOUT):
     if not PAPER_ID.fullmatch(lid):
         raise CliError('请指定 L 编号，例如 L003。', 2)
     with library_lock(root, timeout):
+        pending = _unfinished_paper_moves(root, {lid: category})
+        if pending:
+            journals = '、'.join(pending[lid])
+            raise CliError(f'{lid} 涉及未完成的移动事务，需核实并显式修复：{journals}', 4)
         destdir = require_category(root, category)
         records = library_index.read(root)['records']
         record = next((item for item in records if item.get('literature_id') == lid), None)

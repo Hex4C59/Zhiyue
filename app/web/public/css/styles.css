@@ -285,9 +285,13 @@ body.resizing-panels,body.resizing-panels * { cursor:col-resize!important; user-
 .icon-button.compact { width:26px; height:26px; }
 .icon-button.compact svg { width:15px; height:15px; }
 .icon-button.refreshing svg { animation:spin .9s linear infinite; }
-.paper-list { overflow-y:auto; flex:1; padding:12px 10px 24px; scrollbar-width:thin; background:var(--bg); }
+/* 虚拟列表保留完整滚动高度，行高由 ResizeObserver 按实际内容测量。 */
+.virtual-list { position:relative; min-height:0; overflow:auto; overflow-anchor:none; scrollbar-width:thin; }
+.virtual-spacer { position:relative; min-width:0; }
+.virtual-row { position:absolute; top:0; left:0; right:0; display:flow-root; }
+.paper-list { flex:1; padding:12px 10px 24px; background:var(--bg); }
 .paper-card {
-  padding:12px 13px 11px; border:1px solid var(--line); border-radius:12px; margin-bottom:9px;
+  padding:12px 13px 11px; border:1px solid var(--line); border-radius:12px; margin:0;
   position:relative; cursor:pointer; background:var(--paper); box-shadow:0 2px 5px #24344704;
   transition:border-color 140ms,box-shadow 140ms,transform 140ms;
 }
@@ -305,7 +309,6 @@ body.resizing-panels,body.resizing-panels * { cursor:col-resize!important; user-
 .paper-top .icon-button { margin-left:auto; width:23px; height:23px; }
 .paper-top svg { width:14px; height:14px; }
 .paper-card h3 {
-  display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:3; overflow:hidden;
   font-size:14px; line-height:1.6; color:var(--ink); margin:5px 0 6px; font-weight:600; overflow-wrap:anywhere;
 }
 .paper-authors { font-size:12px; color:var(--muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; line-height:1.7; }
@@ -381,6 +384,76 @@ pre,code,kbd,samp { font-family:var(--font-mono); }
 }
 .pdf-translation-download { color:var(--accent); }
 .pdf-translation-error { flex-basis:100%; overflow-wrap:anywhere; }
+
+/* 批量翻译独立于助手上下文选择，弹窗关闭后队列仍由工作区同步。 */
+.batch-translation-trigger { flex:none; padding:4px 7px; font-size:11px; white-space:nowrap; }
+.translation-task-trigger { flex:none; gap:5px; white-space:nowrap; font-size:12px; }
+.translation-dialog {
+  width:min(880px,calc(100vw - 32px)); max-height:calc(100dvh - 48px); padding:0;
+  border:1px solid var(--line); border-radius:10px; background:var(--paper); color:var(--text);
+}
+.translation-dialog[open] { display:flex; flex-direction:column; }
+.translation-dialog::backdrop { background:var(--scrim); }
+.translation-dialog-header { display:flex; align-items:center; gap:12px; padding:16px 20px 8px; flex:none; }
+.translation-dialog-header h2 { margin:0; color:var(--ink); font-size:17px; }
+.translation-dialog-header .icon-button { margin-left:auto; }
+.translation-dialog-tabs { display:flex; flex-wrap:wrap; gap:6px; padding:0 20px 12px; flex:none; }
+.translation-dialog-tabs .active { background:var(--selected); color:var(--ink); }
+.translation-dialog-error { margin:0; padding:0 20px 12px; font-size:12px; overflow-wrap:anywhere; }
+.translation-form { display:flex; flex-direction:column; gap:12px; min-height:0; padding:0 20px; overflow:auto; }
+.translation-model-row { position:relative; display:flex; flex-wrap:wrap; align-items:center; gap:10px; font-size:12px; }
+.translation-model-row .pdf-translation-model-picker { max-width:100%; }
+.translation-model-row .pdf-translation-model-trigger { max-width:100%; }
+.translation-permission,.translation-help { margin:0; font-size:11px; line-height:1.6; color:var(--muted); }
+.translation-regenerate { display:flex; align-items:center; gap:8px; font-size:12px; cursor:pointer; }
+.translation-selection-tools { display:flex; flex-wrap:wrap; align-items:center; gap:8px 12px; font-size:12px; }
+.translation-selection-tools .muted { margin-left:auto; font-size:11px; }
+.translation-candidates {
+  margin:0; padding:0; max-height:min(42dvh,420px);
+  border:1px solid var(--line); border-radius:6px; flex:1 1 auto; min-height:80px;
+}
+.translation-candidate { padding:10px 12px; border-bottom:1px solid var(--line); font-size:12px; }
+.translation-candidates label { display:flex; align-items:flex-start; gap:9px; cursor:pointer; }
+.translation-candidates input { flex:none; margin-top:3px; }
+.translation-candidates .paper-id { flex:none; }
+.translation-candidate-title { min-width:0; overflow-wrap:anywhere; }
+.translation-candidate>.muted { display:block; margin:4px 0 0 23px; font-size:11px; }
+.translation-dialog-footer { display:flex; flex-wrap:wrap; justify-content:flex-end; gap:8px; padding:0 0 16px; }
+.translation-task-body { overflow:auto; min-height:0; padding:0 20px 18px; }
+.translation-refreshing { font-size:11px; margin:0 0 10px; }
+.translation-batch { margin-bottom:12px; padding:14px; border:1px solid var(--line); border-radius:7px; }
+.translation-batch-heading { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:8px; }
+.translation-batch-heading strong { color:var(--ink); font-size:13px; }
+.translation-batch-heading>span { color:var(--muted); font-size:12px; }
+.translation-batch-model { margin:5px 0 10px; font-size:11px; color:var(--muted); overflow-wrap:anywhere; }
+.translation-batch progress { width:100%; height:7px; accent-color:var(--accent); }
+.translation-counts { display:flex; flex-wrap:wrap; gap:6px 14px; margin-top:8px; font-size:11px; }
+.translation-batch-actions { display:flex; flex-wrap:wrap; gap:8px; margin-top:10px; }
+.translation-batch-actions .button { padding:6px 10px; font-size:11px; }
+.translation-batch-details { margin-top:10px; }
+.translation-batch-details>summary { cursor:pointer; font-size:12px; color:var(--muted); padding:4px 0; }
+.translation-job-list { margin:6px 0 0; padding:0; max-height:min(42dvh,420px); }
+.translation-batch h3 { font-size:13px; margin:0 0 8px; }
+.translation-job { padding:10px 0; border-top:1px solid var(--line); min-width:0; }
+.translation-job-heading { display:flex; align-items:baseline; gap:8px; font-size:12px; }
+.translation-job-heading .paper-id { flex:none; }
+.translation-job-title { min-width:0; overflow-wrap:anywhere; }
+.translation-job-stage {
+  display:flex; flex-wrap:wrap; justify-content:space-between; gap:6px;
+  font-size:11px; color:var(--muted); margin-top:5px;
+}
+.translation-job p { margin:4px 0 0; font-size:11px; overflow-wrap:anywhere; }
+.translation-job.failed .translation-job-stage { color:var(--danger); }
+@media(max-width:560px) {
+  .translation-dialog { width:calc(100vw - 20px); max-height:calc(100dvh - 24px); }
+  .translation-dialog-header { padding:12px 14px 8px; }
+  .translation-dialog-tabs { padding:0 14px 10px; }
+  .translation-form,.translation-task-body { padding-left:14px; padding-right:14px; }
+  .translation-batch { padding:10px; }
+  .translation-model-row .pdf-translation-model-menu { left:10px; width:calc(100% - 20px); }
+  .translation-selection-tools .muted { margin-left:0; }
+}
+
 .reader-content { flex:1; min-height:0; overflow:auto; position:relative; background:var(--canvas); }
 .pdf-frame { display:block; border:0; width:100%; height:100%; min-height:300px; background:var(--canvas); }
 .pdf-controls { display:flex; align-items:center; gap:5px; flex-basis:100%; border-top:1px solid var(--line); padding-top:6px; flex-wrap:wrap; }
@@ -511,6 +584,11 @@ pre,code,kbd,samp { font-family:var(--font-mono); }
 .message.assistant .markdown h2 { font-size:19px; }
 .message.assistant .markdown h3 { font-size:16px; }
 .message.system .message-body,.message.tool .message-body { font-size:12px; color:var(--muted); background:var(--bg); padding:10px; border-radius:5px; }
+.message-result { background:var(--bg); border-radius:5px; color:var(--muted); font-size:12px; }
+.message-result>summary { padding:10px; cursor:pointer; }
+.message-result>summary:hover { color:var(--ink); }
+.message-result>summary:focus-visible { outline:2px solid var(--focus); outline-offset:2px; }
+.message-result[open]>summary { padding-bottom:0; }
 .message-status { font-size:11px; color:var(--muted); margin-top:7px; }
 .message-thinking { margin:0 0 12px; border-left:2px solid var(--line); padding:2px 0 2px 12px; color:var(--muted); font-size:12.5px; line-height:1.8; }
 .message-thinking>summary { color:var(--muted); font-size:11px; cursor:pointer; list-style:none; display:flex; align-items:center; gap:6px; }

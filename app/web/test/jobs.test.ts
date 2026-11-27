@@ -153,7 +153,7 @@ test('从库根别名启动时任务仍可运行，状态目录不得链接到�
 });
 
 test('large logs stay bounded and process/spawn failures persist as failed', async t => {
-  const { root, manager, stateDir } = await fixture(t);
+  const { root, manager, stateDir, events } = await fixture(t);
   await writeFile(path.join(root, 'fixture/run.py'), `
 process.stdout.write(('ordinary line\\n').repeat(12000));
 process.stderr.write('token=very-private-value\\n');
@@ -163,6 +163,10 @@ process.exitCode=2;
   const result = requiredJob(manager, job.id);
   assert.equal(result.status, 'failed'); assert.equal(result.steps[0].status, 'failed');
   assert.ok(result.log.length <= 100000); assert.ok(!result.log.includes('very-private-value'));
+  const notifications = events.filter((event) => event.job.id === job.id);
+  assert.ok(notifications.length < 100, '逐行输出不能逐行发送累计日志全文');
+  assert.equal(notifications.at(-1)?.job.status, 'failed');
+  assert.equal(notifications.at(-1)?.job.log, result.log);
   assert.equal(JSON.parse(await readFile(path.join(stateDir, 'jobs.json'), 'utf8'))[0].status, 'failed');
   const missing = new JobManager({ root, stateDir, python: path.join(root, 'nonexistent-python'), downloader: path.join(root, 'fixture/run.py') });
   const failed = await missing.refreshCatalog(); await missing.queue;
@@ -399,4 +403,57 @@ await restarted.close();
   assert.deepEqual((await calls()).map(c => c.command), ['import', 'download']);
   const saved = JSON.parse(await readFile(path.join(stateDir, 'jobs.json'), 'utf8'));
   assert.equal(saved.length, 2); assert.ok(saved.every((j: { status: string }) => j.status === 'failed'));
+});
+
+test('归类入口在真实CLI结束后保留成功步骤、目录阻止项及逐项失败或repair回执', async (t) => {
+  for (const repair of [false, true]) await t.test(repair ? '需要修复' : '逐项失败', async (t) => {
+    const { root, stateDir, manager, downloader, calls } = await fixture(t);
+    // 临时库也可位于工作区内；.py 后缀的 Node 夹具须明确使用 CommonJS。
+    await writeFile(path.join(root, 'package.json'), JSON.stringify({ type: 'commonjs' }));
+    await writeFile(downloader, `
+const fs = require('node:fs'); const path = require('node:path');
+const args = process.argv.slice(2); const root = args[1]; const command = args[2];
+fs.appendFileSync(path.join(root, 'calls.jsonl'), JSON.stringify({command,args})+'\\n');
+const moves = JSON.parse(fs.readFileSync(args[3], 'utf8'));
+console.log(JSON.stringify({
+  ${repair ? "repair: '.zhiyue/tmp/paper_moves/synthetic.json'," : ''}
+  items: moves.map((move, index) => ({...move,
+    ...(index ? {status: 'failed', error: '合成索引写入失败。'} : {status: 'moved'}),
+  })),
+}));
+`);
+    try {
+      const classification = { chatId: 'synthetic-chat', runId: 'synthetic-run' };
+      const moves = [
+        { paperId: 'L001', category: 'papers/01_目标' },
+        { paperId: 'L002', category: 'papers/02_目标' },
+      ];
+      const blocked = { paperId: 'L003', category: 'papers/未创建', status: 'blocked' as const,
+        error: '合成目录创建失败。' };
+      let prepared = 0;
+      const queued = await manager.startClassificationMove(classification, 3, async (jobId, checkOpen) => {
+        checkOpen();
+        assert.equal(manager.getJob(jobId)?.classification?.runId, classification.runId);
+        prepared++;
+        return { moves, blocked: [blocked] };
+      });
+      assert.equal(queued.status, 'queued');
+      await manager.queue;
+      const job = manager.getJob(queued.id)!;
+      assert.equal(prepared, 1);
+      assert.equal(job.status, 'failed');
+      assert.deepEqual(job.classification, classification);
+      assert.deepEqual(job.steps.map(({ action, status }) => [action, status]),
+        [['move-papers', 'completed']], job.log);
+      assert.deepEqual(job.moveResult?.items, [blocked,
+        { ...moves[0], status: 'moved' }, { ...moves[1], status: 'failed', error: '合成索引写入失败。' }]);
+      assert.equal(job.moveResult?.repair, repair ? '.zhiyue/tmp/paper_moves/synthetic.json' : undefined);
+      assert.deepEqual((await calls()).map(({ command }) => command), ['move-papers']);
+      await assert.rejects(readFile(path.join(stateDir, `${job.id}_moves.json`)), { code: 'ENOENT' });
+      const saved = JSON.parse(await readFile(path.join(stateDir, 'jobs.json'), 'utf8')) as JobRecord[];
+      assert.deepEqual(saved[0]?.moveResult, job.moveResult);
+      assert.deepEqual(saved[0]?.classification, classification);
+      assert.equal(saved[0]?.steps[0]?.status, 'completed');
+    } finally { await manager.close(); }
+  });
 });

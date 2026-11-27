@@ -74,6 +74,79 @@ test('catalog enrichment and user-only reading persistence; refresh sees catalog
   await library.refresh(); assert.equal((await library.getLibrary()).stats.total, 2);
 });
 
+test('按编号查询只复制单篇，返回值隔离且刷新同步编号索引', async t => {
+  const { library, put, records } = await fixture(t);
+  const expected = (await library.getLibrary()).papers[0];
+  const clone = globalThis.structuredClone;
+  const inputs: unknown[] = [];
+  globalThis.structuredClone = (value, options) => { inputs.push(value); return clone(value, options); };
+  try {
+    const paper = await library.getPaper('L001');
+    assert.deepEqual(paper, expected);
+    assert.equal(inputs.length, 1);
+    assert.equal((inputs[0] as { id: string }).id, 'L001');
+    assert.equal('papers' in (inputs[0] as object), false);
+    paper!.authors[0] = '外部修改';
+    paper!.notes[0]!.path = '外部路径';
+    assert.deepEqual(await library.getPaper('L001'), expected);
+    assert.equal(await library.getPaper('missing'), null);
+    records.push({ literature_id: 'L002', title: '新文献', file: 'papers/08_SER/new.pdf' });
+    await put('.zhiyue/catalog/文献索引.json', JSON.stringify({ records }));
+    assert.equal(await library.getPaper('L002'), null);
+    await library.refresh();
+    assert.equal((await library.getPaper('L002'))?.title, '新文献');
+  } finally { globalThis.structuredClone = clone; }
+});
+
+test('单篇查询看到外部阅读状态修改，更新仅读取一次并返回提交后的单篇', async t => {
+  const { library, put } = await fixture(t);
+  assert.equal((await library.getPaper('L001'))?.readStatus, 'unread');
+  await put('.zhiyue/data/reading.json', JSON.stringify({ L001: { readStatus: 'reading', starred: true } }));
+  assert.equal((await library.getPaper('L001'))?.readStatus, 'reading');
+  assert.equal((await library.getPaper('L001'))?.starred, true);
+  await put('.zhiyue/data/reading.json', JSON.stringify({ L001: { readStatus: 'read', starred: false } }));
+  assert.equal((await library.getPaper('L001'))?.readStatus, 'read');
+  const read = library._reading.bind(library);
+  let reads = 0;
+  library._reading = () => { reads++; return read(); };
+  const updated = await library.updatePaper('L001', { starred: true });
+  assert.equal(reads, 1);
+  assert.equal(updated?.readStatus, 'read');
+  assert.equal(updated?.starred, true);
+  assert.equal(updated?.notes.length, 1);
+});
+
+test('提交前未完成的只读状态不能覆盖后续串行更新', async t => {
+  const { library, put } = await fixture(t);
+  await put('.zhiyue/data/reading.json', JSON.stringify({ L001: { readStatus: 'unread', starred: false } }));
+  const before = await library._reading();
+  let release!: (reading: typeof before) => void;
+  const delayed = new Promise<typeof before>((resolve) => { release = resolve; });
+  const read = library._reading.bind(library);
+  let intercept = true;
+  let reader!: ReturnType<Library['getPaper']>;
+  library._reading = () => {
+    const operation = read();
+    if (!intercept) return operation;
+    intercept = false;
+    return operation.then((value) => {
+      // 模拟读取已取得旧字节、JSON 解析尚未完成；只读查询可在原子替换前启动。
+      Object.assign(library, { reading: delayed });
+      reader = library.getPaper('L001');
+      return value;
+    });
+  };
+  try {
+    assert.equal((await library.updatePaper('L001', { starred: true }))?.starred, true);
+    const next = library.updatePaper('L001', { readStatus: 'read' });
+    release(before);
+    assert.equal((await reader)?.starred, false);
+    assert.equal((await next)?.starred, true);
+    const saved = JSON.parse(await readFile(path.join(library.stateDir, 'reading.json'), 'utf8'));
+    assert.deepEqual(saved.L001, { readStatus: 'read', starred: true });
+  } finally { release(before); }
+});
+
 test('empty folders appear as categories and new folders continue numbering', async t => {
   const { root, library } = await fixture(t);
   await mkdir(path.join(root, 'papers/09_空分类'), { recursive: true });
