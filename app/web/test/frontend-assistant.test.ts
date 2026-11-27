@@ -484,6 +484,7 @@ test('输入框唤起斜杠命令菜单，键盘与点击都能插入命令', as
   const names = [...menu.querySelectorAll('[data-command]')].map((node: any) => node.dataset.command);
   assert.deepEqual(names, [
     'help', 'compact', 'settings', 'model', 'changelog', 'skill:paper-reading', 'skill:paper-experiments',
+    'skill:paper-organize',
   ]);
   assert.equal(menu.querySelector('[aria-selected="true"]')?.dataset.command, 'help');
 
@@ -542,7 +543,7 @@ test('当前论文的两个按钮调用对应技能，保留输入草稿并等�
   const page = await fixture(t);
   const actions = [...page.target.querySelectorAll<HTMLButtonElement>('.paper-actions button')];
   const [review, summarize] = actions;
-  assert.deepEqual(actions.map((button) => button.textContent?.trim()), ['值得读吗？', '总结全文']);
+  assert.deepEqual(actions.map((button) => button.textContent?.trim()), ['值得读吗？', '总结全文', '智能归类']);
   assert.ok(actions.every((button) => button.disabled));
 
   const { state } = page.workspace;
@@ -586,7 +587,7 @@ test('空白阅读笔记页的两个按钮执行当前论文技能并切到助�
   await flush();
 
   const actions = () => [...page.target.querySelectorAll<HTMLButtonElement>('#reader-content .paper-actions button')];
-  assert.deepEqual(actions().map((button) => button.textContent?.trim()), ['值得读吗？', '总结全文']);
+  assert.deepEqual(actions().map((button) => button.textContent?.trim()), ['值得读吗？', '总结全文', '智能归类']);
   assert.equal(page.$('#ask-note'), null);
 
   const commands = () => page.calls.filter((call) => call.path.endsWith('/commands') && call.method === 'POST');
@@ -607,5 +608,137 @@ test('空白阅读笔记页的两个按钮执行当前论文技能并切到助�
   assert.equal(actions().length, 0);
   click(page.$('[data-reader-mode="note"]'));
   await flush();
-  assert.equal(actions().length, 2);
+  assert.equal(actions().length, 3);
+});
+
+test('归类提案卡片显示依据与待新建目录，确认与取消按勾选项提交', async (t) => {
+  const page = await fixture(t);
+  const { workspace } = page;
+  const proposal = (id: string, patch: Record<string, unknown> = {}) => ({
+    id, paperId: `L00${id.length}`, title: `论文 ${id}`, fromPath: 'papers/01_综述',
+    targetCategory: '02_方法', targetPath: 'papers/02_方法', willCreateCategory: false,
+    willCreateSubcategory: false, basis: 'notes', reason: '笔记都在讲方法', createdAt: new Date().toISOString(),
+    ...patch,
+  });
+  workspace.state.chat = {
+    id: 'classify-chat', messages: [], noteDrafts: [],
+    classifyProposals: [
+      proposal('c1'),
+      proposal('c2', {
+        targetCategory: '新领域', targetSubcategory: '子方向', targetPath: 'papers/新领域/子方向',
+        willCreateCategory: true, willCreateSubcategory: true, basis: 'translation',
+      }),
+      proposal('c3', { basis: 'notes+translation', reason: '笔记与译文一致' }),
+      proposal('blocked', { paperId: 'L002', basis: 'pdf', error: '目标目录不可写。' }),
+    ],
+  };
+  await flush();
+  assert.equal(document.querySelectorAll('.classify-proposal').length, 1);
+  assert.equal(document.querySelectorAll('.classify-proposal-rows li').length, 4);
+  // 新增提案默认勾选，便于一次确认。
+  assert.equal(document.querySelectorAll('.classify-proposal input:checked').length, 4);
+  const card = page.$('.classify-proposal');
+  assert.equal(card.getAttribute('aria-label'), '确认论文归类');
+  assert.match(card.textContent, /已选/);
+  assert.match(page.$('[data-classify-proposal="c1"]').textContent, /papers\/01_综述/);
+  assert.match(page.$('[data-classify-proposal="c1"]').textContent, /papers\/02_方法/);
+  assert.match(page.$('[data-classify-proposal="c1"]').textContent, /依据：笔记/);
+  assert.match(page.$('[data-classify-proposal="c1"]').textContent, /笔记都在讲方法/);
+  // 只有需要新建目录的行显示提示标签。
+  assert.doesNotMatch(page.$('[data-classify-proposal="c1"]').textContent, /将新建文件夹/);
+  assert.match(page.$('[data-classify-proposal="c2"]').textContent, /将新建文件夹/);
+  assert.match(page.$('[data-classify-proposal="c2"]').textContent, /依据：中文翻译/);
+  assert.match(page.$('[data-classify-proposal="c3"]').textContent, /依据：笔记 \+ 译文/);
+  assert.match(page.$('[data-classify-proposal="blocked"]').textContent, /依据：原文/);
+  assert.match(page.$('[data-classify-proposal="blocked"]').textContent, /目标目录不可写/);
+  assert.match(page.$('.classify-proposal-error').getAttribute('role') ?? '', /alert/);
+
+  // 取消选中某行后，只提交剩余勾选项。
+  const unchecked = page.$('[data-classify-proposal="c3"] input');
+  unchecked.click();
+  await flush();
+  assert.equal(unchecked.checked, false);
+  const apply = page.$('[data-classify-apply]');
+  click(apply);
+  click(apply);
+  await until(() => !workspace.state.classifySaving);
+  assert.deepEqual(page.classifyDecisions, [{
+    id: 'classify-chat', body: { action: 'apply', ids: ['c1', 'c2', 'blocked'] },
+  }]);
+  // 成功项移除、失败项保留并回显原因，未选中的行原样保留（顺序按卡片原有顺序）。
+  assert.deepEqual(workspace.state.chat.classifyProposals.map((item: any) => item.id), ['c3', 'blocked']);
+  assert.match(page.$('[data-classify-proposal="blocked"]').textContent, /目标目录不可写/);
+  assert.equal(page.$('[data-classify-proposal="c1"]'), null);
+  assert.match(page.$('#messages').textContent, /已新建文件夹/);
+  assert.match(page.$('#messages').textContent, /L001 已归类至/);
+  // SSE 与 HTTP 都送达时，同一条持久回执只显示一次。
+  const receipt = workspace.state.chat.messages.at(-1);
+  workspace.receive({ type: 'message', chatId: 'classify-chat', message: receipt });
+  await flush();
+  assert.equal(document.querySelectorAll('[data-message="classify-result-1"]').length, 1);
+
+  workspace.receive({
+    type: 'message', chatId: 'classify-chat',
+    message: {
+      id: 'classify-result-2', role: 'system', text: '已取消归类请求。', status: 'completed',
+    },
+  });
+  click(page.$('[data-classify-discard]'));
+  await until(() => !workspace.state.classifySaving);
+  assert.deepEqual(page.classifyDecisions[1], {
+    id: 'classify-chat', body: { action: 'discard', ids: ['blocked'] },
+  });
+  assert.deepEqual(workspace.state.chat.classifyProposals.map((item: any) => item.id), ['c3']);
+  assert.match(page.$('#messages').textContent, /已取消 L002 的归类请求/);
+  assert.equal(document.querySelectorAll('[data-message="classify-result-2"]').length, 1);
+});
+
+test('同一论文重新提案时替换实时卡片，确认只提交最新提案', async (t) => {
+  const page = await fixture(t);
+  const { workspace } = page;
+  const proposal = {
+    id: 'old-proposal', paperId: 'L001', title: '论文', fromPath: 'papers/01_综述',
+    targetCategory: '02_方法', targetPath: 'papers/02_方法', willCreateCategory: false,
+    willCreateSubcategory: false, basis: 'notes', reason: '原提案', createdAt: new Date().toISOString(),
+  };
+  workspace.state.chat = { id: 'classify-chat', messages: [], classifyProposals: [proposal] };
+  await flush();
+  workspace.receive({
+    type: 'classifyProposal', chatId: 'classify-chat',
+    proposal: { ...proposal, id: 'new-proposal', reason: '重新核对后的提案' },
+  });
+  await flush();
+  assert.equal(document.querySelectorAll('.classify-proposal-rows li').length, 1);
+  assert.equal(page.$('[data-classify-proposal="old-proposal"]'), null);
+  assert.match(page.$('[data-classify-proposal="new-proposal"]').textContent, /重新核对后的提案/);
+  click(page.$('[data-classify-apply]'));
+  await until(() => !workspace.state.classifySaving);
+  assert.deepEqual(page.classifyDecisions, [{
+    id: 'classify-chat', body: { action: 'apply', ids: ['new-proposal'] },
+  }]);
+  assert.deepEqual(workspace.state.chat.classifyProposals, []);
+});
+
+test('智能归类按钮按归类技能发起会话并保留当前选中文献', async (t) => {
+  const page = await fixture(t);
+  const { state } = page.workspace;
+  state.context.add('L001');
+  state.current = 'L002';
+  state.pdfPage = 4;
+  await flush();
+  const organize = [...page.target.querySelectorAll<HTMLButtonElement>('.paper-actions button')]
+    .find((button) => button.textContent?.trim() === '智能归类');
+  assert.ok(organize);
+  organize.click();
+  await until(() => page.calls.some((call) => call.path.endsWith('/commands') && call.method === 'POST'));
+  const { body } = page.calls.find((call) => call.path.endsWith('/commands') && call.method === 'POST');
+  assert.ok(body.text.startsWith('/skill:paper-organize '));
+  // 技能正文要求先查目录、再读笔记或译文，最后提交确认卡片。
+  assert.match(body.text, /library_categories/);
+  assert.match(body.text, /read_paper_translation/);
+  assert.match(body.text, /propose_paper_classification/);
+  assert.deepEqual(body.paperIds, ['L002']);
+  assert.equal(body.activePaperId, 'L002');
+  assert.equal(body.pdfPage, 4);
+  assert.equal(state.panel, 'chat');
 });

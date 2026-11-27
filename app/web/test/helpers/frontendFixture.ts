@@ -122,6 +122,7 @@ export async function fixture(
   const decisions: any[] = [];
   const noteDecisions: any[] = [];
   const folderDecisions: any[] = [];
+  const classifyDecisions: any[] = [];
   const chats = new Map<string, any>();
   const papers = [
     {
@@ -281,6 +282,12 @@ export async function fixture(
             source: 'skill',
             scope: 'composer',
           },
+          {
+            name: 'skill:paper-organize',
+            description: '根据笔记或中文翻译归类论文。',
+            source: 'skill',
+            scope: 'composer',
+          },
         ],
       };
     if (path === '/api/commands/terminal') return { accepted: true };
@@ -317,6 +324,22 @@ export async function fixture(
         discarded: body.action === 'discard' ? body.ids : [], remaining: [],
         failed: body.action === 'apply' && body.ids.includes('blocked')
           ? [{ id: 'blocked', error: '文件夹不是空的。' }] : [],
+      };
+    }
+    if (/^\/api\/chats\/[^/]+\/classify-proposals$/.test(path)) {
+      classifyDecisions.push({ id: path.split('/')[3], body });
+      return {
+        applied: body.action === 'apply' ? body.ids.filter((id: string) => id !== 'blocked') : [],
+        discarded: body.action === 'discard' ? body.ids : [],
+        failed: body.action === 'apply' && body.ids.includes('blocked')
+          ? [{ id: 'blocked', paperId: 'L002', error: '目标目录不可写。' }] : [],
+        remaining: [],
+        message: {
+          id: `classify-result-${classifyDecisions.length}`, role: 'system', status: 'completed',
+          text: body.action === 'apply'
+            ? '已新建文件夹：`papers/03_新领域/01_子方向`。\n\nL001 已归类至 `papers/03_新领域/01_子方向`。'
+            : '已取消 L002 的归类请求，本次未新建文件夹或移动论文。',
+        },
       };
     }
     if (options.method === 'POST' && /^\/api\/papers\/L\d+\/move$/.test(path)) {
@@ -420,6 +443,7 @@ export async function fixture(
     decisions,
     noteDecisions,
     folderDecisions,
+    classifyDecisions,
     chats,
     status,
     piSettings,

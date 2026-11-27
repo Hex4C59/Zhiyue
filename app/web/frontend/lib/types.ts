@@ -1,11 +1,11 @@
 import type { PdfTranslationEvent } from '../../shared/pdfTranslation.js';
 import type {
-  ChatDraftTarget, ChatFolderAction, ChatHistoryState, CommandInfo, TextLayer, TextWord, UiState,
+  ChatClassifyProposal, ChatDraftTarget, ChatFolderAction, ChatHistoryState, CommandInfo, TextLayer, TextWord, UiState,
 } from '../../shared/contracts.js';
 import type { ReadStatus } from './content';
 
 export type {
-  ChatDraftTarget, ChatFolderAction, ChatHistoryState, CommandInfo, TextWord, UiState,
+  ChatClassifyProposal, ChatDraftTarget, ChatFolderAction, ChatHistoryState, CommandInfo, TextWord, UiState,
 };
 export type TextLayerData = TextLayer;
 
@@ -65,6 +65,7 @@ export interface Chat {
   messages?: ChatMessage[];
   noteDrafts?: ChatNoteDraft[];
   folderActions?: ChatFolderAction[];
+  classifyProposals?: ChatClassifyProposal[];
   threadId?: string | null;
   paperIds?: string[];
   historyState?: ChatHistoryState;
@@ -222,6 +223,8 @@ export interface WorkspaceState {
   sending: boolean;
   noteSaving: string;
   folderActionSaving: string;
+  /** 正在提交的归类卡片所属会话；同一时间只允许一次归类请求。 */
+  classifySaving: string;
   draggingPaper: string;
   movingPaper: string;
   creating: boolean;

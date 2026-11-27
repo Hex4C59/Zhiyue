@@ -128,7 +128,9 @@ export function createWorkspaceChatActions({
 
   function canChangeChat(id: string): boolean {
     if (pendingChatChanges.has(id)) return false;
-    if (id === state.chat?.id) return !busy.value && !state.noteSaving && !state.folderActionSaving;
+    if (id === state.chat?.id) {
+      return !busy.value && !state.noteSaving && !state.folderActionSaving && !state.classifySaving;
+    }
     const summary = state.chats.find((chat) => chat.id === id);
     return !summary?.messages?.some((message) => activeStatuses.includes(message.status));
   }
@@ -477,6 +479,47 @@ export function createWorkspaceChatActions({
     }
   }
 
+  /** 提交已勾选的归类提案；按服务端逐条结果更新卡片。 */
+  async function resolveClassifyProposals(ids: string[], action: 'apply' | 'discard'): Promise<void> {
+    const chat = state.chat;
+    if (!chat || !ids.length || state.classifySaving) return;
+    state.classifySaving = chat.id;
+    try {
+      const result = await api<{
+        applied: string[]; discarded: string[]; failed: Array<{ id: string; paperId: string; error: string }>;
+        remaining: string[]; message?: ChatMessage;
+      }>(`/api/chats/${endpoint(chat.id)}/classify-proposals`, json('POST', { action, ids }));
+      const resolved = new Set([...result.applied, ...result.discarded]);
+      const errors = new Map(result.failed.map(({ id, error }) => [id, error]));
+      if (state.chat?.id === chat.id) {
+        state.chat.classifyProposals = (state.chat.classifyProposals ?? []).filter((item) => !resolved.has(item.id));
+        for (const item of state.chat.classifyProposals) {
+          const error = errors.get(item.id);
+          if (error) item.error = error;
+        }
+        // HTTP 回执补齐断线时未收到的消息；SSE 可能已经送达，按 ID 去重。
+        const message = result.message;
+        if (message) {
+          const messages = (state.chat.messages ??= []);
+          const existing = messages.find((item) => item.id === message.id);
+          if (existing) Object.assign(existing, message);
+          else messages.push(message);
+        }
+      }
+      if (action === 'apply') {
+        const failed = result.failed.length ? `，${result.failed.length} 项需处理` : '';
+        toast(`已归类 ${result.applied.length} 篇论文${failed}`, !!failed);
+        await loadLibrary();
+      } else {
+        toast(`已取消 ${result.discarded.length} 项归类请求`);
+      }
+    } catch (error) {
+      toast(messageOf(error), true);
+    } finally {
+      state.classifySaving = '';
+    }
+  }
+
   async function decideApproval(
     id: string,
     decision: string,
@@ -520,6 +563,7 @@ export function createWorkspaceChatActions({
     saveNoteDraft,
     discardNoteDraft,
     resolveFolderActions,
+    resolveClassifyProposals,
     decideApproval,
   };
 }

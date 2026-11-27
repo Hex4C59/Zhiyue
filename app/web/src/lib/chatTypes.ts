@@ -2,12 +2,13 @@ import type { SkillRuntime } from './skills.js';
 import type { Library, LibraryPaper } from './library.js';
 import type { JobManager, JobRecord } from './jobs.js';
 import type {
-  ChatAttachmentRef, ChatDraftTarget, ChatFolderAction, ChatHistoryState, ChatRole, ChatStatus,
+  ChatAttachmentRef, ChatClassifyProposal, ChatDraftTarget, ChatFolderAction, ChatHistoryState, ChatRole,
+  ChatStatus,
 } from '../../shared/contracts.js';
 
 export type {
-  ChatAttachmentRef, ChatDraftTarget, ChatFolderAction, ChatHistoryState, ChatRole, ChatStatus,
-  JobRecord, LibraryPaper,
+  ChatAttachmentRef, ChatClassifyProposal, ChatDraftTarget, ChatFolderAction, ChatHistoryState, ChatRole,
+  ChatStatus, JobRecord, LibraryPaper,
 };
 
 export interface ChatModel {
@@ -48,6 +49,9 @@ export interface Chat {
   messages: ChatMessage[];
   noteDrafts: ChatNoteDraft[];
   folderActions?: ChatFolderAction[];
+  classifyProposals?: ChatClassifyProposal[];
+  /** 最近一次已在完成的模型回合中同步的系统回执；失败或中断后仍会重送未同步结果。 */
+  lastContextOperationId?: string;
   createdAt: string;
   threadId: string | null;
   historyState?: ChatHistoryState;
@@ -146,6 +150,8 @@ export interface ChatServiceOptions {
     data: string; mimeType: string; totalPages: number; page: number;
   }>;
   readSkill?: (name: unknown, file?: unknown) => Promise<{ name: string; file: string; text: string }>;
+  /** 读取与当前原文匹配的最新已完成中文译本；由服务端延迟装配，避免与翻译服务循环依赖。 */
+  readPaperTranslation?: (paperId: string, offset?: number, limit?: number) => Promise<unknown>;
   /** 斜杠命令与 read_skill 使用的库内技能注册表；未提供时只开放本地命令。 */
   skills?: SkillRuntime;
   /** 手动压缩会话上下文；未提供时 /compact 报错。 */

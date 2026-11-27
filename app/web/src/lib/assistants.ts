@@ -15,6 +15,8 @@ export interface AssistantServiceOptions {
   searchPdfText?: ChatServiceOptions['searchPdfText'];
   pdfOutline?: ChatServiceOptions['pdfOutline'];
   renderPage?: ChatServiceOptions['renderPage'];
+  /** 读取已完成中文译本；由 createApp 用延迟闭包绑定 PdfTranslationService。 */
+  readPaperTranslation?: ChatServiceOptions['readPaperTranslation'];
   piClient?: PiClient;
 }
 

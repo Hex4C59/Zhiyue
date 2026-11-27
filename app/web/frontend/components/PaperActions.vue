@@ -15,6 +15,13 @@ const actions = [
     instruction: '按当前论文的类型总结全文，重点讲清方法或论证、关键证据、结果及直接相关工作。'
       + '算法论文要展开模型、实验设置和结果可比性。注明阅读范围和原文定位，并调用 draft_note 生成完整笔记草稿。',
   },
+  {
+    skill: 'paper-organize', icon: 'folder', label: '智能归类', title: '根据笔记或中文翻译把当前论文归入合适的分类',
+    instruction: '先调用 library_categories 核对现有分类，再优先用 read_library_doc 读关联笔记、必要时用'
+      + 'read_paper_translation 读已完成中文翻译判断主题。优先匹配已有分类；确无合适分类时拟定简洁的新分类名。'
+      + '然后调用 propose_paper_classification 提交归类确认卡片，并在聊天中说明依据与目标目录。'
+      + '用户确认前不得声称已新建文件夹或已移动论文。',
+  },
 ] as const;
 
 function skillLoaded(name: string): boolean {

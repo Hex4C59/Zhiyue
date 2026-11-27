@@ -103,7 +103,10 @@ test('随包技能模板全部通过扫描', (t) => {
   }
   const scan = scanSkills(root);
   assert.deepEqual(scan.diagnostics, []);
-  assert.deepEqual(scan.skills.map((skill) => skill.name), ['paper-experiments', 'paper-reading', 'paper-translation']);
+  assert.deepEqual(
+    scan.skills.map((skill) => skill.name),
+    ['paper-experiments', 'paper-organize', 'paper-reading', 'paper-translation'],
+  );
   for (const skill of scan.skills) {
     assert.ok(skill.description.length > 12, `${skill.name} 的 description 要能让人判断何时使用`);
     assert.match(readSkillText(root, skill.name).text, /\n# /, `${skill.name} 的正文需要一级标题`);

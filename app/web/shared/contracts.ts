@@ -45,6 +45,29 @@ export interface ChatFolderAction {
   error?: string;
 }
 
+/** 归类依据：助手从哪些已读材料推断论文主题。 */
+export type ClassifyBasis = 'notes' | 'translation' | 'notes+translation' | 'pdf';
+
+/**
+ * 助手发起的论文归类提议：用户在聊天卡片上确认后才建目录并移动。
+ * `willCreate*` 表示确认时会新建对应文件夹，`error` 保留上次执行失败的原因。
+ */
+export interface ChatClassifyProposal {
+  id: string;
+  paperId: string;
+  title: string;
+  fromPath: string;
+  targetCategory: string;
+  targetSubcategory?: string;
+  targetPath: string;
+  willCreateCategory: boolean;
+  willCreateSubcategory: boolean;
+  basis: ClassifyBasis;
+  reason: string;
+  createdAt: string;
+  error?: string;
+}
+
 export interface TextWord {
   text: string;
   x: number;

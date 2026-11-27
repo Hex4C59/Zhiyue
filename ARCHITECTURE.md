@@ -167,11 +167,13 @@ flowchart LR
 | --- | --- | --- | --- |
 | `library_search` | 全库索引 | 只读 | 无 |
 | `library_categories` | `papers/` 分类树 | 只读目录名、显示名与各级文献数 | 无 |
+| `read_paper_translation` | 任意已索引 L 编号的已完成中文译本 | 只读与当前原文 SHA-256 匹配的最新 `zh.md`，单文件最多 3 MB，单次最多 12 万字符；拒绝符号链接与越界 | 无；原文超过 100 MB 或尚无匹配译本时返回 `available: false` |
 | `create_category` | `papers/` 下分类目录 | 独占 `mkdir` 新建顶层或子文件夹，顶层接续两位编号 | 无；同名或非法名称被拒绝 |
 | `rename_category` | 现有分类或子文件夹 | 库写锁下移动目录，保留编号，同步 README、来源记录、文本引用、批次台账和索引 | 无；同名、被占用时拒绝 |
 | `delete_category`、`delete_categories` | 现有空分类或空子文件夹 | 在会话中保存待确认请求，同一会话合并显示 | 用户勾选目录后，由 `POST /api/chats/:id/folder-actions` 逐项移入 `.zhiyue/trash/categories/`。非空和仍被批次引用的目录会保留 |
 | `move_paper` | 任意已索引 L 编号与现有分类 | 库写锁下搬主文件、同目录版本与来源记录，同步 README、笔记/成果路径、批次台账条目、归档事务记录与索引 | 无。目标同名文件时报错 |
 | `move_papers` | 最多 1000 个已归档 L 编号，可分多个现有目标分类 | 入队后单次取得库写锁。符合条件的文献共用事务记录，同步引用后统一重建索引 | 用户明确编号和目标即可提交。任务记录提供逐项结果与所需的修复记录 |
+| `propose_paper_classification` | 当前会话，最多 50 篇已归档 L 编号 | 只写 `chats.json` 待确认提案并推送卡片；不建目录、不移动文件 | 两步：用户勾选后 `POST /api/chats/:id/classify-proposals` 先补齐缺失目录（同一目标只建一次），再逐篇 `movePaper` 并同步索引与引用。失败项留在卡片并回写原因。处理后持久化系统回执，记录实际新建目录、归类目标、失败或取消；HTTP 与 SSE 共用消息 ID，下一轮提示补入尚未同步的全部回执，模型回合成功完成后保存同步位置 |
 | `read_library_doc` | README、`notes/`、`synthesis/`、`outputs/` 的 `.md`/`.txt` | 只读，单文件最多 3 MB，单次最多 12 万字符；拒绝符号链接与越界路径 | 无 |
 | `paper_outline` | 任意已索引 L 编号 | 只读 PDF 内嵌书签与元信息 | 无 |
 | `search_paper_text` | 任意已索引 L 编号，最多 300 页 | 只读文字层，最多 20 条命中 | 无 |

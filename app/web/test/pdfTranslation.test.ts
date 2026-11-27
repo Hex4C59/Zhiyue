@@ -315,3 +315,68 @@ test('译本发布、Markdown 读取、图片资产边界、重新生成与取�
   assert.equal(failed.result?.key, newKey);
   assert.deepEqual(await readdir(path.join(root, '.zhiyue/tmp')), []);
 });
+
+test('助手只读接口读取与当前原文匹配的最新已完成译本，并按 offset/limit 分段', async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'zhiyue-md-read-'));
+  const papers = path.join(root, 'papers');
+  const source = path.join(papers, 'a.pdf');
+  const original = Buffer.from('%PDF-1.4\nsynthetic paper\n%%EOF');
+  const sourceHash = sha256(original);
+  await mkdir(papers);
+  await mkdir(path.join(root, '.zhiyue/catalog'), { recursive: true });
+  await writeFile(source, original);
+  await writeFile(path.join(root, '.zhiyue/catalog/文献索引.json'), JSON.stringify({
+    records: [{ literature_id: 'L001', file: 'papers/a.pdf' }],
+  }));
+  const key = sha256(JSON.stringify([sourceHash, model.fingerprint, PDF_TRANSLATION_REVISION]));
+  const dir = path.join(root, '.zhiyue/data/translations/L001', key);
+  await mkdir(dir, { recursive: true });
+  await writeFile(path.join(dir, 'zh.md'), '# 标题\n\n这是中文精读正文。\n');
+  await writeFile(path.join(dir, 'result.json'), JSON.stringify({
+    key, sourceHash, model: modelId, completedAt: '2026-02-02T00:00:00.000Z', sections: 1, images: 0,
+  }));
+  const app = await createApp({ root, connectPi: false, translation: { getModel: () => model } });
+  t.after(async () => {
+    await app.close();
+    await rm(root, { recursive: true, force: true });
+  });
+
+  // createApp 把 PdfTranslationService 的只读接口装配成助手的回调，这里直接验证同一回调。
+  const readMarkdown = async (offset?: number, limit?: number): Promise<Record<string, unknown>> => {
+    const callback = app.chats.readPaperTranslation;
+    assert.ok(callback);
+    return await callback('L001', offset, limit) as Record<string, unknown>;
+  };
+  const full = await readMarkdown();
+  assert.equal(full.available, true);
+  assert.equal(full.key, key);
+  assert.equal(full.model, modelId);
+  assert.equal(full.totalChars, 16);
+  assert.equal(full.truncated, false);
+  assert.match(String(full.text), /中文精读正文/);
+
+  // 正文以 "# 标题\n\n" 开头，offset 4 正好落在两个换行之后、"这是中文精读" 之前。
+  const sliced = await readMarkdown(4, 8);
+  assert.equal(sliced.offset, 4);
+  assert.equal(sliced.text, '\n\n这是中文精读');
+  assert.equal(sliced.truncated, true);
+  const tail = await readMarkdown(16, 10);
+  assert.deepEqual([tail.text, tail.truncated], ['', false]);
+
+  await assert.rejects(readMarkdown(-1, 10), /偏移或长度无效/);
+  await assert.rejects(readMarkdown(0, 0), /偏移或长度无效/);
+  await assert.rejects(readMarkdown(0, 120001), /偏移或长度无效/);
+
+  // 原文变更后哈希不匹配，即使有旧译本也返回 available=false。
+  await writeFile(source, Buffer.from('%PDF-1.4\nsynthetic paper v2\n%%EOF'));
+  const stale = await readMarkdown();
+  assert.equal(stale.available, false);
+  assert.match(String(stale.message), /暂无与当前原文匹配/);
+
+  // 没有译本目录时同样返回 available=false，而不是 404。
+  await rm(path.join(root, '.zhiyue/data/translations'), { recursive: true, force: true });
+  await writeFile(source, original);
+  const missing = await readMarkdown();
+  assert.equal(missing.available, false);
+  assert.equal('text' in missing, false);
+});

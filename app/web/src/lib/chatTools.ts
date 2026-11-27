@@ -48,6 +48,34 @@ export const dynamicTools: DynamicTool[] = [
     inputSchema: object({}),
   },
   {
+    type: 'function', name: 'read_paper_translation',
+    description: '读取指定论文与当前原文匹配的最新已完成中文精读翻译（zh.md），支持 offset/limit 分段读取；'
+      + '若尚未完成翻译则返回 available: false。长译文先读标题、摘要、引言与结论即可判断主题。',
+    inputSchema: object({
+      paperId: stringSchema,
+      offset: { type: 'integer', minimum: 0 },
+      limit: { type: 'integer', minimum: 1, maximum: 120000 },
+    }, ['paperId']),
+  },
+  {
+    type: 'function', name: 'propose_paper_classification',
+    description: '为 1 至 50 篇论文提出归类移动草案，在聊天中生成待确认卡片；target 分类或子分类不存在时会'
+      + '在确认后先新建文件夹再移动。本工具只生成待确认卡片，返回 pending_confirmation 后必须等用户在'
+      + '界面确认；确认前不得声称已创建文件夹或已移动论文。',
+    inputSchema: object({
+      items: {
+        type: 'array', minItems: 1, maxItems: 50,
+        items: object({
+          paperId: stringSchema,
+          category: stringSchema,
+          subcategory: stringSchema,
+          basis: { type: 'string', enum: ['notes', 'translation', 'notes+translation', 'pdf'] },
+          reason: stringSchema,
+        }, ['paperId', 'category', 'basis', 'reason']),
+      },
+    }, ['items']),
+  },
+  {
     type: 'function', name: 'create_category',
     description: '新建分类文件夹，直接执行。parent 为已有顶层分类目录名时创建子文件夹；名称会自动加两位编号，不能包含 / \\ : * ? " < > |。',
     inputSchema: object({ name: stringSchema, parent: stringSchema }, ['name']),
@@ -119,11 +147,13 @@ export interface ToolExecutionHost {
   readonly pdfOutline?: ChatServiceOptions['pdfOutline'];
   readonly renderPage?: ChatServiceOptions['renderPage'];
   readonly readSkill?: ChatServiceOptions['readSkill'];
+  readonly readPaperTranslation?: ChatServiceOptions['readPaperTranslation'];
   createNoteDraft(chatId: string, input: { paper: LibraryPaper; title: string; content: string }): ChatNoteDraft;
   createDocumentDraft(chatId: string, input: {
     target: 'synthesis' | 'outputs'; title: string; content: string; paperIds?: string[];
   }): Promise<ChatNoteDraft>;
   proposeFolderDeletes(chat: Chat, values: unknown): Promise<Record<string, unknown>>;
+  proposePaperClassifications(chat: Chat, values: unknown): Promise<Record<string, unknown>>;
 }
 
 export type ToolContentItem =
@@ -237,6 +267,16 @@ export async function executeToolCall(
         })),
       })),
     };
+  } else if (tool === 'read_paper_translation') {
+    if (!host.readPaperTranslation) throw new Error('当前助手未启用中文译本读取。');
+    const paper = await paperFor(args.paperId);
+    result = await host.readPaperTranslation(
+      paper.id,
+      args.offset === undefined ? undefined : args.offset as number,
+      args.limit === undefined ? undefined : args.limit as number,
+    );
+  } else if (tool === 'propose_paper_classification') {
+    result = await host.proposePaperClassifications(chat, args.items);
   } else if (tool === 'create_category') {
     const created = await host.library.createCategory(args.name, args.parent);
     host.emit({ type: 'library' });

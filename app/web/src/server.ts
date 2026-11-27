@@ -165,7 +165,7 @@ async function handleChatRoutes(
     }), 201);
     return true;
   }
-  const chatMatch = /^\/api\/chats\/([\w-]+)(?:\/(messages|interrupt|commands|folder-actions))?$/.exec(route);
+  const chatMatch = /^\/api\/chats\/([\w-]+)(?:\/(messages|interrupt|commands|folder-actions|classify-proposals))?$/.exec(route);
   if (chatMatch) {
     const [, id, action] = chatMatch as unknown as [string, string, string | undefined];
     if (method === 'GET' && !action) { json(res, chats.get(id)); return true; }
@@ -197,6 +197,11 @@ async function handleChatRoutes(
     if (method === 'POST' && action === 'folder-actions') {
       const decision = await readJson(req);
       json(res, await chats.resolveFolderActions(id, decision.action, decision.ids));
+      return true;
+    }
+    if (method === 'POST' && action === 'classify-proposals') {
+      const decision = await readJson(req);
+      json(res, await chats.resolveClassifyProposals(id, decision.action, decision.ids));
       return true;
     }
     if (method === 'POST' && action === 'interrupt') { json(res, await chats.interrupt(id)); return true; }
@@ -412,6 +417,8 @@ export async function createApp({
     for (const res of connections) if (!res.writableEnded) res.write(data);
   };
   const jobs = new JobManager({ root, stateDir, emit: (event: JobEvent) => emit(event), python, library });
+  // 翻译服务依赖 chats.pi 的模型配置，助手需要读取译本；用延迟闭包在两者都建好后再访问。
+  let translations!: PdfTranslationService;
   const chats = new AssistantService({
     root, stateDir, library, jobs, emit,
     extract: (file, pages) => extractFile(python, file, { pages }),
@@ -426,9 +433,10 @@ export async function createApp({
         totalPages: rendered.totalPages, page: rendered.page,
       };
     },
+    readPaperTranslation: (paperId, offset, limit) => translations.readLatestMarkdown(paperId, offset, limit),
     piClient,
   });
-  const translations = new PdfTranslationService({
+  translations = new PdfTranslationService({
     root, python, library, emit, getModel: (modelId?: string) => chats.pi.translationModel(modelId), ...translation,
   });
   const uploads = new UploadService(stateDir);

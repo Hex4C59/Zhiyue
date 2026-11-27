@@ -155,7 +155,7 @@ test('会话接入真实协议形状，图片以localImage输入，文件提取�
   assert.equal(turn.input[1]?.type, 'localImage');
   assert.match(turn.input[0]?.text ?? '', /文件内容/);
   assert.match(String(client.calls[0]?.params?.developerInstructions), /文献研究助手/);
-  assert.equal((client.calls[0]?.params?.dynamicTools as unknown[]).length, 19);
+  assert.equal((client.calls[0]?.params?.dynamicTools as unknown[]).length, 21);
 });
 
 test('多条agent消息流可拼接并在turn完成后持久化', async (t) => {
@@ -664,4 +664,328 @@ test('/compact 调用会话压缩并回执 token 变化', async (t) => {
   assert.match(result.text, /上下文已压缩/);
   assert.match(result.text, /4000/);
   assert.match(result.text, /1200/);
+});
+
+test('中文译本读取工具通过宿主回调返回分段结果，未注入时明确报错', async (t) => {
+  const { chats, client } = await fixture(t);
+  chats.library = {
+    getPaper: async (id: string) => id === 'L404' ? null : ({ id, title: '译论文', file: `papers/01_测试/${id}.pdf` }),
+    getLibrary: async () => ({ papers: [], categories: [], stats: {} }),
+    safeFile: async () => '',
+    refresh: async () => {},
+  } as unknown as ChatServiceOptions['library'];
+  const calls: Array<{ paperId: string; offset?: number; limit?: number }> = [];
+  chats.readPaperTranslation = async (paperId: string, offset?: number, limit?: number) => {
+    calls.push({ paperId, offset, limit });
+    return { paperId, available: true, offset, totalChars: 6, text: '中文译本', truncated: false };
+  };
+  const chat = chats.create();
+  await chats.send(chat.id, { text: '读译文' });
+  await until(() => Boolean(chat.threadId));
+  const request = (id: number, tool: string, args: Record<string, unknown>): Promise<void> => chats.serverRequest({
+    id, method: 'item/tool/call', params: { threadId: chat.threadId, tool, arguments: args },
+  } as ClientRequest);
+  await request(1, 'read_paper_translation', { paperId: 'L001', offset: 10, limit: 500 });
+  assert.deepEqual(calls.at(-1), { paperId: 'L001', offset: 10, limit: 500 });
+  assert.match(client.responses.at(-1)?.result.contentItems[0]?.text ?? '', /中文译本/);
+  await request(2, 'read_paper_translation', { paperId: 'L404' });
+  assert.equal(client.responses.at(-1)?.result.success, false);
+  assert.match(client.responses.at(-1)?.result.contentItems[0]?.text ?? '', /文献不存在/);
+});
+
+test('未注入译文回调时 read_paper_translation 明确报错', async (t) => {
+  const { chats, client } = await fixture(t);
+  chats.library = {
+    getPaper: async (id: string) => ({ id, title: '译论文', file: `papers/01_测试/${id}.pdf` }),
+    getLibrary: async () => ({ papers: [], categories: [], stats: {} }),
+    safeFile: async () => '',
+    refresh: async () => {},
+  } as unknown as ChatServiceOptions['library'];
+  const chat = chats.create();
+  await chats.send(chat.id, { text: '读译文' });
+  await until(() => Boolean(chat.threadId));
+  await chats.serverRequest({
+    id: 1, method: 'item/tool/call',
+    params: { threadId: chat.threadId, tool: 'read_paper_translation', arguments: { paperId: 'L001' } },
+  } as ClientRequest);
+  assert.equal(client.responses.at(-1)?.result.success, false);
+  assert.match(client.responses.at(-1)?.result.contentItems[0]?.text ?? '', /未启用中文译本读取/);
+});
+
+const classifyLibrary = (calls: Array<{ method: string; args: unknown[] }>): ChatServiceOptions['library'] => ({
+  getPaper: async (id: string) => id === 'L404' ? null : ({
+    id, title: `Paper ${id}`, titleZh: `论文 ${id}`, file: `papers/01_综述/${id}.pdf`,
+    authors: [], category: '01_综述', subcategory: '', notes: [],
+  }),
+  getLibrary: async () => ({
+    papers: [], stats: {},
+    categories: [
+      { id: '01_综述', name: '01_综述', count: 1, children: [{ id: '01_综述/01_语音', name: '01_语音', count: 0 }] },
+      { id: '02_方法', name: '02_方法', count: 0, children: [] },
+    ],
+  }),
+  safeFile: async () => '',
+  readDocument: async () => ({ path: '', offset: 0, totalChars: 0, text: '', truncated: false }),
+  refresh: () => {},
+  createCategory: async (name: unknown, parent: unknown) => {
+    calls.push({ method: 'createCategory', args: [name, parent] });
+    if (name === '冲突') throw Object.assign(new Error('同名文件夹已存在。'), { statusCode: 409 });
+    return parent
+      ? { category: String(parent), subcategory: `01_${String(name)}` }
+      : { category: `03_${String(name)}`, subcategory: '' };
+  },
+  resolveCategory: async (value: unknown) => ({
+    category: String(value).replace(/^papers\//, '').split('/')[0] as string,
+    subcategory: String(value).split('/')[1] ?? '',
+    path: String(value).startsWith('papers/') ? String(value) : `papers/${String(value)}`,
+  }),
+  movePaper: async (paperId: unknown, category: unknown) => {
+    calls.push({ method: 'movePaper', args: [paperId, category] });
+    if (paperId === 'L009') throw Object.assign(new Error('目标同名文件已存在。'), { statusCode: 409 });
+    return { literature_id: paperId, category };
+  },
+} as unknown as ChatServiceOptions['library']);
+
+test('归类提案匹配已有目录或标记待新建，确认后按缺失目录去重创建再逐篇移动', async (t) => {
+  const { chats, client, events, dir } = await fixture(t);
+  const calls: Array<{ method: string; args: unknown[] }> = [];
+  chats.library = classifyLibrary(calls);
+  const chat = chats.create();
+  await chats.send(chat.id, { text: '整理' });
+  await until(() => Boolean(chat.threadId));
+  const request = (id: number, tool: string, args: Record<string, unknown>): Promise<void> => chats.serverRequest({
+    id, method: 'item/tool/call', params: { threadId: chat.threadId, tool, arguments: args },
+  } as ClientRequest);
+  const reply = (): { status?: string; message?: string; items?: unknown[] } =>
+    JSON.parse(client.responses.at(-1)?.result.contentItems[0]?.text ?? '{}');
+
+  await request(1, 'propose_paper_classification', {
+    items: [
+      { paperId: 'L001', category: '02_方法', basis: 'notes', reason: '笔记显示方法相同' },
+      { paperId: 'L002', category: '综述', subcategory: '语音', basis: 'translation', reason: '译文主题为语音' },
+      { paperId: 'L003', category: '新领域', subcategory: '子方向', basis: 'notes+translation', reason: '新材料' },
+    ],
+  });
+  assert.equal(reply().status, 'pending_confirmation');
+  assert.equal(chat.classifyProposals?.length, 3);
+  const [existing, matched, fresh] = chat.classifyProposals ?? [];
+  assert.equal(existing?.targetPath, 'papers/02_方法');
+  assert.equal(existing?.fromPath, 'papers/01_综述');
+  assert.equal(existing?.willCreateCategory, false);
+  assert.equal(matched?.targetPath, 'papers/01_综述/01_语音');
+  assert.equal(matched?.willCreateSubcategory, false);
+  assert.equal(matched?.willCreateCategory, false);
+  assert.equal(fresh?.willCreateCategory, true);
+  assert.equal(fresh?.willCreateSubcategory, true);
+  assert.equal(fresh?.targetPath, 'papers/新领域/子方向');
+  assert.equal(calls.length, 0, '提案阶段不能创建目录或移动文献');
+  assert.equal(events.filter((event) => event.type === 'classifyProposal').length, 3);
+  assert.equal((chats.list()[0] as { classifyProposals?: unknown }).classifyProposals, undefined);
+
+  // 同一篇文献再次提案时替换，不叠加重复行。
+  await request(2, 'propose_paper_classification', {
+    items: [{ paperId: 'L003', category: '02_方法', basis: 'pdf', reason: '读首页后改为方法' }],
+  });
+  assert.equal(chat.classifyProposals?.length, 3);
+  assert.equal(chat.classifyProposals?.filter((item) => item.paperId === 'L003').length, 1);
+  assert.equal(chat.classifyProposals?.find((item) => item.paperId === 'L003')?.basis, 'pdf');
+  // 替换会生成新提案行，后续只能引用替换后的那条。
+  const replaced = chat.classifyProposals?.find((item) => item.paperId === 'L003');
+  assert.ok(replaced);
+
+  // 非法依据、重复编号、非法名称与空理由都拒绝，且不改动已有提案。
+  const before = chat.classifyProposals?.map(({ id }) => id);
+  for (const items of [
+    [{ paperId: 'L004', category: '02_方法', basis: 'guess', reason: '理由' }],
+    [
+      { paperId: 'L004', category: '02_方法', basis: 'notes', reason: '理由' },
+      { paperId: 'L004', category: '02_方法', basis: 'notes', reason: '理由' },
+    ],
+    [{ paperId: 'L004', category: 'a/b', basis: 'notes', reason: '理由' }],
+    [{ paperId: 'L004', category: 'CON', basis: 'notes', reason: '理由' }],
+    [{ paperId: 'L004', category: '02_方法', basis: 'notes', reason: '' }],
+    [{ paperId: 'L404', category: '02_方法', basis: 'notes', reason: '理由' }],
+  ]) {
+    await request(3, 'propose_paper_classification', { items });
+    assert.equal(client.responses.at(-1)?.result.success, false);
+  }
+  assert.deepEqual(chat.classifyProposals?.map(({ id }) => id), before);
+
+  // 取消丢弃指定提案，并留下明确的取消回执。
+  const discarded = await chats.resolveClassifyProposals(chat.id, 'discard', [replaced.id]);
+  assert.deepEqual(discarded.discarded, [replaced.id]);
+  assert.match(discarded.message?.text ?? '', /已取消 L003 的归类请求/);
+  assert.match(discarded.message?.text ?? '', /未新建文件夹或移动论文/);
+  assert.equal(chat.classifyProposals?.length, 2);
+
+  // 确认：已有目录直接移动，缺失顶层与子分类先创建再移动。
+  await request(4, 'propose_paper_classification', {
+    items: [
+      { paperId: 'L004', category: '新领域', subcategory: '子方向', basis: 'notes', reason: '新材料' },
+      { paperId: 'L005', category: '新领域', subcategory: '另一方向', basis: 'notes', reason: '另一材料' },
+    ],
+  });
+  const pending = (chat.classifyProposals ?? []).filter((item) =>
+    item.paperId === 'L004' || item.paperId === 'L005');
+  assert.equal(pending.length, 2);
+  const applied = await chats.resolveClassifyProposals(chat.id, 'apply', [
+    existing.id, matched.id, ...pending.map(({ id }) => id),
+  ]);
+  assert.deepEqual(applied.failed, []);
+  assert.equal(applied.applied.length, 4);
+  assert.deepEqual(calls.filter((call) => call.method === 'createCategory').map(({ args }) => args), [
+    ['新领域', undefined],
+    ['子方向', '03_新领域'],
+    ['另一方向', '03_新领域'],
+  ]);
+  assert.deepEqual(calls.filter((call) => call.method === 'movePaper').map(({ args }) => args), [
+    ['L001', 'papers/02_方法'],
+    ['L002', 'papers/01_综述/01_语音'],
+    ['L004', 'papers/03_新领域/01_子方向'],
+    ['L005', 'papers/03_新领域/01_另一方向'],
+  ]);
+  assert.deepEqual(chat.classifyProposals, []);
+  assert.equal(events.filter((event) => event.type === 'classifyProposalResolved' && event.applied === true).length, 4);
+  assert.ok(events.some((event) => event.type === 'library'));
+  const receipt = applied.message;
+  assert.ok(receipt);
+  assert.equal(receipt.role, 'system');
+  assert.equal(receipt.status, 'completed');
+  assert.equal((receipt.text.match(/已新建文件夹：`papers\/03_新领域`/g) ?? []).length, 1);
+  assert.match(receipt.text, /L001 已归类至 `papers\/02_方法`/);
+  assert.match(receipt.text, /L004 已归类至 `papers\/03_新领域\/01_子方向`/);
+  assert.match(receipt.text, /L005 已归类至 `papers\/03_新领域\/01_另一方向`/);
+  assert.equal(chat.messages.at(-1)?.id, receipt.id);
+  assert.ok(events.some((event) => event.type === 'message' &&
+    (event.message as ChatMessage | undefined)?.id === receipt.id));
+  const saved = JSON.parse(await fs.readFile(path.join(dir, 'chats.json'), 'utf8')) as { chats: typeof chat[] };
+  assert.equal(saved.chats[0]?.messages.at(-1)?.text, receipt.text);
+  await assert.rejects(chats.resolveClassifyProposals(chat.id, 'apply', [existing.id]), /不存在/);
+
+  // 用户下一次提问时，即使 SDK 历史还停在 pending_confirmation，也会补入界面执行结果。
+  chats.finish(chat.id, 'completed');
+  const turnsBefore = client.calls.filter(({ method }) => method === 'turn/start').length;
+  await chats.send(chat.id, { text: '已经新建了吗？' });
+  await until(() => client.calls.filter(({ method }) => method === 'turn/start').length > turnsBefore);
+  const followUp = client.calls.filter(({ method }) => method === 'turn/start').at(-1)?.params as {
+    input: Array<{ type: string; text?: string }>;
+  };
+  assert.match(followUp.input[0]?.text ?? '', /界面操作结果/);
+  assert.ok(followUp.input[0]?.text?.includes(receipt.text));
+  assert.ok(followUp.input[0]?.text?.includes(discarded.message?.text ?? ''));
+});
+
+test('分批操作回执完整同步，失败后重送且完成后跨重启保留同步位置', async (t) => {
+  const { chats, client, dir } = await fixture(t);
+  const chat = chats.create();
+  const receipt = (id: string, text: string): ChatMessage => ({
+    id, role: 'system', text, status: 'completed', createdAt: new Date().toISOString(),
+  });
+  chat.messages.push(receipt('applied', 'L001 已归类至 papers/02_方法。'), receipt('discarded', '已取消 L002。'));
+  const prompt = async (): Promise<string> => {
+    const turnsBefore = client.calls.filter(({ method }) => method === 'turn/start').length;
+    await chats.send(chat.id, { text: '处理结果是什么？' });
+    await until(() => client.calls.filter(({ method }) => method === 'turn/start').length > turnsBefore);
+    const turn = client.calls.filter(({ method }) => method === 'turn/start').at(-1)?.params as {
+      input: Array<{ text?: string }>;
+    };
+    return turn.input[0]?.text ?? '';
+  };
+  const first = await prompt();
+  assert.match(first, /L001 已归类至/);
+  assert.match(first, /已取消 L002/);
+  // 回合开始后又处理的提案，留给下一轮同步。
+  chat.messages.push(receipt('failed', 'L003 归类未完成：目标不可写。'));
+  chats.finish(chat.id, 'completed');
+  assert.equal(chat.lastContextOperationId, 'discarded');
+  const second = await prompt();
+  assert.match(second, /L003 归类未完成/);
+  assert.doesNotMatch(second, /L001 已归类至|已取消 L002/);
+  chats.finish(chat.id, 'failed', '模型服务暂不可用。');
+  assert.equal(chat.lastContextOperationId, 'discarded');
+  assert.match(await prompt(), /L003 归类未完成/);
+  chats.finish(chat.id, 'completed');
+  const saved = JSON.parse(await fs.readFile(path.join(dir, 'chats.json'), 'utf8')) as { chats: typeof chat[] };
+  assert.equal(saved.chats[0]?.lastContextOperationId, 'failed');
+  assert.doesNotMatch(await prompt(), /界面操作结果/);
+});
+
+test('归类执行失败时保留该行并写回原因，冲突目录重新解析复用', async (t) => {
+  const { chats, client, events } = await fixture(t);
+  const calls: Array<{ method: string; args: unknown[] }> = [];
+  chats.library = classifyLibrary(calls);
+  const chat = chats.create();
+  await chats.send(chat.id, { text: '整理' });
+  await until(() => Boolean(chat.threadId));
+  const request = (id: number, args: Record<string, unknown>): Promise<void> => chats.serverRequest({
+    id, method: 'item/tool/call',
+    params: { threadId: chat.threadId, tool: 'propose_paper_classification', arguments: args },
+  } as ClientRequest);
+  await request(1, {
+    items: [
+      { paperId: 'L009', category: '新领域', basis: 'notes', reason: '会失败' },
+      { paperId: 'L010', category: '02_方法', basis: 'notes', reason: '会成功' },
+    ],
+  });
+  const [failing, passing] = (chat.classifyProposals ?? []).map(({ id }) => id);
+  const result = await chats.resolveClassifyProposals(chat.id, 'apply', [failing, passing]);
+  assert.deepEqual(result.applied, [passing]);
+  assert.equal(result.failed.length, 1);
+  assert.equal(result.failed[0]?.paperId, 'L009');
+  assert.match(result.failed[0]?.error ?? '', /同名文件/);
+  assert.deepEqual(chat.classifyProposals?.map(({ id }) => id), [failing]);
+  assert.match(chat.classifyProposals?.[0]?.error ?? '', /同名文件/);
+  assert.match(result.message?.text ?? '', /已新建文件夹：`papers\/03_新领域`/);
+  assert.match(result.message?.text ?? '', /L009 归类未完成：目标同名文件已存在/);
+  assert.match(result.message?.text ?? '', /L010 已归类至 `papers\/02_方法`/);
+  assert.doesNotMatch(result.message?.text ?? '', /L009 已归类至/);
+  assert.ok(events.some((event) => event.type === 'classifyProposal' && event.proposal &&
+    (event.proposal as { error?: string }).error));
+
+  // 并发建目录返回 409 时重新解析已有目录，不重复创建。
+  const conflictCalls: Array<{ method: string; args: unknown[] }> = [];
+  chats.library = {
+    ...classifyLibrary(conflictCalls),
+    getLibrary: async () => ({
+      papers: [], stats: {},
+      categories: [{ id: '05_冲突', name: '05_冲突', count: 0, children: [] }],
+    }),
+  } as unknown as ChatServiceOptions['library'];
+  await request(2, { items: [{ paperId: 'L011', category: '冲突', basis: 'notes', reason: '并发已存在' }] });
+  const concurrent = (chat.classifyProposals ?? []).find((item) => item.paperId === 'L011')?.id as string;
+  const reused = await chats.resolveClassifyProposals(chat.id, 'apply', [concurrent]);
+  assert.deepEqual(reused.failed, []);
+  assert.deepEqual(conflictCalls.filter((call) => call.method === 'movePaper').map(({ args }) => args), [
+    ['L011', 'papers/05_冲突'],
+  ]);
+
+  // 防重入与非法参数。
+  chats.resolvingClassifications.add(chat.id);
+  await assert.rejects(chats.resolveClassifyProposals(chat.id, 'apply', [failing]), /正在处理/);
+  chats.resolvingClassifications.delete(chat.id);
+  await assert.rejects(chats.resolveClassifyProposals(chat.id, 'apply', ['missing']), /不存在/);
+  await assert.rejects(chats.resolveClassifyProposals(chat.id, 'delete', [failing]), /确认或取消/);
+  await assert.rejects(chats.resolveClassifyProposals(chat.id, 'apply', []), /请选择/);
+});
+
+test('归类提案在会话记录中持久化，归档会话拒绝执行', async (t) => {
+  const { chats } = await fixture(t);
+  chats.library = classifyLibrary([]);
+  const chat = chats.create();
+  // 比较副本而不直接传入属性，避免严格断言模式把属性收窄成空数组类型。
+  assert.deepEqual([...(chat.classifyProposals ?? [])], []);
+  await chats.send(chat.id, { text: '整理' });
+  await until(() => Boolean(chat.threadId));
+  await chats.serverRequest({
+    id: 1, method: 'item/tool/call',
+    params: {
+      threadId: chat.threadId, tool: 'propose_paper_classification',
+      arguments: { items: [{ paperId: 'L001', category: '02_方法', basis: 'notes', reason: '笔记相同' }] },
+    },
+  } as ClientRequest);
+  const proposal = chat.classifyProposals?.[0];
+  assert.ok(proposal);
+  chats.finish(chat.id, 'completed');
+  chats.changeHistory(chat.id, 'archived');
+  await assert.rejects(chats.resolveClassifyProposals(chat.id, 'discard', [proposal.id]), /归档/);
 });

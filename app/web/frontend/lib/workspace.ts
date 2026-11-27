@@ -82,6 +82,7 @@ export function createWorkspace({
     sending: false,
     noteSaving: '',
     folderActionSaving: '',
+    classifySaving: '',
     draggingPaper: '',
     movingPaper: '',
     commands: [],

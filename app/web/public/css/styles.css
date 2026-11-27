@@ -650,6 +650,35 @@ pre,code,kbd,samp { font-family:var(--font-mono); }
 .folder-action-error { display:block; color:var(--danger); overflow-wrap:anywhere; }
 .folder-action-actions { display:flex; flex-wrap:wrap; gap:8px; margin-top:10px; }
 .folder-action-actions .button { padding:7px 10px; font-size:11px; }
+.classify-proposals { max-height:42%; overflow:auto; padding:0 14px; flex-shrink:0; }
+.classify-proposal {
+  border:1px solid var(--border); background:var(--field); padding:12px;
+  border-radius:6px; margin-bottom:10px; font-size:12px;
+}
+.classify-proposal header { display:flex; align-items:flex-start; justify-content:space-between; gap:10px; }
+.classify-proposal strong { display:block; font-size:13px; color:var(--ink); }
+.classify-proposal-count { flex:none; color:var(--muted); font-size:11px; }
+.classify-proposal p { margin-top:6px; color:var(--muted); line-height:1.55; overflow-wrap:anywhere; }
+.classify-proposal-rows { margin:8px 0 0; padding:0; list-style:none; max-height:min(220px,22dvh); overflow:auto; }
+.classify-proposal-rows li { padding:7px 2px; border-top:1px solid var(--line); }
+.classify-proposal-rows label { display:flex; align-items:baseline; gap:6px; cursor:pointer; }
+.classify-proposal-rows input { flex:none; }
+.classify-proposal-paper { display:flex; flex-wrap:wrap; align-items:baseline; gap:6px; min-width:0; }
+.classify-proposal-id { font-family:var(--font-mono); font-size:11px; color:var(--muted); }
+.classify-proposal-title { color:var(--ink); overflow-wrap:anywhere; }
+.classify-proposal-path { display:flex; flex-wrap:wrap; align-items:center; gap:5px; }
+.classify-proposal-path code { font-family:var(--font-mono); font-size:11px; overflow-wrap:anywhere; }
+.classify-proposal-meta { display:flex; flex-wrap:wrap; gap:5px 8px; font-size:11px; }
+.classify-proposal-basis { color:var(--muted); }
+.classify-proposal-new { border:1px solid var(--border); border-radius:4px; padding:0 5px; color:var(--ink); }
+.classify-proposal-reason { font-size:11px; }
+.classify-proposal-error { display:block; color:var(--danger); overflow-wrap:anywhere; }
+.classify-proposal-actions { display:flex; flex-wrap:wrap; gap:8px; margin-top:10px; }
+.classify-proposal-actions .button { padding:7px 10px; font-size:11px; }
+@media(max-width:560px) {
+  .classify-proposal-path { flex-direction:column; align-items:flex-start; }
+  .classify-proposal-actions .button { flex:1 1 100%; }
+}
 .note-draft {
   border:1px solid var(--border); background:var(--field); padding:12px;
   border-radius:6px; margin-bottom:10px; font-size:12px;

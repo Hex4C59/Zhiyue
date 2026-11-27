@@ -8,7 +8,7 @@ import { createHash } from 'node:crypto';
 import type { IncomingMessage } from 'node:http';
 import { createApp, checkRequest } from '../src/server.js';
 import { downloaderScript, resolvePython } from '../src/lib/python.js';
-import type { Chat, ChatFolderAction, ChatNoteDraft } from '../src/lib/chat.js';
+import type { Chat, ChatClassifyProposal, ChatFolderAction, ChatNoteDraft } from '../src/lib/chat.js';
 
 // 服务端返回的 JSON 只在这里按用到的字段声明结构，读取后立即断言。
 interface LibraryResponse {
@@ -456,4 +456,74 @@ test('拖动移动文献的路由校验参数并委托 move-paper', async (t) =>
   assert.deepEqual(calls[0]?.slice(0, 5), ['move-paper', '--literature-id', 'L001', '--category', 'papers/09_目标']);
   assert.equal(await fs.readFile(path.join(root, 'papers/09_目标/paper.pdf'), 'utf8'), '%PDF-1.4\nmove-me');
   assert.equal(existsSync(path.join(root, 'papers/08_SER/paper.pdf')), false);
+});
+
+test('归类提案路由透传确认与取消，并校验动作和编号', async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'literature-classify-'));
+  await fs.mkdir(path.join(root, 'papers/01_综述'), { recursive: true });
+  await fs.mkdir(path.join(root, 'papers/02_方法'), { recursive: true });
+  await fs.writeFile(path.join(root, 'papers/01_综述/paper.pdf'), '%PDF-1.4\nclassify-me');
+  await fs.writeFile(path.join(root, 'papers/01_综述/second.pdf'), '%PDF-1.4\nclassify-me-too');
+  await fs.mkdir(path.join(root, '.zhiyue/catalog'), { recursive: true });
+  await fs.writeFile(path.join(root, '.zhiyue/catalog/文献索引.json'), JSON.stringify({
+    records: [
+      { literature_id: 'L001', title: '待归类', authors: [], file: 'papers/01_综述/paper.pdf', versions: [] },
+      { literature_id: 'L002', title: '待归类续', authors: [], file: 'papers/01_综述/second.pdf', versions: [] },
+    ],
+  }));
+  // 只记录移动参数并真的改文件，避免在路由测试里依赖 Python 归档脚本。
+  const calls: string[][] = [];
+  const categoryCli = async (args: string[]): Promise<unknown> => {
+    if (args[0] !== 'move-paper') throw new Error('unexpected category command');
+    calls.push(args);
+    const id = args[args.indexOf('--literature-id') + 1] as string;
+    const target = args[args.indexOf('--category') + 1] as string;
+    const name = id === 'L001' ? 'paper.pdf' : 'second.pdf';
+    await fs.rename(path.join(root, 'papers/01_综述', name), path.join(root, ...target.split('/'), name));
+    return { literature_id: id, from: 'papers/01_综述', to: target, moved: [] };
+  };
+  const app = await createApp({ root, stateDir: path.join(root, '.zhiyue/data'), connectPi: false, categoryCli });
+  await new Promise<void>((resolve) => app.server.listen(0, '127.0.0.1', () => resolve()));
+  const address = app.server.address();
+  assert.ok(address && typeof address === 'object');
+  const base = `http://127.0.0.1:${address.port}`;
+  t.after(async () => { await app.close(); await fs.rm(root, { recursive: true, force: true }); });
+  const chat = app.chats.create();
+  const decide = (body: unknown, id = chat.id) => fetch(`${base}/api/chats/${id}/classify-proposals`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  });
+  const pending = (paperId: string, id: string): ChatClassifyProposal => ({
+    id, paperId, title: `论文 ${paperId}`, fromPath: 'papers/01_综述',
+    targetCategory: '02_方法', targetPath: 'papers/02_方法', willCreateCategory: false,
+    willCreateSubcategory: false, basis: 'notes', reason: '笔记主题相同', createdAt: new Date().toISOString(),
+  });
+
+  // 无待确认提案时不能凭空执行。
+  assert.equal((await decide({ action: 'apply', ids: ['missing'] })).status, 404);
+  assert.equal(calls.length, 0);
+
+  app.chats.get(chat.id).classifyProposals = [pending('L001', 'classify-1')];
+  // 非法动作、空编号与非字符串编号都在业务层拒绝，且不改动卡片和磁盘。
+  assert.equal((await decide({ action: 'delete', ids: ['classify-1'] })).status, 400);
+  assert.equal((await decide({ action: 'apply', ids: [] })).status, 400);
+  assert.equal((await decide({ action: 'apply', ids: [1] })).status, 400);
+  assert.equal((await decide({ action: 'apply' })).status, 400);
+  assert.equal(app.chats.get(chat.id).classifyProposals?.length, 1);
+  assert.equal(calls.length, 0);
+  // 未知会话同样不能执行；重复编号去重后只处理一次。
+  assert.equal((await decide({ action: 'apply', ids: ['classify-1'] }, 'missing-chat')).status, 404);
+  assert.equal((await decide({ action: 'apply', ids: ['classify-1', 'classify-1'] })).status, 200);
+  assert.equal(app.chats.get(chat.id).classifyProposals?.length, 0);
+  assert.deepEqual(calls[0]?.slice(0, 5), ['move-paper', '--literature-id', 'L001', '--category', 'papers/02_方法']);
+  assert.equal(existsSync(path.join(root, 'papers/01_综述/paper.pdf')), false);
+  assert.ok(existsSync(path.join(root, 'papers/02_方法/paper.pdf')));
+
+  // 取消只丢弃卡片，不触碰磁盘。
+  app.chats.get(chat.id).classifyProposals = [pending('L002', 'classify-2')];
+  const discarded = await decide({ action: 'discard', ids: ['classify-2'] });
+  assert.equal(discarded.status, 200);
+  assert.deepEqual((await readJson<{ discarded: string[] }>(discarded)).discarded, ['classify-2']);
+  assert.deepEqual(app.chats.get(chat.id).classifyProposals, []);
+  assert.equal(calls.length, 1);
+  assert.ok(existsSync(path.join(root, 'papers/01_综述/second.pdf')));
 });

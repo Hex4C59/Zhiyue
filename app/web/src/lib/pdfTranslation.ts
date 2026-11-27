@@ -19,6 +19,9 @@ const HASH = /^[0-9a-f]{64}$/;
 const SAFE_ASSET = /^[A-Za-z0-9._-]{1,180}$/;
 const MAX_BYTES = 100 * 1024 * 1024;
 const CONFIG_PREFIX_LENGTH = 40;
+// 与 readDocument 共用同一份文档大小上限，避免助手一次读入过大的译本。
+const MAX_MARKDOWN_BYTES = 3_000_000;
+const TRANSLATION_UNAVAILABLE = '该论文暂无与当前原文匹配的已完成中文翻译。';
 
 function translationConfigKey(sourceHash: string, model: TranslationModel): string {
   return createHash('sha256').update(JSON.stringify([sourceHash, model.fingerprint, PDF_TRANSLATION_REVISION]))
@@ -214,6 +217,39 @@ export class PdfTranslationService {
     const { dir, result } = await this.verifiedResult(id, key);
     const text = await readFile(path.join(dir, 'zh.md'), 'utf8');
     return { key, text, result };
+  }
+
+  /**
+   * 读取与当前原文 SHA-256 匹配的最新已完成译本正文，供助手按需分段取用。
+   * 只读路径复用 checkPath，拒绝符号链接与越界；原文过大或尚无匹配译本时返回 available=false，不抛 404。
+   */
+  async readLatestMarkdown(id: string, offset?: number, limit?: number): Promise<{
+    paperId: string; available: boolean; message?: string; key?: string; model?: string; completedAt?: string;
+    offset?: number; totalChars?: number; text?: string; truncated?: boolean;
+  }> {
+    const start = offset === undefined ? 0 : offset;
+    const count = limit === undefined ? 60_000 : limit;
+    if (!Number.isSafeInteger(start) || (start as number) < 0 || !Number.isSafeInteger(count) ||
+      (count as number) < 1 || (count as number) > 120_000) {
+      throw statusError('译本读取偏移或长度无效。', 400);
+    }
+    const unavailable = { paperId: id, available: false, message: TRANSLATION_UNAVAILABLE };
+    const source = await this.source(id);
+    const root = await realpath(this.options.root);
+    if ((await stat(source)).size > MAX_BYTES) return unavailable;
+    const sourceHash = await this.hash(source);
+    const keys = await this.resultKeys(root, id);
+    const result = await this.latestResult(root, id, sourceHash, keys);
+    if (!result) return unavailable;
+    const file = path.join(this.resultBase(root, id), result.key, 'zh.md');
+    await checkPath(root, file, false);
+    if ((await stat(file)).size > MAX_MARKDOWN_BYTES) return unavailable;
+    const text = (await readFile(file, 'utf8')).replace(/^\uFEFF/, '');
+    const slice = text.slice(start as number, (start as number) + (count as number));
+    return {
+      paperId: id, available: true, key: result.key, model: result.model, completedAt: result.completedAt,
+      offset: start, totalChars: text.length, text: slice, truncated: (start as number) + slice.length < text.length,
+    };
   }
 
   async asset(id: string, key: string, filename: string): Promise<string> {

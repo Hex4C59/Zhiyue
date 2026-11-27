@@ -2,7 +2,8 @@ import type { ComputedRef } from 'vue';
 import type { PdfTranslationEvent } from '../../shared/pdfTranslation.js';
 import { endpoint } from './content';
 import type {
-  Chat, ChatFolderAction, ChatHistoryState, ChatMessage, JobRecord, StatusInfo, WorkspaceEvent, WorkspaceState,
+  Chat, ChatClassifyProposal, ChatFolderAction, ChatHistoryState, ChatMessage, JobRecord, StatusInfo, WorkspaceEvent,
+  WorkspaceState,
 } from './types';
 import type { ApiFn } from './workspaceLibrary';
 
@@ -90,6 +91,18 @@ export function createWorkspaceEvents({
     }
     if (data.type === 'folderActionResolved' && data.chatId === chat?.id) {
       chat!.folderActions = (chat!.folderActions || []).filter((item) => item.id !== data.id);
+    }
+    if (data.type === 'classifyProposal' && data.chatId === chat?.id &&
+      (data.proposal as { id?: string } | undefined)?.id) {
+      const proposal = data.proposal as ChatClassifyProposal;
+      const proposals = (chat!.classifyProposals ||= []);
+      // 服务端按文献替换提案并分配新 ID，实时更新也必须移除该文献的旧行。
+      const index = proposals.findIndex((item) => item.id === proposal.id || item.paperId === proposal.paperId);
+      if (index < 0) proposals.push(proposal);
+      else proposals[index] = proposal;
+    }
+    if (data.type === 'classifyProposalResolved' && data.chatId === chat?.id) {
+      chat!.classifyProposals = (chat!.classifyProposals || []).filter((item) => item.id !== data.id);
     }
     // 助手在聊天里新建/改名/删除分类或移动文献后，侧栏与分类计数需要跟着刷新。
     if (data.type === 'library') void loadLibrary();
