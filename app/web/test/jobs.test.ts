@@ -128,6 +128,30 @@ test('action allowlist, explicit IEEE submission, refresh and restart recovery',
   assert.throws(() => new JobManager({ root, stateDir: path.dirname(root) }));
 });
 
+test('从库根别名启动时任务仍可运行，状态目录不得链接到库外', async (t) => {
+  const { root, stateDir, downloader } = await fixture(t);
+  const aliasParent = await mkdtemp(path.join(os.tmpdir(), 'literature-alias-'));
+  t.after(() => rm(aliasParent, { recursive: true, force: true }));
+  const linkType = process.platform === 'win32' ? 'junction' : 'dir';
+  const alias = path.join(aliasParent, 'library');
+  await symlink(await realpath(root), alias, linkType);
+  const options = { root: alias, stateDir: path.join(alias, '.zhiyue/data'), python: process.execPath, downloader };
+  const manager = new JobManager(options);
+  try {
+    assert.equal(manager.stateDir, await realpath(stateDir));
+    const job = await manager.startDownload({ input: '别名路径测试' });
+    await manager.queue;
+    assert.equal(requiredJob(manager, job.id).status, 'completed');
+    const outside = path.join(aliasParent, 'outside');
+    await mkdir(outside);
+    const escaped = path.join(alias, '.zhiyue/escaped');
+    await symlink(await realpath(outside), escaped, linkType);
+    assert.throws(() => new JobManager({ ...options, stateDir: escaped }), /不能链接到项目外/);
+  } finally {
+    await manager.close();
+  }
+});
+
 test('large logs stay bounded and process/spawn failures persist as failed', async t => {
   const { root, manager, stateDir } = await fixture(t);
   await writeFile(path.join(root, 'fixture/run.py'), `
@@ -228,10 +252,11 @@ test('local PDF batch import reuses the batch pipeline and skips duplicates', as
     ['import', 'attach', 'review', 'attach', 'review', 'archive'],
   );
   assert.equal(recorded[0].args.at(-1)!, 'papers/09_情感综述调研/网站导入');
-  assert.deepEqual(recorded[1].args.slice(-4), ['--item', 'I0001', '--file', first]);
+  const [firstPath, secondPath] = await Promise.all([realpath(first), realpath(second)]);
+  assert.deepEqual(recorded[1].args.slice(-4), ['--item', 'I0001', '--file', firstPath]);
   assert.ok(recorded[2].args.includes('--accept-identity'));
   assert.ok(recorded[2].args.includes('用户在网站批量导入时确认题名与作者与 PDF 首页一致'));
-  assert.deepEqual(recorded[3].args.slice(-4), ['--item', 'I0002', '--file', second]);
+  assert.deepEqual(recorded[3].args.slice(-4), ['--item', 'I0002', '--file', secondPath]);
   assert.deepEqual(recorded[5].args.slice(3), ['--batch', imported.job.batch]);
   const input = JSON.parse(
     await readFile(path.join(stateDir, `${imported.job.id}_input.json`), 'utf8'),
@@ -293,7 +318,7 @@ test('local PDF batch import reuses the batch pipeline and skips duplicates', as
     repeatedCalls.map(call => call.command),
     ['import', 'attach', 'review', 'archive'],
   );
-  assert.ok(repeatedCalls[1].args.includes(first));
+  assert.ok(repeatedCalls[1].args.includes(firstPath));
   assert.ok(!repeatedCalls[3].args.includes('--item'));
 
   const third = path.join(uploads, 'third.pdf');

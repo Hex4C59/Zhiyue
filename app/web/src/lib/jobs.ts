@@ -212,14 +212,19 @@ export class JobManager {
   closing?: Promise<void>;
 
   constructor({ root, stateDir, emit = () => {}, python, downloader = downloaderScript, library = null }: JobManagerOptions) {
-    this.root = realpathSync(path.resolve(root));
-    this.stateDir = path.resolve(stateDir);
-    if (this.stateDir === this.root || !inside(this.root, this.stateDir)) throw fail('任务状态目录必须位于项目内部');
+    const rootPath = path.resolve(root);
+    const statePath = path.resolve(stateDir);
+    // Windows 短路径须用原生 realpath 展开，与后续异步路径检查使用同一种拼写。
+    this.root = realpathSync.native(rootPath);
+    this.stateDir = inside(rootPath, statePath) ? path.join(this.root, path.relative(rootPath, statePath)) : statePath;
+    if (!path.relative(this.root, this.stateDir) || !inside(this.root, this.stateDir)) {
+      throw fail('任务状态目录必须位于项目内部');
+    }
     let ancestor = this.stateDir;
     while (!existsSync(ancestor)) ancestor = path.dirname(ancestor);
-    if (!inside(this.root, realpathSync(ancestor))) throw fail('任务状态目录不能链接到项目外');
+    if (!inside(this.root, realpathSync.native(ancestor))) throw fail('任务状态目录不能链接到项目外');
     mkdirSync(this.stateDir, { recursive: true });
-    this.stateDir = realpathSync(this.stateDir);
+    this.stateDir = realpathSync.native(this.stateDir);
     if (!inside(this.root, this.stateDir)) throw fail('任务状态目录逃逸');
     this.python = python ?? resolvePython();
     this.downloader = path.resolve(downloader);
