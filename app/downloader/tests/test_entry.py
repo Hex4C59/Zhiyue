@@ -13,10 +13,12 @@ class EntryTests(unittest.TestCase):
  def test_startup_imports_sibling_modules_in_isolated_mode(self):
   result=run_entry('--help')
   self.assertEqual(result.returncode,0,result.stderr.decode('utf-8','replace')[-2000:])
-  self.assertIn(b'download',result.stdout)
+  text=result.stdout.decode('utf-8')
+  self.assertIn('download',text)
+  self.assertIn('论文清单',text)
 
  def test_isolated_entry_reports_library_errors_through_cli(self):
   with tempfile.TemporaryDirectory() as tmp:
    result=run_entry('--root',tmp,'status')
   self.assertEqual(result.returncode,2)
-  self.assertIn('README.md',result.stderr.decode('utf-8','replace')[-2000:])
+  self.assertIn('错误：指定目录缺少README.md',result.stderr.decode('utf-8'))

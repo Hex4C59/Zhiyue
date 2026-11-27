@@ -181,6 +181,9 @@ def main(argv=None):
    e['status']='pending';e['metadata_choices']=[];e['validation']={};e['events'].append({'at':now(),'event':'input_updated'});batches.write(root,d,x);return {'item':e['item_id'],'status':e['status']}
 
 if __name__=='__main__':
+ # Node 按 UTF-8 读取输出。便携 Python 的隔离模式不会读取 PYTHONIOENCODING。
+ sys.stdout.reconfigure(encoding='utf-8')
+ sys.stderr.reconfigure(encoding='utf-8',errors='backslashreplace')
  try:output(main())
  except CliError as exc:
   print('错误：'+str(exc),file=sys.stderr);sys.exit(exc.exit_code)

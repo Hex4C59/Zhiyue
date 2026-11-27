@@ -296,8 +296,9 @@ class MoveTests(unittest.TestCase):
 
  def test_batch_retains_journal_when_roll_back_fails(self):
   rename=moves._rename_file_no_replace
+  rollback_source=self.root.resolve()/TARGET/'paper.pdf'
   def fail_move_and_first_rollback(source,target):
-   if source.name=='paper_v2.pdf' or source==self.root/TARGET/'paper.pdf':raise OSError('模拟移动失败')
+   if source.name=='paper_v2.pdf' or source==rollback_source:raise OSError('模拟移动失败')
    rename(source,target)
   with patch.object(moves,'_rename_file_no_replace',side_effect=fail_move_and_first_rollback):
    result=categories.move_papers(self.root,self.request(('L001',TARGET)))
