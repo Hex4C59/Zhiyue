@@ -71,18 +71,33 @@ export async function serveFile(
   req: IncomingMessage,
   res: ServerResponse,
   file: string,
-  { download = false, filename }: { download?: boolean; filename?: string } = {},
+  { download = false, filename, cache = 'private, no-cache' }: {
+    download?: boolean; filename?: string; cache?: string;
+  } = {},
 ): Promise<void> {
   const info = await fsp.stat(file);
   if (!info.isFile()) throw statusError('文件不存在。', 404);
   const mime = MIME[path.extname(file).toLowerCase()] || 'application/octet-stream';
   const encoded = encodeURIComponent(filename || path.basename(file));
+  // ETag 由大小与修改时间组成：内容一变就换值，未变时客户端用 If-None-Match 换 304
+  // 可省掉 app.js（约 700KB）的重复传输。ETag 参与比较，不用再读一遍文件头。
+  const etag = `"${info.size.toString(16)}-${Math.floor(info.mtimeMs).toString(16)}"`;
   const headers: Record<string, string | number> = {
     'Content-Type': mime,
     'Accept-Ranges': 'bytes',
     'Content-Disposition': `${download ? 'attachment' : 'inline'}; filename*=UTF-8''${encoded}`,
-    'Cache-Control': 'private, no-cache',
+    'Cache-Control': cache,
+    ETag: etag,
   };
+  const inm = req.headers['if-none-match'];
+  if (typeof inm === 'string' && inm.split(',').some((tag) => tag.trim() === etag)) {
+    // 304 必须实体头一致：内容协商已通过，但 Range 请求不能用 304 回应。
+    if (!req.headers.range) {
+      res.writeHead(304, headers);
+      res.end();
+      return;
+    }
+  }
   const range = req.headers.range;
   let start = 0;
   let end = info.size - 1;
@@ -127,7 +142,7 @@ export async function serveStatic(req: IncomingMessage, res: ServerResponse, rou
     if (!file.startsWith(KATEX_DIST) || !fs.existsSync(file) || fs.statSync(file).isDirectory()) {
       throw statusError('页面不存在。', 404);
     }
-    return await serveFile(req, res, file);
+    return await serveFile(req, res, file, { cache: 'private, max-age=0, must-revalidate' });
   }
   const staticFiles: Record<string, string> = {
     '/': 'index.html', '/index.html': 'index.html',
@@ -137,5 +152,6 @@ export async function serveStatic(req: IncomingMessage, res: ServerResponse, rou
   const entry = staticFiles[route];
   if (!entry) throw statusError('页面不存在。', 404);
   const file = path.isAbsolute(entry) ? entry : path.join(appPaths().publicDir, entry);
-  return await serveFile(req, res, file);
+  // 入口文件名固定不带内容哈希，只能每次重验证；带上 ETag 后未变更时只付一次 304。
+  return await serveFile(req, res, file, { cache: 'private, max-age=0, must-revalidate' });
 }

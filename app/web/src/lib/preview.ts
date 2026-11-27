@@ -300,3 +300,38 @@ export async function previewPaper({
     throw Object.assign(new Error(`PDF预览失败：${(e as Error).message}`), { statusCode, cause: e });
   }
 }
+
+/**
+ * 只取一页的文字层，命中缓存时不碰 PNG。
+ * 阅读器打开一页会同时请求预览图和文字层；两者走同一份 meta.json，但文字层不需要
+ * 重新校验整条路径、也不需要渲染名额。命中返回，未命中返回 null 由调用方回退到 previewPaper。
+ */
+export async function previewTextLayer({
+  root, file, page: requestedPage = 1,
+}: { root: string; file: string; page?: number | string }): Promise<{ totalPages: number; textLayer: TextLayer } | null> {
+  try {
+    const page = typeof requestedPage === 'string' && /^[1-9]\d*$/.test(requestedPage)
+      ? Number(requestedPage)
+      : requestedPage;
+    if (typeof page !== 'number' || !Number.isSafeInteger(page) || page < 1) return null;
+    const [base, source] = await Promise.all([realpath(root), realpath(file)]);
+    if (!inside(base, source) || path.extname(source).toLowerCase() !== '.pdf') return null;
+    const info = await stat(source);
+    if (!info.isFile()) return null;
+    const key = createHash('sha256').update(JSON.stringify([source, info.size, info.mtimeMs, page])).digest('hex');
+    const directory = path.join(libraryPaths(base).pdfPreview, key);
+    const metaFile = path.join(directory, 'meta.json');
+    let meta: CacheMeta;
+    try {
+      meta = JSON.parse(await readFile(metaFile, 'utf8')) as CacheMeta;
+    } catch {
+      // 尚未渲染或缓存被清理：返回 null，让调用方走完整预览流程。
+      return null;
+    }
+    if (!meta || meta.page !== page || meta.key !== key || meta.source !== source ||
+      meta.size !== info.size || meta.mtimeMs !== info.mtimeMs || !validTextLayer(meta.textLayer)) return null;
+    return { totalPages: meta.totalPages, textLayer: meta.textLayer };
+  } catch {
+    return null;
+  }
+}

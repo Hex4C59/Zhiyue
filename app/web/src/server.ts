@@ -14,7 +14,7 @@ import type { ChatEvent, ChatMessage, ChatStatusSnapshot } from './lib/chat.js';
 import { normalizePaperContext } from './lib/chat.js';
 import { THINKING_LEVELS } from './lib/pi.js';
 import type { ThinkingLevel } from './lib/pi.js';
-import { previewPaper } from './lib/preview.js';
+import { previewPaper, previewTextLayer } from './lib/preview.js';
 import { PdfTranslationService } from './lib/pdfTranslation.js';
 import type { PdfTranslationOptions } from './lib/pdfTranslation.js';
 import type { PdfTranslationServiceEvent } from '../shared/pdfTranslation.js';
@@ -332,6 +332,15 @@ async function handleLibraryAndJobRoutes(
     const pageNumber = Number(url.searchParams.get('page') || 1);
     if (!Number.isSafeInteger(pageNumber) || pageNumber < 1) throw error('请指定正整数PDF页序。');
     const file = await library.safeFile(entry.file);
+    if (preview[2] === 'text-layer') {
+      // 阅读器同一页会并发请求预览图和文字层。文字层命中缓存时只需读 meta.json，
+      // 不必重新校验整条路径、不必排队等渲染名额。
+      const cached = await previewTextLayer({ root, file, page: pageNumber });
+      if (cached) {
+        json(res, { page: pageNumber, totalPages: cached.totalPages, ...cached.textLayer });
+        return true;
+      }
+    }
     const rendered = await previewPaper({
       root, python, file, page: pageNumber, scale: url.searchParams.get('scale') ?? undefined,
     });

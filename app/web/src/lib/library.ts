@@ -181,8 +181,11 @@ export class Library {
       const id = String(record.literature_id ?? '');
       let titleZh = typeof record.display_title_zh === 'string' ? record.display_title_zh : '';
       if (record.source_record && allowed.has(normalize(record.source_record))) {
+        // 侧车已在索引且路径合法，直接拼接即可：为 860 份侧车各多跑两次 realpath 会让冷加载
+        // 多出几十毫秒。链接仍然拒绝，但只用一次 lstat 判断，比 getfinalpathname 便宜。
         try {
-          const sourcePath = await this._resolve(normalize(record.source_record));
+          const sourcePath = path.resolve(root, ...normalize(record.source_record).split('/'));
+          if ((await lstat(sourcePath)).isSymbolicLink()) throw statusError('侧车不能是链接', 403);
           const source = JSON.parse((await readFile(sourcePath, 'utf8')).replace(/^\uFEFF/, '')) as {
             display_title_zh?: unknown;
           };
@@ -194,7 +197,9 @@ export class Library {
       const authors = Array.isArray(record.authors)
         ? record.authors.map(String)
         : String(record.authors ?? '').split(/[;；]/).map((s) => s.trim()).filter(Boolean);
-      return { ...record, id, file, authors, titleZh, category, subcategory, notes: notes.get(id) ?? [] };
+      // versions 体积约占索引一半，但只用于上面的白名单；界面不读它，所以不随接口下发。
+      const { versions: _versions, ...rest } = record;
+      return { ...rest, id, file, authors, titleZh, category, subcategory, notes: notes.get(id) ?? [] };
     }));
     const categoryMap = new Map<string, Category>();
     for (const paper of papers) {

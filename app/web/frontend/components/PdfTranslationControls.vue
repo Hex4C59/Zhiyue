@@ -115,11 +115,21 @@ watch([() => props.file, () => state.eventsOpen, () => w.models.value.find((mode
   () => { if (!busy.value) void refresh(); });
 onMounted(() => {
   void refresh();
-  poll = setInterval(() => { if ((active.value || submitted.value) && !busy.value) void refresh(); }, 3000);
+  // 后台标签页不发请求：状态查词要读源 PDF 头，且窗口不可见时用户看不到进度。
+  // 切回前台立即补一次，避免等到下个 3 秒周期才刷新。
+  poll = setInterval(() => {
+    if (document.hidden || busy.value) return;
+    if (active.value || submitted.value) void refresh();
+  }, 3000);
+  document.addEventListener('visibilitychange', onVisible);
 });
+function onVisible(): void {
+  if (!document.hidden && !busy.value && (active.value || submitted.value)) void refresh();
+}
 onBeforeUnmount(() => {
   disposed = true;
   clearInterval(poll);
+  document.removeEventListener('visibilitychange', onVisible);
 });
 </script>
 

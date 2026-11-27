@@ -7,6 +7,7 @@ import errno
 import json
 import os
 import re
+import stat as stat_module
 import urllib.parse
 import uuid
 from pathlib import Path
@@ -175,6 +176,15 @@ def _raise_walk_error(error):
 
 
 def _collect_candidates(root, old):
+    """找出内容引用了 old 的文本文件和侧车。
+
+    全库文本约 1400 个、30 MB，逐个读入是改名/移动的主要固定开销。目录名本身一定是
+    `_variants()` 四种形态的子串（原始、URL 编码、quote、quote_plus），所以先用末段目录名
+    做字节预筛：不含该名字的文件不可能命中，可以跳过读取。命中预筛的仍按原逻辑精确判断。
+    """
+    marker = Path(old).name.encode('utf-8')
+    if not marker:
+        marker = None
     text = []
     sidecars = []
     for base in [Path(root) / 'papers', Path(root) / 'notes', Path(root) / 'synthesis', Path(root) / 'outputs']:
@@ -184,16 +194,28 @@ def _collect_candidates(root, old):
             dirs[:] = [name for name in dirs if not (Path(directory) / name).is_symlink()]
             for name in files:
                 path = Path(directory) / name
-                if path.is_symlink() or not path.is_file():
-                    continue
                 suffix = path.suffix.casefold()
                 if suffix not in TEXT_SUFFIXES:
                     continue
+                # 一次 lstat 同时判链接、普通文件和大小，避免 is_symlink/is_file/stat 各跑一遍。
                 try:
-                    if path.stat().st_size > MAX_TEXT:
-                        continue
-                    content = path.read_text('utf-8-sig')
-                except (OSError, UnicodeDecodeError):
+                    info = path.lstat()
+                except OSError:
+                    continue
+                if stat_module.S_ISLNK(info.st_mode) or not stat_module.S_ISREG(info.st_mode):
+                    continue
+                if info.st_size > MAX_TEXT:
+                    continue
+                # 只读一次字节：预筛命中才解码，避免同为文本文件读两遍。
+                try:
+                    raw = path.read_bytes()
+                except OSError:
+                    continue
+                if marker is not None and marker not in raw:
+                    continue
+                try:
+                    content = raw.decode('utf-8-sig')
+                except UnicodeDecodeError:
                     continue
                 if not _contains(content, old):
                     continue

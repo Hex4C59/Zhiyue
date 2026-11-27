@@ -1,6 +1,6 @@
 """Shared storage, locks and normalization. No network or credential discovery."""
 from __future__ import annotations
-import contextlib,csv,datetime,hashlib,io,json,os,re,tempfile,time,unicodedata,urllib.parse
+import contextlib,csv,datetime,hashlib,io,json,os,re,stat as stat_module,tempfile,time,unicodedata,urllib.parse
 from pathlib import Path
 
 SCHEMA_VERSION=1
@@ -46,11 +46,38 @@ def sha256(path):
  with Path(path).open('rb') as f:
   for part in iter(lambda:f.read(1024*1024),b''):h.update(part)
  return h.hexdigest()
+_resolved_roots={}
+def _resolved_root(root):
+ """缓存库根目录的解析结果。
+
+ Windows 上 nt._getfinalpathname 单次约 0.03ms，而索引重建会对根目录反复调用上千次；
+ 根目录在一次命令内不变，按字符串键缓存即可。调用方使用字面路径而非链接时结果一致。
+ """
+ key=str(root)
+ cached=_resolved_roots.get(key)
+ if cached is None:
+  cached=Path(root).resolve();_resolved_roots[key]=cached
+ return cached
+def _resolve(path):
+ """对已在库根下的普通路径免去 realpath 系统调用。
+
+ 这里不做安全判断：调用方要么已经用 within/safeFile 校验过，要么传的就是库内自已枚举到的
+ 文件。仅当路径含 `..`/`.`、不存在或本身就是链接时才退回真实解析；单次 lstat 比
+ getfinalpathname 便宜得多。`..` 必须在此规范化，否则 relative_to 会在未折叠的路径上失败。
+ """
+ path=Path(path)
+ if path.parts and any(part in ('..','.') for part in path.parts):
+  return path.resolve()
+ try:
+  info=os.lstat(path)
+ except OSError:
+  return path.resolve()
+ return path.resolve() if stat_module.S_ISLNK(info.st_mode) else path
 def within(root,path):
- root=Path(root).resolve();p=Path(path);p=(p if p.is_absolute() else root/p).resolve()
+ root=_resolved_root(root);p=Path(path);p=_resolve(p if p.is_absolute() else root/p)
  if not p.is_relative_to(root):raise ValueError(f'路径超出指定目录：{p}')
  return p
-def rel(root,path):return Path(path).resolve().relative_to(Path(root).resolve()).as_posix()
+def rel(root,path):return _resolve(path).relative_to(_resolved_root(root)).as_posix()
 def safe_url(value):
  try:
   p=urllib.parse.urlsplit(str(value))
