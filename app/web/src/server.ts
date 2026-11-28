@@ -5,6 +5,7 @@ import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { redact } from './lib/store.js';
+import { lookupPublication } from './lib/publication.js';
 import { Library } from './lib/library.js';
 import { JobManager } from './lib/jobs.js';
 import type { JobEvent, JobRecord, SkippedImport } from './lib/jobs.js';
@@ -328,6 +329,13 @@ async function handleLibraryAndJobRoutes(
       });
       return true;
     }
+  }
+  const publication = /^\/api\/papers\/(L\d+)\/publication$/.exec(route);
+  if (method === 'GET' && publication) {
+    const paper = await library.getPaper(publication[1]!);
+    if (!paper) throw error('文献不存在。', 404);
+    json(res, await lookupPublication(paper.doi));
+    return true;
   }
   const preview = /^\/api\/papers\/(L\d+)\/(preview|text-layer)$/.exec(route);
   if ((method === 'GET' || method === 'HEAD') && preview) {

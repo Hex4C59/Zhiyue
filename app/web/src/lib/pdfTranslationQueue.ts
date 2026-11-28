@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import {
-  activeTranslationJob, translationBatchStatus,
+  activeTranslationJob, PDF_TRANSLATION_CONCURRENCY, translationBatchStatus,
   type PdfTranslationBatch, type PdfTranslationBatchRequest, type PdfTranslationCounts,
   type PdfTranslationJob, type PdfTranslationServiceEvent,
 } from '../../shared/pdfTranslation.js';
@@ -32,7 +32,7 @@ export class PdfTranslationQueue {
   private readonly batches = new Map<string, BatchRecord>();
   private readonly requests = new Map<string, string>();
   private readonly pending: TranslationQueueEntry[] = [];
-  private active: ActiveEntry | undefined;
+  private readonly active = new Map<string, ActiveEntry>();
   private scheduled = false;
   private version = 0;
   get revision(): number { return this.version; }
@@ -190,7 +190,7 @@ export class PdfTranslationQueue {
       this.update(entry, { status: 'cancelled', stage: '已取消' });
     } else if (entry.job.status === 'running' || entry.job.status === 'cancelling') {
       this.update(entry, { status: 'cancelling', stage: '正在取消' });
-      if (this.active?.entry === entry) this.active.controller.abort();
+      this.active.get(entry.job.id)?.controller.abort();
     }
   }
 
@@ -219,36 +219,40 @@ export class PdfTranslationQueue {
   }
 
   private schedule(): void {
-    if (this.closed || this.active || this.scheduled) return;
+    if (this.closed || this.active.size >= PDF_TRANSLATION_CONCURRENCY || this.scheduled) return;
     this.scheduled = true;
     queueMicrotask(() => {
       this.scheduled = false;
-      if (this.closed || this.active) return;
-      let entry: TranslationQueueEntry | undefined;
-      while ((entry = this.pending.shift()) && entry.job.status !== 'queued') { /* 略过已取消的排队项。 */ }
-      if (!entry) return;
-      const active: ActiveEntry = { entry, controller: new AbortController(), done: Promise.resolve() };
-      this.active = active;
-      this.update(entry, { status: 'running', stage: '准备翻译' });
-      active.done = Promise.resolve().then(() => this.run(active.entry, active.controller.signal))
-        .catch((error: unknown) => {
-          this.update(active.entry, {
-            status: active.controller.signal.aborted ? 'cancelled' : 'failed',
-            stage: active.controller.signal.aborted ? '已取消' : '翻译失败',
-            error: active.controller.signal.aborted ? undefined : errorMessage(error).slice(0, 300),
-          });
-        }).finally(() => {
-          if (this.active === active) this.active = undefined;
-          this.schedule();
-        });
+      while (!this.closed && this.active.size < PDF_TRANSLATION_CONCURRENCY) {
+        const entry = this.pending.shift();
+        if (!entry) break;
+        if (entry.job.status === 'queued') this.launch(entry);
+      }
     });
+  }
+
+  private launch(entry: TranslationQueueEntry): void {
+    const controller = new AbortController();
+    const done = Promise.resolve().then(() => this.run(entry, controller.signal))
+      .catch((error: unknown) => {
+        this.update(entry, {
+          status: controller.signal.aborted ? 'cancelled' : 'failed',
+          stage: controller.signal.aborted ? '已取消' : '翻译失败',
+          error: controller.signal.aborted ? undefined : errorMessage(error).slice(0, 300),
+        });
+      }).finally(() => {
+        this.active.delete(entry.job.id);
+        this.schedule();
+      });
+    this.active.set(entry.job.id, { entry, controller, done });
+    this.update(entry, { status: 'running', stage: '准备翻译' });
   }
 
   async close(): Promise<void> {
     this.closed = true;
     for (const entry of this.pending) if (entry.job.status === 'queued') this.cancelEntry(entry);
-    const active = this.active;
-    if (active && active.entry.job.status !== 'saving') this.cancelEntry(active.entry);
-    if (active) await active.done;
+    const active = [...this.active.values()];
+    for (const { entry } of active) this.cancelEntry(entry);
+    await Promise.all(active.map(({ done }) => done));
   }
 }

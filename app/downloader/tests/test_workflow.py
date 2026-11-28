@@ -30,6 +30,36 @@ class WorkflowTests(unittest.TestCase):
  def tearDown(self):self.tmp.cleanup()
  def batch(self,name='sample'):
   p=self.root/'input.csv';atomic_text(p,csv_text([{'doi':DOI,'title':TITLE,'authors':'Alice Example','year':'2026'}],['doi','title','authors','year']));batches.create(self.root,name,p,'papers/topic');return batches.read(self.root,name)
+ def test_import_fetches_publication_and_rebuild_keeps_it(self):
+  d,state=self.batch();e=state['entries'][0];e['doi']=''
+  workflow.ingest(self.root,d,state,e,fixture_pdf(self.root/'incoming.pdf'))
+  self.assertEqual(e['validation']['header_doi'],DOI)
+  work={'DOI':DOI,'title':[TITLE],'container-title':['Test journal'],'is-referenced-by-count':0,'reference-count':11}
+  with patch.object(Transport,'json',return_value=({'message':work},[])) as request:
+   workflow.prepare_publications(self.root,d,state)
+   self.assertIn('works/10.5555%2Fworkflow.example',request.call_args.args[0])
+  archive(self.root,'sample');record=next(r for r in library.build(self.root)['records'] if r['literature_id']=='L001')
+  self.assertEqual(record['venue'],'Test journal');self.assertEqual(record['publication']['citedBy'],0)
+  source=load(self.root/record['source_record']);self.assertEqual(source['Crossref出版信息']['references'],11)
+
+ def test_offline_lookup_preserves_verified_pdf_and_download_reuses_publication(self):
+  d,state=self.batch();e=state['entries'][0];workflow.ingest(self.root,d,state,e,fixture_pdf(self.root/'test.pdf'))
+  with patch.object(Transport,'json',return_value=(None,[{'http_status':429}])):
+   workflow.prepare_publications(self.root,d,state)
+  self.assertEqual(e['status'],'verified');self.assertIn('429',e['publication_note']);self.assertNotIn('publication',e)
+  from providers.public import metadata_from_crossref
+  e['metadata']=metadata_from_crossref({'DOI':DOI,'title':[TITLE],'event':{'name':'Test Conference'}})
+  with patch.object(Transport,'json',side_effect=AssertionError('已查到的记录不应再次联网')):
+   workflow.prepare_publications(self.root,d,state)
+  self.assertEqual(e['publication']['venue'],'Test Conference');self.assertNotIn('publication_note',e)
+
+ def test_ambiguous_titles_do_not_supply_a_doi(self):
+  from publication import lookup_entry
+  response={'message':{'items':[{'DOI':'10.5555/a','title':[TITLE]},{'DOI':'10.5555/b','title':[TITLE]}]}}
+  with patch.object(Transport,'json',return_value=(response,[])):
+   result,reason,_=lookup_entry({'title':TITLE},Transport(self.root,self.root/'requests'))
+  self.assertIsNone(result);self.assertIn('候选',reason)
+
  def test_doi_normalization_and_path_guard(self):
   self.assertEqual(normalize_doi('https://doi.org/10.1234/ABC.12?x=1'),'10.1234/abc.12');self.assertEqual(normalize_doi('(10.1234/abc(test)).'),'10.1234/abc(test)')
   with self.assertRaises(ValueError):within(self.root,'../escape')

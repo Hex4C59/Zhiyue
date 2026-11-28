@@ -83,7 +83,11 @@ def build(root,hash_files=True,write=True,*,archive_digests=None):
     matches=[k for k,v in index.items() if any(q.stem==stem and q.parent==p.parent for _,q in v['pdfs'])]
     if len(matches)==1:lid=matches[0]
    if not lid:issues.append({'kind':'source_without_id','source_record':rel(root,p)});continue
-   item=normalize_source(root,p,data,lid);byid[lid].append(item)
+   item=normalize_source(root,p,data,lid)
+   pub=data.get('Crossref出版信息')
+   if isinstance(pub,dict) and item['doi'] and pub.get('doi')==item['doi']:item['publication']=pub
+   if data.get('出版信息待查原因'):item['publicationNote']=str(data['出版信息待查原因'])
+   byid[lid].append(item)
   except Exception as e:issues.append({'kind':'invalid_source','source_record':rel(root,p),'detail':str(e)})
  records=[]
  for lid in sorted(set(index)|set(byid),key=lambda x:int(x[1:])):
@@ -108,6 +112,9 @@ def build(root,hash_files=True,write=True,*,archive_digests=None):
     primary['integrity_status']='mismatch'
     issues.append({'kind':'hash_mismatch','literature_id':lid,'file':primary['file']})
    primary['sha256']=actual;primary['bytes']=(root/primary['file']).stat().st_size
+  # 同一 DOI 的归档版本共用最近的出版登记，不改变 README 指定的主版本。
+  snapshots=[v['publication'] for v in variants if v.get('publication') and v['doi']==primary['doi']]
+  if snapshots:primary['publication']=max(snapshots,key=lambda pub:str(pub.get('checkedAt','')))
   primary['metadata_status']='existing_source_record' if primary.get('source_record') else 'index_only_unverified';primary['versions']=variants;primary['indexed_in_readme']=bool(row);records.append(primary)
  duplicates=defaultdict(list)
  for r in records:

@@ -90,9 +90,10 @@ test('至少八篇按提交顺序自动处理，重复请求幂等且每篇创�
   const initial = await accepted.json() as PdfTranslationBatchSubmission;
   assert.equal(initial.batch.counts.total, 8);
   assert.equal(initial.batch.paperIds.length, 8);
-  await until(f.snapshot, () => calls.length === 1);
+  await until(f.snapshot, () => calls.length === 2);
   const waiting = await f.snapshot();
-  assert.equal(waiting.jobs.filter(({ status }) => status === 'queued').length, 7);
+  assert.equal(waiting.jobs.filter(({ status }) => status === 'running').length, 2);
+  assert.equal(waiting.jobs.filter(({ status }) => status === 'queued').length, 6);
   assert.ok(waiting.jobs.filter(({ status }) => status === 'queued').every(({ key }) => key === null));
   const repeated = await f.post('/api/translations/batches', request);
   assert.equal(repeated.status, 200);
@@ -103,9 +104,9 @@ test('至少八篇按提交顺序自动处理，重复请求幂等且每篇创�
   const done = await until(f.snapshot, (state) => state.batches[0]?.counts.processed === 8);
   assert.equal(done.batches[0]?.status, 'completed');
   assert.equal(done.batches[0]?.counts.completed, 8);
-  assert.equal(maximum, 1);
+  assert.equal(maximum, 2);
   assert.equal(sessions.size, 8);
-  assert.deepEqual(calls, f.ids.map((_, index) => `paper-${index + 1}.pdf`));
+  assert.deepEqual(calls.toSorted(), f.ids.map((_, index) => `paper-${index + 1}.pdf`));
   assert.ok(done.jobs.every(({ key, status }) => key?.length === 64 && status === 'completed'));
   assert.deepEqual(await readdir(path.join(f.root, '.zhiyue/tmp')), []);
 });
@@ -133,7 +134,7 @@ test('旧译本跨模型跳过，缺失或失败的论文单独失败，强制�
   assert.deepEqual([batch.counts.completed, batch.counts.skipped, batch.counts.failed], [1, 1, 2]);
   assert.match(ready.jobs.find(({ batchId, paperId }) => batchId === batch.id && paperId === 'L001')?.reason ?? '',
     /已有与当前原文匹配/);
-  assert.deepEqual(calls, ['paper-1.pdf', 'paper-3.pdf', 'paper-4.pdf']);
+  assert.deepEqual(calls.toSorted(), ['paper-1.pdf', 'paper-3.pdf', 'paper-4.pdf']);
   assert.equal((await f.paper('L001')).result?.key, oldKey);
 
   failures.add('paper-1.pdf');
@@ -157,13 +158,13 @@ test('批次取消立即取消排队项，运行项和清理结束前不派发�
   const cleanup = gate();
   const calls: string[] = [];
   let firstWork = '';
-  let abortObserved = false;
+  let aborted = 0;
   const f = await fixture(t, async ({ source, work, signal }) => {
     calls.push(path.basename(source));
-    if (calls.length === 1) {
+    if (path.basename(source) !== 'paper-4.pdf') {
       firstWork = work;
       if (!signal.aborted) await new Promise<void>((resolve) => signal.addEventListener('abort', () => {
-        abortObserved = true;
+        aborted++;
         resolve();
       }, { once: true }));
       await cleanup.promise;
@@ -174,22 +175,22 @@ test('批次取消立即取消排队项，运行项和清理结束前不派发�
   const created = await (await f.post('/api/translations/batches', {
     requestId: 'cancel-batch-request', paperIds: f.ids.slice(0, 3), model: model.id,
   })).json() as PdfTranslationBatchSubmission;
-  await until(f.snapshot, () => calls.length === 1);
+  await until(f.snapshot, () => calls.length === 2);
   const cancel = await f.post(`/api/translations/batches/${created.batch.id}/cancel`);
   assert.equal(cancel.status, 202);
   const cancelled = await cancel.json() as PdfTranslationSnapshot;
-  assert.equal(cancelled.batches[0]?.counts.cancelled, 2);
+  assert.equal(cancelled.batches[0]?.counts.cancelled, 1);
   assert.equal(cancelled.batches[0]?.status, 'cancelling');
-  assert.ok(abortObserved);
+  assert.equal(aborted, 2);
   const other = await f.post('/api/papers/L004/translation', { model: model.id });
   assert.equal(other.status, 202);
   assert.equal((await other.json() as PdfTranslationStatus).job?.status, 'queued');
   await pause(30);
-  assert.deepEqual(calls, ['paper-1.pdf']);
+  assert.deepEqual(calls.toSorted(), ['paper-1.pdf', 'paper-2.pdf']);
   assert.equal((await f.post(`/api/translations/batches/${created.batch.id}/cancel`)).status, 202);
   cleanup.resolve();
   await until(() => f.paper('L004'), (state) => state.job?.status === 'completed');
-  assert.deepEqual(calls, ['paper-1.pdf', 'paper-4.pdf']);
+  assert.deepEqual(calls.toSorted(), ['paper-1.pdf', 'paper-2.pdf', 'paper-4.pdf']);
   const finished = (await f.snapshot()).batches[0]!;
   assert.equal(finished.status, 'cancelled');
   assert.equal(finished.counts.cancelled, 3);
@@ -226,10 +227,10 @@ test('单篇与批次共享队列，重复论文跳过，默认模型变化不�
   assert.equal(skipped?.status, 'skipped');
   assert.equal(skipped?.reason, '已在翻译队列中');
   defaultId = alternate.id;
-  first.resolve();
   await until(f.snapshot, () => calls.length === 2);
   assert.equal(calls[1]?.model, model.id);
   configured.set(model.id, { ...model, fingerprint: 'changed-after-submit' });
+  first.resolve();
   second.resolve();
   const final = await until(f.snapshot, (state) => state.batches[0]?.counts.processed === 3);
   assert.deepEqual(calls.map(({ paper }) => paper), ['paper-1.pdf', 'paper-2.pdf']);
@@ -262,29 +263,29 @@ test('提交批次前检查解析环境，模型移除后排队项明确失败�
     calls++;
     await release.promise;
     return output(work);
-  }, 2, () => available ? { ...model } : undefined, release.resolve);
+  }, 3, () => available ? { ...model } : undefined, release.resolve);
   await f.post('/api/translations/batches', { ...request, requestId: 'removed-model-request', paperIds: f.ids });
-  await until(f.snapshot, () => calls === 1);
+  await until(f.snapshot, () => calls === 2);
   available = false;
   release.resolve();
-  const final = await until(f.snapshot, (state) => state.batches[0]?.counts.processed === 2);
-  assert.equal(calls, 1);
+  const final = await until(f.snapshot, (state) => state.batches[0]?.counts.processed === 3);
+  assert.equal(calls, 2);
   assert.equal(final.batches[0]?.counts.failed, 1);
-  assert.match(final.jobs.find(({ paperId }) => paperId === 'L002')?.error ?? '', /模型/);
+  assert.match(final.jobs.find(({ paperId }) => paperId === 'L003')?.error ?? '', /模型/);
 });
 
 test('翻译中原文变化时拒绝发布当前成品，仍继续处理队列后续论文', async (t) => {
   const release = gate();
   let calls = 0;
-  const f = await fixture(t, async ({ work }) => {
+  const f = await fixture(t, async ({ work, source }) => {
     calls++;
-    if (calls === 1) await release.promise;
+    if (path.basename(source) === 'paper-1.pdf') await release.promise;
     return output(work);
   }, 2, undefined, release.resolve);
   await f.post('/api/translations/batches', {
     requestId: 'changed-source-request', paperIds: f.ids, model: model.id,
   });
-  await until(f.snapshot, () => calls === 1);
+  await until(f.snapshot, () => calls === 2);
   await writeFile(path.join(f.root, 'papers/paper-1.pdf'), '%PDF-1.4\n原文已更新\n%%EOF');
   release.resolve();
   const ready = await until(f.snapshot, (state) => state.batches[0]?.counts.processed === 2);

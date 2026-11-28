@@ -43,6 +43,8 @@ def verify(path,entry,work,config=None,render=True):
   tokens=top.split();size=len(title.split())
   if size>=4:match=any(SequenceMatcher(None,wanted,norm(' '.join(tokens[i:i+size+4]))).ratio()>=.90 for i in range(min(200,len(tokens))))
  doi=normalize_doi(entry.get('doi'));printed_dois={normalize_doi(m) for m in re.findall(r'10\.\d{4,9}/[^\s<>"|]+',first,re.I)}
+ header_dois={normalize_doi(m) for m in re.findall(r'10\.\d{4,9}/[^\s<>"|]+',top,re.I)}
+ if len(header_dois)==1:result['header_doi']=header_dois.pop()
  doi_match=bool(doi and doi in printed_dois);author=first_author_tokens(entry.get('authors',[]));author_match=bool(author and author in norm(top))
  result.update(title_match=match,doi_printed_match=doi_match,first_author_match=author_match,identity_verified=bool(match and (doi_match or author_match)),identity_basis='首页题名及DOI' if match and doi_match else ('首页题名及第一作者（未据此声称PDF印有DOI）' if match and author_match else '需要人工核对'))
  front=first[:1200]

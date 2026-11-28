@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, inject, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import PaperPublication from './PaperPublication.vue';
 import PaperActions from './PaperActions.vue';
 import PdfTranslationControls from './PdfTranslationControls.vue';
 import { createReader } from '../lib/reader';
@@ -56,6 +57,8 @@ onBeforeUnmount(() => reader?.dispose());
   <section ref="scope" class="reader-panel" aria-label="阅读区">
     <div id="reader-header" class="reader-header" />
     <div id="reader-toolbar" class="reader-toolbar" hidden />
+    <PaperPublication v-if="workspace.currentPaper.value" :key="workspace.currentPaper.value.literature_id"
+      :paper="workspace.currentPaper.value" />
     <PdfTranslationControls v-if="pdfPaper?.file" :key="pdfPaper.literature_id"
       :paper-id="pdfPaper.literature_id" :file="pdfPaper.file" />
     <div v-if="visibleNoteCount === 0" id="reader-content" class="reader-content" tabindex="0" aria-label="论文阅读内容">

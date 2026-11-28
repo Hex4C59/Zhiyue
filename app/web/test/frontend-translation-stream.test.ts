@@ -60,7 +60,7 @@ test('真实队列处理一千篇时工作区只按事件同步，计数与服�
   const paperIds = Array.from({ length: 1000 }, (_, index) => `L${index + 1}`);
   const batch = queue.batch({ requestId: 'large-batch', model, paperIds }, 'fingerprint');
   await new Promise<void>((done) => setImmediate(done));
-  assert.equal(page.workspace.queuePositions.value.get(batch.jobIds[999]), 999);
+  assert.equal(page.workspace.queuePositions.value.get(batch.jobIds[999]), 998);
   resolve();
   await new Promise<void>((done) => setImmediate(done));
   const snapshot = queue.snapshot();

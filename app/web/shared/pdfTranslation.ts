@@ -1,4 +1,5 @@
 export const PDF_TRANSLATION_MAX_BATCH = 1000;
+export const PDF_TRANSLATION_CONCURRENCY = 2;
 
 export interface PdfTranslationResult {
   key: string;

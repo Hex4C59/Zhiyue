@@ -516,16 +516,16 @@ test('分类工具：新建与改名直接执行，删除先生成待确认卡�
     submitted.push(items);
     return startMove(items);
   };
-  await request(6, 'move_papers', { groups: [
+  await request(6, 'move_papers', { includeRelatedVersions: true, groups: [
     { category: '09_空分类', paperIds: [' l001 ', 'L002', 'L001'] },
     { category: 'papers/09_空分类/01_子目录', paperIds: ['L003'] },
   ] });
   assert.equal(reply().success, true);
   assert.match(reply().text, /move-1/);
   assert.deepEqual(submitted, [[
-    { paperId: 'L001', category: 'papers/09_空分类' },
-    { paperId: 'L002', category: 'papers/09_空分类' },
-    { paperId: 'L003', category: 'papers/09_空分类/01_子目录' },
+    { paperId: 'L001', category: 'papers/09_空分类', includeRelatedVersions: true },
+    { paperId: 'L002', category: 'papers/09_空分类', includeRelatedVersions: true },
+    { paperId: 'L003', category: 'papers/09_空分类/01_子目录', includeRelatedVersions: true },
   ]]);
   await request(7, 'move_papers', { groups: [
     { category: '09_空分类', paperIds: ['L001'] },

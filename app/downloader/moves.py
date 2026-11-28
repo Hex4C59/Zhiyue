@@ -6,6 +6,8 @@ import errno
 import hashlib
 import json
 import os
+import posixpath
+import urllib.parse
 import re
 import stat
 import uuid
@@ -55,12 +57,42 @@ def _move_reference_files(root):
                     yield path
 
 
-def _prepare_move_reference(path, rewrite):
+_MD_LINK = re.compile(r'(\]\(\s*)(?:<([^<>\r\n]+)>|([^\s()<>]+))(?=\s|\))')
+
+
+def _rewrite_markdown(text, parent, pairs, rewrite):
+    chunks = []
+    end = 0
+    for match in _MD_LINK.finditer(text):
+        chunks.append(rewrite(text[end:match.start()]))
+        dest = match[2] or match[3]
+        raw, suffix = re.match(r'([^?#]*)(.*)', dest).groups()
+        decoded = urllib.parse.unquote(raw)
+        new = None
+        if decoded and not re.match(r'^(?:[a-z][a-z0-9+.-]*:|[/\\])', decoded, re.I):
+            key = posixpath.normpath(posixpath.join(parent, decoded))
+            new = pairs.get(key)
+            if new is None and decoded.startswith('papers/'):
+                new = pairs.get(decoded)
+        if new is None:
+            chunks.append(match[0])
+        else:
+            target = posixpath.relpath(new, parent)
+            if raw != decoded or not match[2]:
+                target = urllib.parse.quote(target, safe='/.-_')
+            dest = target + suffix
+            chunks.append(match[1] + (f'<{dest}>' if match[2] else dest))
+        end = match.end()
+    chunks.append(rewrite(text[end:]))
+    return ''.join(chunks)
+
+
+def _prepare_move_reference(path, rewrite, *, parent, pairs):
     data = _read_text(path)
     if data is None:
         return None
     raw, text, bom = data
-    updated = rewrite(text)
+    updated = _rewrite_markdown(text, parent, pairs, rewrite) if path.suffix.lower() == '.md' else rewrite(text)
     if path.name.endswith(SIDECAR_SUFFIX):
         try:
             source = json.loads(text)
@@ -173,8 +205,9 @@ def _rewrite_move_references(root, journal_path, journal):
     readme = root / 'README.md'
     rewritten = 0
     moved_references = []
+    pairs = dict(mapping)
     for path in _move_reference_files(root):
-        reference = _prepare_move_reference(path, rewrite)
+        reference = _prepare_move_reference(path, rewrite, parent=path.parent.relative_to(root).as_posix(), pairs=pairs)
         if reference is None:
             continue
         move = by_target.get(path)
@@ -238,8 +271,10 @@ def _directory_sources(directory):
     return sources
 
 
-def _paper_move_files(root, record, source_cache):
-    """找出主文件同目录的版本及来源记录，并报告其他目录中的版本路径。"""
+def _paper_move_files(root, record, source_cache, target, include_related):
+    """按索引和同编号侧车列出归档文件，只为需要换目录的文件生成移动对。"""
+    if not isinstance(include_related, bool):
+        raise CliError('includeRelatedVersions 必须为布尔值。', 2)
     lid = record.get('literature_id') or ''
     primary = record.get('file')
     if not isinstance(primary, str) or not primary:
@@ -252,17 +287,33 @@ def _paper_move_files(root, record, source_cache):
     other = set()
     for value in _record_paths(record):
         path = root / value
-        if path.parent != directory:
+        if not include_related and path.parent != directory:
             other.add(value)
             continue
         path = _move_file_path(root, value)
         if _file_status(path) is None:
             raise CliError(f'{lid} 的归档文件不存在：{value}。', 4)
         files.add(path)
-    if directory not in source_cache:
-        source_cache[directory] = _directory_sources(directory)
-    files.update(source_cache[directory].get(lid, ()))
-    return directory, sorted(files), sorted(other)
+    for folder in {path.parent for path in files}:
+        if folder not in source_cache:
+            source_cache[folder] = _directory_sources(folder)
+        identified = source_cache[folder].get(lid, set())
+        if include_related:
+            if any(path.parent == folder and path not in identified for path in files):
+                raise CliError(f'{lid} 的文件与来源记录归属不一致，请先核对 {folder.name}。', 4)
+            for sidecar in identified:
+                if sidecar.name.endswith(SIDECAR_SUFFIX):
+                    data = load(sidecar)
+                    name = data.get('文件名') or data.get('file_name')
+                    if not isinstance(name, str) or Path(name).name != name or folder / name not in identified:
+                        raise CliError(f'{lid} 的来源记录缺少有效的归档文件：{sidecar.name}。', 4)
+        files.update(identified)
+    pairs = []
+    for path in sorted(files):
+        _move_file_path(root, path.relative_to(root).as_posix())
+        if path.parent != target:
+            pairs.append((path, target / path.name))
+    return directory, pairs, sorted(other), files
 
 
 def _move_file_path(root, value):
@@ -386,8 +437,12 @@ def _move_requests(items):
             raise CliError(f'{lid} 的目标必须为 papers/ 内的规范分类路径。', 2)
         for part in category.split('/')[1:]:
             plain_component(part)
-        if requests.setdefault(lid, category) != category:
-            raise CliError(f'{lid} 指向多个目标分类。', 2)
+        include_related = item.get('includeRelatedVersions', False)
+        if not isinstance(include_related, bool):
+            raise CliError(f'{lid} 的 includeRelatedVersions 必须为布尔值。', 2)
+        request = (category, include_related)
+        if requests.setdefault(lid, request) != request:
+            raise CliError(f'{lid} 的目标分类或版本归拢选项不一致。', 2)
     return requests
 
 
@@ -403,10 +458,12 @@ def _source_owners(root, records, source_cache):
     return owners
 
 
-def _move_conflicts(files, owners, targets):
-    shared = sorted(source.name for source, _ in files if len(owners[source]) > 1)
+def _move_conflicts(files, owners, targets, sources):
+    shared = sorted(source.name for source in sources if len(owners[source]) > 1)
     if shared:
         return '同一归档文件被多个文献编号引用：' + '、'.join(shared) + '。'
+    if len({target for _, target in files}) != len(files):
+        return '同编号的多个版本在目标目录中文件名相同。'
     existing = sorted(target.name for _, target in files if _occupied(target))
     if existing:
         return '目标分类已存在同名文件：' + '、'.join(existing) + '。'
@@ -438,7 +495,7 @@ def move_papers(root, items, timeout=RENAME_TIMEOUT):
     """在一把库写锁下检查未完成事务，再预检整组并移动互不冲突的文献。"""
     requests = _move_requests(items)
     root = Path(root).resolve()
-    results = {lid: {'paperId': lid, 'category': category} for lid, category in requests.items()}
+    results = {lid: {'paperId': lid, 'category': category} for lid, (category, _) in requests.items()}
     summary = {'items': list(results.values())}
     with library_lock(root, timeout):
         # README 已改写时索引读取可能指向目标；必须先查事务，避免被 unchanged 当作成功。
@@ -457,7 +514,8 @@ def move_papers(root, items, timeout=RENAME_TIMEOUT):
         source_cache = {}
         targets = defaultdict(set)
         planned = {}
-        for lid, category in requests.items():
+        sources = {}
+        for lid, (category, include_related) in requests.items():
             result = results[lid]
             try:
                 target_dir = require_category(root, category)
@@ -465,30 +523,29 @@ def move_papers(root, items, timeout=RENAME_TIMEOUT):
                     raise CliError(f'请使用分类的规范路径：{category}', 4)
                 if lid not in by_id:
                     raise CliError(f'文献库中没有 {lid}。', 2)
-                source_dir, files, other = _paper_move_files(root, by_id[lid], source_cache)
+                _, pairs, other, sources[lid] = _paper_move_files(root, by_id[lid], source_cache, target_dir, include_related)
             except (CliError, OSError) as exc:
                 result.update(status='blocked' if isinstance(exc, CliError) else 'failed', error=str(exc))
                 continue
             if other:
                 result['otherLocations'] = other
-            if source_dir == target_dir:
-                result['status'] = 'unchanged'
-                continue
-            planned[lid] = [(source, target_dir / source.name) for source in files]
+            planned[lid] = pairs
             for _, target in planned[lid]:
                 targets[target].add(lid)
         owners = _source_owners(root, records, source_cache)
         eligible = []
         for lid, files in planned.items():
             try:
-                error = _move_conflicts(files, owners, targets)
+                error = _move_conflicts(files, owners, targets, sources[lid])
             except OSError as exc:
                 results[lid].update(status='failed', error=str(exc))
                 continue
             if error:
                 results[lid].update(status='blocked', error=error)
-            else:
+            elif files:
                 eligible.append(lid)
+            else:
+                results[lid]['status'] = 'unchanged'
         if eligible:
             files = [pair for lid in eligible for pair in planned[lid]]
             try:
@@ -504,7 +561,7 @@ def move_papers(root, items, timeout=RENAME_TIMEOUT):
     return summary
 
 
-def move_paper(root, literature_id, category, timeout=RENAME_TIMEOUT):
+def move_paper(root, literature_id, category, timeout=RENAME_TIMEOUT, *, include_related_versions=False):
     """移动单篇文献，沿用文献卡片拖放接口的返回格式和错误码。"""
     root = Path(root).resolve()
     lid = str(literature_id or '').strip().upper()
@@ -521,18 +578,17 @@ def move_paper(root, literature_id, category, timeout=RENAME_TIMEOUT):
         if not record:
             raise CliError(f'文献库中没有 {lid}。', 2)
         source_cache = {}
-        source_dir, files, other = _paper_move_files(root, record, source_cache)
+        source_dir, pairs, other, sources = _paper_move_files(root, record, source_cache, destdir, include_related_versions)
         summary = {
             'literature_id': lid, 'from': rel(root, source_dir), 'to': rel(root, destdir),
-            'category': rel(root, destdir), 'unchanged': source_dir == destdir,
+            'category': rel(root, destdir), 'unchanged': not pairs,
             'moved': [], 'other_locations': other, 'references': {},
         }
-        if summary['unchanged']:
-            return summary
-        pairs = [(source, destdir / source.name) for source in files]
-        error = _move_conflicts(pairs, _source_owners(root, records, source_cache), defaultdict(set))
+        error = _move_conflicts(pairs, _source_owners(root, records, source_cache), defaultdict(set), sources)
         if error:
             raise CliError(error, 4)
+        if not pairs:
+            return summary
         details = {'literature_id': lid, 'old_dir': summary['from'], 'new_dir': summary['to']}
         try:
             references, moves = _execute_paper_moves(root, pairs, details)

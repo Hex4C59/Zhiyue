@@ -115,6 +115,10 @@ def archive(root,batch,item=None,category=None):
     with src.open('rb') as a,dest.open('xb') as b:shutil.copyfileobj(a,b);b.flush();os.fsync(b.fileno())
     if digests.digest(dest,verify=True)!=actual:raise RuntimeError('复制校验失败，保留事务记录供恢复。')
    metadata={'文献编号':lid,'题名':e['title'],'DOI':e.get('doi') or '待核实','作者':authors,'年份':year,'期刊或会议':e.get('venue','待核实'),'版本':version,'文献类型':e.get('document_type','full_article'),'文件名':dest.name,'当前路径':record['file'],'来源':e.get('download_source') or '用户导入文件；原始获取渠道待核实','下载日期':e.get('downloaded_at') or '待核实（本次为归档日期，不能替代实际下载日期）','归档日期':now(),'PDF页数':e['pages'],'文件字节数':dest.stat().st_size,'SHA-256':actual,'核验':v,'下载历史':e.get('attempts',[]),'用户阅读状态':'待标记','批次':state['batch_id']}
+   if e.get('publication') and e['publication']['doi']==e.get('doi'):
+    metadata['Crossref出版信息']=e['publication']
+   elif e.get('publication_note'):
+    metadata['出版信息待查原因']=e['publication_note']
    if not source.exists():save(source,metadata)
    append_index(root,record,new_id=not bool(existing))
    e.update(literature_id=lid,file=record['file'],source_record=record['source_record'],status='archived');e['events'].append({'at':now(),'event':'archived','literature_id':lid,'new_version_of_existing':bool(existing)});batches.write(root,d,state)

@@ -52,6 +52,8 @@ Python入口为`run.py`，默认以本工具所在项目为根目录，和当前
 
 改名不会等待尚未开始的批次队列；排队任务开始后若分类已改名会失败，需要重新提交。`repair` 只续做已经移动的目录；只有旧目录时判定未移动，新旧都在时报告冲突。归档的 `prepared` 事务会重新执行归档，目标 PDF 已存在且哈希一致时继续提交，不会重复复制；`repair` 结束前会在库写锁内重建一次派生索引。
 
+`move-paper --include-related-versions` 会将其他分类中来源记录确认的同编号版本一起归入指定目录。`move-papers` 的每项请求可传 `includeRelatedVersions: true`。目标可用完整子目录路径。已到位的文件就地保留，同名冲突阻止该编号整项移动。Markdown 相对链接按引用文件所在目录更新。
+
 `move-paper` 只处理已经归档的 `L` 编号，目标分类必须已存在；同目录内的主文件、其他版本与 `.来源.json` 一起搬，其他目录的同编号版本留在原处并在 `other_locations` 里报告。搬完文件后改写 README 链接、`notes/`/`synthesis/`/`outputs/` 中的路径、来源记录的 `当前路径`、批次台账条目的 `file`/`source_record`、归档事务记录，并重建 catalog；批次级 `category` 不变。引用改写失败时保留 `.zhiyue/tmp/paper_moves/` 事务记录，`repair` 可续做。
 
 `move-papers INPUT.json` 接受 `[{"paperId":"L001","category":"papers/01_分类"}]` 格式的数组。同一编号指定不同目标时拒绝整组。其他预检问题逐项报告，有效项共用一份事务记录，批次级 `category` 保留，索引统一重建。中断后运行 `repair`，它会核对整组文件状态与哈希，能安全续做时完成移动和引用同步。存在冲突时保留修复记录。普通 `move-paper` 和 `move-papers` 都在库写锁内先检查请求文献涉及的未完成事务；存在记录时先返回待修复原因，不执行新移动，也不把“文件已在目标”报告为完成。批量请求返回 `repair` 和逐项失败/阻止状态，显式修复完成后才可正常重试。

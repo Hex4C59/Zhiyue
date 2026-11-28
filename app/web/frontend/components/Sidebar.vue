@@ -298,7 +298,7 @@ async function submitRename(row: CategoryRow): Promise<void> {
         <Icon name="plus" />
       </button>
     </div>
-    <div id="categories" class="categories" @contextmenu.prevent="openMenu($event, null)" @scroll="closeMenu"
+    <div id="categories" class="categories" @contextmenu.self.prevent="openMenu($event, null)" @scroll="closeMenu"
       @dragover.prevent @drop.prevent>
       <template v-for="row in rows" :key="`${row.category}/${row.child}`">
         <form

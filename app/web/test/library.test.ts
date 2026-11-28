@@ -227,6 +227,9 @@ test('resolveCategory 接受显示名或编号目录，movePaper 委托 Python �
   };
   assert.deepEqual(await library.movePaper('l001', '08_SER/资源'), { literature_id: 'L001', moved: [] });
   assert.deepEqual(calls[0], ['move-paper', '--literature-id', 'L001', '--category', 'papers/08_SER/01_资源']);
+  await library.movePaper('L001', 'papers/08_SER/01_资源', true);
+  assert.deepEqual(calls[1], [...calls[0]!, '--include-related-versions']);
+  await assert.rejects(library.movePaper('L001', '08_SER', 'false'), /布尔值/);
   await assert.rejects(library.movePaper('paper', '08_SER'), /L 编号/);
   await assert.rejects(library.movePaper('L001', '不存在'), /没有找到分类/);
 });

@@ -31,6 +31,7 @@ def parser():
  c=s.add_parser('move-paper',help='在库写锁下把一篇文献及其来源记录移到现有分类，并同步README、引用、台账和索引')
  c.add_argument('--literature-id',required=True,help='文献编号，例如L003')
  c.add_argument('--category',required=True,help='已存在的分类目录，相对项目路径，必须位于papers下')
+ c.add_argument('--include-related-versions',action='store_true',help='归拢其他分类中有同编号来源记录的版本')
  c=s.add_parser('move-papers',help='在库写锁下批量移动已归档文献并同步引用')
  c.add_argument('input',type=Path,help='含 paperId 和 category 的 JSON 数组')
  s.add_parser('repair',help='恢复未完成的分类改名、文献移动和归档事务，报告冲突')
@@ -78,7 +79,7 @@ def main(argv=None):
   return categories.delete(root,args.category,args.subcategory)
  if args.command=='move-paper':
   import categories
-  return categories.move_paper(root,args.literature_id,args.category)
+  return categories.move_paper(root,args.literature_id,args.category,include_related_versions=args.include_related_versions)
  if args.command=='move-papers':
   import categories
   items=json.loads(args.input.read_text('utf-8-sig'))
@@ -125,6 +126,7 @@ def main(argv=None):
   d,x=batches.read(root,args.batch)
   if args.command=='archive':
    from archiving import archive
+   workflow.prepare_publications(root,d,x,args.item)
    return archive(root,args.batch,args.item,args.category)
   if args.command=='ieee':
    from providers.ieee import prepare

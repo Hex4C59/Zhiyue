@@ -11,7 +11,7 @@ import { SnapshotWriter } from './snapshotWriter.js';
 import type { Library } from './library.js';
 
 export type JobStatus = 'queued' | 'running' | 'completed' | 'partial' | 'failed';
-export interface PaperMove { paperId: string; category: string }
+export interface PaperMove { paperId: string; category: string; includeRelatedVersions?: boolean }
 export interface PaperMoveItem extends PaperMove {
   status: 'moved' | 'unchanged' | 'blocked' | 'failed';
   error?: string;

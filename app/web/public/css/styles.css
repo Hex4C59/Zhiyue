@@ -324,6 +324,11 @@ body.resizing-panels,body.resizing-panels * { cursor:col-resize!important; user-
 .read .read-dot { background:var(--accent); }
 
 /* Reader */
+.paper-publication { padding:4px 14px; border-bottom:1px solid var(--line); font-size:12px; color:var(--muted);
+  max-height:30vh; overflow:auto; flex:none; }
+.paper-publication summary { cursor:pointer; width:fit-content; }
+.paper-publication p { margin:6px 0; overflow-wrap:anywhere; user-select:text; }
+.paper-publication button { margin:0 6px 4px 0; }
 .reader-panel { display:flex; flex-direction:column; min-width:0; min-height:0; background:var(--canvas); }
 .reader-header {
   background:var(--paper); min-height:var(--toolbar-height); padding:12px 20px; border-bottom:1px solid var(--line);

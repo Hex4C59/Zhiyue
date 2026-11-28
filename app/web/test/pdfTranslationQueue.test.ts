@@ -38,7 +38,7 @@ test('千篇任务只发送一次成员清单，进度事件修订连续', async
   assert.equal(queue.revision, events.length);
 });
 
-test('保存时取消批次保留当前成品，其余任务取消，单篇继续等待保存完成', async (t) => {
+test('保存时取消批次保留成品，另一个执行名额可继续处理单篇', async (t) => {
   const publishing = gate();
   t.after(publishing.resolve);
   const calls: string[] = [];
@@ -49,6 +49,9 @@ test('保存时取消批次保留当前成品，其余任务取消，单篇继�
       savingSignal = signal;
       queue.update(entry, { status: 'saving', stage: '保存译本', percent: 99 });
       await publishing.promise;
+    } else if (entry.job.paperId === 'L002') {
+      await new Promise<void>((resolve) => signal.addEventListener('abort', () => resolve(), { once: true }));
+      signal.throwIfAborted();
     }
     queue.update(entry, { status: 'completed', stage: '翻译完成', percent: 100 });
   }, () => {});
@@ -60,13 +63,14 @@ test('保存时取消批次保留当前成品，其余任务取消，单篇继�
   assert.equal(savingSignal?.aborted, false);
   const waiting = queue.snapshot().batches[0]!;
   assert.equal(waiting.status, 'cancelling');
-  assert.equal(waiting.counts.cancelled, 2);
+  assert.equal(waiting.counts.cancelled, 1);
   assert.throws(() => queue.cancel('L001', batch.jobIds[0]!), /没有可取消/);
   queue.single('L004', request.model, 'fingerprint', false, '0'.repeat(64));
-  assert.deepEqual(calls, ['L001']);
-  publishing.resolve();
   await until(() => queue.forPaper('L004')?.status === 'completed');
-  assert.deepEqual(calls, ['L001', 'L004']);
+  assert.deepEqual(calls, ['L001', 'L002', 'L004']);
+  assert.equal(queue.forPaper('L001')?.status, 'saving');
+  publishing.resolve();
+  await until(() => queue.forPaper('L001')?.status === 'completed');
   const done = queue.snapshot().batches[0]!;
   assert.equal(done.status, 'cancelled');
   assert.deepEqual([done.counts.completed, done.counts.cancelled], [1, 2]);
@@ -76,24 +80,24 @@ test('关闭时先停止派发并取消排队项，等待当前请求清理，�
   const cleanup = gate();
   t.after(cleanup.resolve);
   const calls: string[] = [];
-  let signal: AbortSignal | undefined;
+  const signals: AbortSignal[] = [];
   const queue = new PdfTranslationQueue(async (entry, currentSignal) => {
     calls.push(entry.job.paperId);
-    signal = currentSignal;
+    signals.push(currentSignal);
     await cleanup.promise;
     currentSignal.throwIfAborted();
   }, () => {});
   const batch = queue.batch(request, 'fingerprint');
-  await until(() => !!signal);
+  await until(() => signals.length === 2);
   let ended = false;
   const closing = queue.close().then(() => { ended = true; });
   await new Promise<void>((resolve) => setImmediate(resolve));
-  assert.equal(signal?.aborted, true);
+  assert.ok(signals.every((signal) => signal.aborted));
   assert.equal(ended, false);
-  assert.equal(queue.snapshot().batches[0]?.counts.cancelled, 2);
+  assert.equal(queue.snapshot().batches[0]?.counts.cancelled, 1);
   cleanup.resolve();
   await closing;
-  assert.deepEqual(calls, ['L001']);
+  assert.deepEqual(calls, ['L001', 'L002']);
   assert.equal(queue.snapshot().batches[0]?.counts.cancelled, 3);
   assert.throws(() => queue.single('L004', request.model, 'fingerprint', false, '0'.repeat(64)), /正在关闭/);
   assert.equal(queue.snapshot().jobs.find(({ id }) => id === batch.jobIds[0])?.status, 'cancelled');

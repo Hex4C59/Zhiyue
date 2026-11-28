@@ -65,6 +65,42 @@ class MoveTests(unittest.TestCase):
  def journals(self):
   return list((self.root/'.zhiyue/tmp/paper_moves').glob('*.json'))
 
+ def split_version(self):
+  outside='papers/10_待补/正式 v2.pdf';side=outside[:-4]+'.来源.json'
+  self.put(outside,'正式版');self.add_source('L001',outside,side)
+  self.put('papers/10_待补/README.md','[附件](<正式 v2.pdf>)\n[编码]('+urllib.parse.quote('正式 v2.pdf')+'#page=2)\n')
+  library.build(self.root,False)
+  return outside,side
+
+ def test_gather_single_and_relative_links(self):
+  old,side=self.split_version();target=str(Path(PDF).parent.as_posix())
+  self.assertEqual(set(moves.move_paper(self.root,'L001',target)['other_locations']),{old,side})
+  result=moves.move_paper(self.root,'L001',target,include_related_versions=True)
+  self.assertEqual({row['from'] for row in result['moved']},{old,side})
+  links=self.read('papers/10_待补/README.md').splitlines()
+  for link in links:
+   dest=urllib.parse.unquote(link.split('](')[1].rstrip(')').strip('<>').split('#')[0])
+   self.assertEqual((self.root/'papers/10_待补'/dest).resolve(),(self.root/target/'正式 v2.pdf').resolve())
+  self.assertEqual(moves.move_paper(self.root,'L001',target,include_related_versions=True)['moved'],[])
+
+ def test_gather_batch_resume(self):
+  old,_=self.split_version();target=Path(PDF).parent.as_posix()
+  items=[{'paperId':'L001','category':target,'includeRelatedVersions':True}]
+  with patch.object(moves,'_rewrite_move_references',side_effect=RuntimeError('中断')):
+   result=moves.move_papers(self.root,items)
+  self.assertIn('repair',result)
+  self.assertEqual(moves.repair_moves(self.root)[0]['action'],'repaired')
+  self.assertFalse((self.root/old).exists())
+  self.assertEqual(moves.move_papers(self.root,items)['items'][0]['status'],'unchanged')
+
+ def test_gather_duplicate_names_block_whole_paper(self):
+  old,side=self.split_version();copy=old.replace('10_待补','11_另存');copy_side=side.replace('10_待补','11_另存')
+  self.put(copy,'另一版本');self.add_source('L001',copy,copy_side);library.build(self.root,False)
+  with self.assertRaisesRegex(CliError,'文件名相同'):
+   moves.move_paper(self.root,'L001',TARGET,include_related_versions=True)
+  self.assertTrue(all((self.root/p).is_file() for p in (PDF,old,side,copy,copy_side)))
+  self.assertFalse(self.journals())
+
  def test_move_moves_versions_and_sidecars_and_rewrites_every_reference(self):
   result=categories.move_paper(self.root,'l001',TARGET)
   self.assertFalse(result['unchanged'])

@@ -65,7 +65,7 @@ console.log(JSON.stringify({items: moves.map((move, index) => ({
 }))}));
 `);
   const moves = [
-    { paperId: 'L001', category: 'papers/01_目标' },
+    { paperId: 'L001', category: 'papers/01_目标', includeRelatedVersions: true },
     { paperId: 'L002', category: 'papers/02_目标' },
   ];
   const queued = await manager.startPaperMove(moves);

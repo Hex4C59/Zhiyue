@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue';
-import { PDF_TRANSLATION_MAX_BATCH, type PdfTranslationJob } from '../../shared/pdfTranslation';
+import { PDF_TRANSLATION_CONCURRENCY, PDF_TRANSLATION_MAX_BATCH, type PdfTranslationJob } from '../../shared/pdfTranslation';
 import { titleOf } from '../lib/content';
 import { translatablePaper } from '../lib/workspaceTranslations';
 import { useWorkspace } from '../lib/workspace';
@@ -102,7 +102,7 @@ onBeforeUnmount(() => { if (opener?.isConnected) opener.focus(); });
           @click="w.selectAllTranslations">全选</button>
         <button type="button" class="text-button" data-translation-clear :disabled="state.translationSubmitting"
           @click="state.translationSelected.clear()">清空</button>
-        <span class="muted">每批最多 {{ PDF_TRANSLATION_MAX_BATCH }} 篇</span>
+        <span class="muted">每批最多 {{ PDF_TRANSLATION_MAX_BATCH }} 篇，同时翻译 {{ PDF_TRANSLATION_CONCURRENCY }} 篇</span>
       </div>
       <VirtualList class="translation-candidates" aria-label="选择翻译文献"
         :items="candidates" :item-key="candidateKey" :estimate="64">

@@ -202,6 +202,16 @@ test('右键文件夹可新建子文件夹、重命名并导入 PDF', async (t) 
   await flush();
   const renameInput = page.$('.category-editor:not(.category-child) input');
   assert.ok(renameInput);
+  assert.equal(document.activeElement, renameInput);
+  assert.equal(renameInput.value.slice(renameInput.selectionStart, renameInput.selectionEnd), '超声');
+  renameInput.setSelectionRange(1, 2);
+  const editMenu = new window.MouseEvent('contextmenu', { bubbles: true, cancelable: true });
+  renameInput.dispatchEvent(editMenu);
+  await flush();
+  assert.equal(editMenu.defaultPrevented, false);
+  assert.equal(document.querySelector('.category-menu'), null);
+  assert.equal(document.activeElement, renameInput);
+  assert.equal(renameInput.value.slice(renameInput.selectionStart, renameInput.selectionEnd), '声');
   input(renameInput, '超声新名');
   renameInput.closest('form').dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
   await until(() => workspace.state.category === '01_超声新名');

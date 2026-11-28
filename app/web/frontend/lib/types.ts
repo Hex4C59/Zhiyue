@@ -16,6 +16,8 @@ export interface NoteRef {
 }
 
 export interface Paper extends Record<string, unknown> {
+  doi?: string;
+  venue?: string;
   literature_id: string;
   title?: string;
   titleZh?: string;

@@ -556,12 +556,14 @@ export class Library {
   }
 
   // 单篇文献移动由 Python 在库写锁下搬文件并修复 README、来源记录、台账和索引；Node 只校验编号与目标。
-  async movePaper(paperId: unknown, category: unknown): Promise<unknown> {
+  async movePaper(paperId: unknown, category: unknown, includeRelatedVersions: unknown = false): Promise<unknown> {
+    if (typeof includeRelatedVersions !== 'boolean') throw statusError('版本归拢选项须为布尔值。', 400);
     const id = typeof paperId === 'string' ? paperId.trim().toUpperCase() : '';
     if (!/^L\d+$/.test(id)) throw statusError('请指定 L 编号，例如 L003。', 400);
     const target = await this.resolveCategory(category);
     const result = await this.categoryCommand([
       'move-paper', '--literature-id', id, '--category', target.path,
+      ...(includeRelatedVersions ? ['--include-related-versions'] : []),
     ]);
     this.cache = null;
     return result;

@@ -4,6 +4,7 @@ import datetime,re,shutil
 from pathlib import Path
 from common import *
 import batches,library
+from publication import lookup_entry
 from transport import Transport
 from validation import verify
 from providers import public,elsevier
@@ -14,6 +15,36 @@ def selected(state,item=None):
  values={x.strip() for x in item.split(',')};out=[e for e in state['entries'] if e['item_id'] in values or str(e['seq']) in values]
  if not out:raise ValueError('未找到指定条目；使用item_id或组内原序号')
  return out
+
+def prepare_publications(root, directory, state, item=None):
+ """在批次锁内、库写锁外补查。网络故障只影响书目字段。"""
+ entries=[entry for entry in selected(state,item) if entry['status']=='verified']
+ if not entries:return
+ cfg=configuration(root)
+ cfg['network'].update(request_timeout=min(8,cfg['network']['request_timeout']),transient_retries=0,max_bytes=2_000_000)
+ transport=Transport(root,meta(root)/'tmp'/state['batch_id']/'publication',cfg)
+ offline=False
+ for entry in entries:
+  doi=normalize_doi(entry.get('doi'))
+  pub=(entry.get('metadata') or {}).get('publication')
+  reason='本批次出版信息服务暂不可用'
+  if not (pub and doi and pub.get('doi')==doi):
+   pub=None
+   if not offline:
+    try:pub,reason,offline=lookup_entry(entry,transport)
+    except (RuntimeError,OSError) as exc:reason,offline=str(exc),True
+  if pub:
+   entry['publication']=pub
+   entry['doi']=pub['doi']
+   for field in ('authors','year','venue'):
+    if pub[field] and entry.get(field) in (None,'',[],'待核实'):
+     entry[field]=pub[field]
+   entry.pop('publication_note',None)
+  else:
+   entry.pop('publication',None)
+   entry['publication_note']=reason
+ batches.write(root,directory,state)
+
 
 def local_reuse(root,e,catalog,require_published=False):
  found=library.matches(catalog,e.get('doi'))

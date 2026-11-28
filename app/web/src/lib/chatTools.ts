@@ -100,13 +100,15 @@ export const dynamicTools: DynamicTool[] = [
   },
   {
     type: 'function', name: 'move_paper',
-    description: '把一篇已归档文献及其来源记录移到另一个已存在分类，直接执行；会同步README链接、笔记与成果中的路径、批次台账和索引。目标分类先用library_categories确认，不存在时先create_category。',
-    inputSchema: object({ paperId: stringSchema, category: stringSchema }, ['paperId', 'category']),
+    description: '移动已归档文献，同步引用与索引。category 可传完整子目录，例如 papers/09_情感综述调研/20261113_情感计算与人机交互。'
+      + '用户要求将同编号版本归入同一目录时传 includeRelatedVersions=true。',
+    inputSchema: object({ paperId: stringSchema, category: stringSchema, includeRelatedVersions: { type: 'boolean' } }, ['paperId', 'category']),
   },
   {
     type: 'function', name: 'move_papers',
-    description: '按目标分类分组批量移动已归档文献，最多 1000 个明确的 L 编号。已明确授权时提交一次。通过 get_download_status 查看实际结果。',
-    inputSchema: object({ groups: {
+    description: '按完整子目录路径分组批量移动文献。若需归拢各编号的所有版本，传 includeRelatedVersions=true。'
+      + '通过 get_download_status 核对结果。',
+    inputSchema: object({ includeRelatedVersions: { type: 'boolean' }, groups: {
       type: 'array', minItems: 1, maxItems: 1000,
       items: object({ category: stringSchema, paperIds: {
         type: 'array', items: stringSchema, minItems: 1, maxItems: 1000,
@@ -163,7 +165,8 @@ export type ToolContentItem =
   | { type: 'inputText'; text: string }
   | { type: 'inputImage'; data: string; mimeType: string };
 
-async function queuePaperMoves(host: ToolExecutionHost, groups: unknown): Promise<JobRecord> {
+async function queuePaperMoves(host: ToolExecutionHost, groups: unknown, includeRelatedVersions: unknown = false): Promise<JobRecord> {
+  if (typeof includeRelatedVersions !== 'boolean') throw statusError('版本归拢选项须为布尔值。');
   if (!Array.isArray(groups) || !groups.length || groups.length > 1000) {
     throw statusError('请按实际目标分类分组，并明确列出要移动的文献编号。');
   }
@@ -196,7 +199,9 @@ async function queuePaperMoves(host: ToolExecutionHost, groups: unknown): Promis
       moves.set(id, target);
     }
   }
-  return host.jobs.startPaperMove([...moves].map(([paperId, category]) => ({ paperId, category })));
+  return host.jobs.startPaperMove([...moves].map(([paperId, category]) => ({
+    paperId, category, ...(includeRelatedVersions && { includeRelatedVersions }),
+  })));
 }
 
 export async function executeToolCall(
@@ -298,10 +303,10 @@ export async function executeToolCall(
   } else if (tool === 'delete_categories') {
     result = await host.proposeFolderDeletes(chat, args.categories);
   } else if (tool === 'move_paper') {
-    result = await host.library.movePaper(args.paperId, args.category);
+    result = await host.library.movePaper(args.paperId, args.category, args.includeRelatedVersions);
     host.emit({ type: 'library' });
   } else if (tool === 'move_papers') {
-    const { id, status, title } = await queuePaperMoves(host, args.groups);
+    const { id, status, title } = await queuePaperMoves(host, args.groups, args.includeRelatedVersions);
     result = { id, status, title, message: '已提交任务，请使用 get_download_status 核对实际移动结果。' };
   } else if (tool === 'download_papers') {
     result = await host.jobs.startDownload({

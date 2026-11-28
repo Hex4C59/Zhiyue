@@ -3,6 +3,7 @@ from __future__ import annotations
 import os,re,urllib.parse
 from difflib import SequenceMatcher
 from html.parser import HTMLParser
+from publication import publication_from_work
 from common import norm,normalize_doi,safe_url
 
 class PDFLinks(HTMLParser):
@@ -21,7 +22,12 @@ class PDFLinks(HTMLParser):
   if tag=='a':self.pending=None
 
 def metadata_from_crossref(m):
- return {'doi':normalize_doi(m.get('DOI')),'title':(m.get('title') or [''])[0],'authors':[' '.join([a.get('given',''),a.get('family','')]).strip() for a in m.get('author',[])],'year':next((m[k]['date-parts'][0][0] for k in ['published-print','published','issued'] if m.get(k,{}).get('date-parts')), '待核实'),'venue':(m.get('container-title') or ['待核实'])[0],'landing_page':m.get('resource',{}).get('primary',{}).get('URL') or m.get('URL'),'publisher':m.get('publisher'),'crossref_type':m.get('type'),'crossref_recorded_links':m.get('link',[])}
+ pub=publication_from_work(m)
+ if not pub:return None
+ return {**{key:pub[key] for key in ('doi','title','authors')},'year':int(pub['year']) if pub['year'] else '待核实',
+         'venue':pub['venue'] or '待核实','publication':pub,'publisher':m.get('publisher'),
+         'landing_page':(m.get('resource') or {}).get('primary',{}).get('URL') or m.get('URL'),
+         'crossref_type':m.get('type'),'crossref_recorded_links':m.get('link') or []}
 
 def discover(entry,transport,config):
  attempts=[];candidates=list(entry.get('candidates',[]));doi=normalize_doi(entry.get('doi'));metadata=None
@@ -37,8 +43,10 @@ def discover(entry,transport,config):
   for m in items:
    title=(m.get('title') or [''])[0];score=SequenceMatcher(None,norm(entry['title']),norm(title)).ratio();scored.append((score,m))
   scored.sort(key=lambda t:t[0],reverse=True)
-  if scored and scored[0][0]>=.94 and (len(scored)==1 or scored[0][0]-scored[1][0]>=.05):metadata=metadata_from_crossref(scored[0][1]);doi=metadata['doi']
+  if scored and scored[0][0]>=.94 and (len(scored)==1 or scored[0][0]-scored[1][0]>=.05):
+   metadata=metadata_from_crossref(scored[0][1]);doi=metadata['doi'] if metadata else ''
   elif scored:entry['metadata_choices']=[{'score':round(s,3),'doi':normalize_doi(m.get('DOI')),'title':(m.get('title') or [''])[0]} for s,m in scored];entry['failure_reason']='题名匹配存在歧义，请用set命令补充准确DOI。'
+ if metadata and metadata['doi']!=doi:metadata=None
  if metadata:
   if entry.get('title') and SequenceMatcher(None,norm(entry['title']),norm(metadata['title'])).ratio()<.65:
    entry['metadata_choices']=[metadata];entry['failure_reason']='输入题名与该DOI的出版登记题名差异较大，请人工核对。';return None,candidates,attempts

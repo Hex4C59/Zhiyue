@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, inject } from 'vue';
 import { authorText, readKey, readLabels, titleOf } from '../lib/content';
+import { venueLabel } from '../lib/publication';
 import FolderScope from './FolderScope.vue';
 import Icon from './Icon.vue';
 import PanelHandle from './PanelHandle.vue';
@@ -172,10 +173,11 @@ function dragStart(event: DragEvent, paper: Paper): void {
           </div>
           <h3>{{ titleOf(paper) }}</h3>
           <div class="paper-authors" :title="authorText(paper)">{{ firstAuthor(paper) }} · {{ paper.year || '年份待核实' }}</div>
+          <div class="paper-authors" :title="`期刊或会议：${venueLabel(paper)}`">{{ venueLabel(paper) }}</div>
           <div class="paper-bottom">
             <span v-if="!showsPrimary(paper)" class="tag" :title="relatedHint">关联文献</span>
-            <span v-else class="tag" :title="String(paper.subcategory || paper.venue || '')">
-              {{ String(paper.subcategory || paper.venue || paper.category || '未分类').replace(/^\d+_/, '') }}</span
+            <span v-else class="tag" :title="String(paper.subcategory || paper.category || '')">
+              {{ String(paper.subcategory || paper.category || '未分类').replace(/^\d+_/, '') }}</span
             >
             <span :class="readKey(paper.readStatus)"
               ><i class="read-dot" />{{ readLabels[readKey(paper.readStatus)] }}</span
