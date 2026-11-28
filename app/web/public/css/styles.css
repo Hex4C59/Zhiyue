@@ -154,7 +154,10 @@ svg { width:17px; height:17px; flex-shrink:0; vertical-align:middle; stroke:curr
 .category-button.parent-open { font-weight:600; }
 .cat-name { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .cat-count { font-size:11px; color:var(--sidebar-muted); font-variant-numeric:tabular-nums; }
-/* 有子文件夹的分类显示折叠箭头，箭头随展开状态旋转；点击整行即可切换。 */
+/* 名称选择目录，独立箭头控制子项可见性。 */
+.category-disclosure { display:grid; place-items:center; flex:0 0 24px; height:32px; border-radius:6px; }
+.category-disclosure:hover { background:var(--sidebar-hover); }
+.category-row .category-button { min-width:0; }
 .cat-caret {
   width:7px; height:7px; flex:none; margin:0 2px 0 3px; opacity:.75;
   border-right:1.5px solid var(--sidebar-muted); border-bottom:1.5px solid var(--sidebar-muted);
@@ -309,8 +312,10 @@ body.resizing-panels,body.resizing-panels * { cursor:col-resize!important; user-
 .paper-top .icon-button { margin-left:auto; width:23px; height:23px; }
 .paper-top svg { width:14px; height:14px; }
 .paper-card h3 {
-  font-size:14px; line-height:1.6; color:var(--ink); margin:5px 0 6px; font-weight:600; overflow-wrap:anywhere;
+  display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:3; overflow:hidden;
+  font-size:14px; line-height:1.45; color:var(--ink); margin:4px 0; font-weight:600; overflow-wrap:anywhere;
 }
+.paper-card:focus-visible h3 { -webkit-line-clamp:unset; }
 .paper-authors { font-size:12px; color:var(--muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; line-height:1.7; }
 .paper-bottom { margin-top:9px; display:flex; align-items:center; justify-content:space-between; gap:8px; font-size:10px; color:var(--muted); }
 .tag { color:var(--muted); max-width:178px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
@@ -493,11 +498,7 @@ pre,code,kbd,samp { font-family:var(--font-mono); }
 .reader-empty-art svg { width:36px; height:36px; stroke-width:1.5; }
 .reader-empty h2 { margin:13px 0 8px; color:var(--ink); font-size:23px; font-weight:650; letter-spacing:-.3px; }
 .reader-empty p { color:var(--muted); font-size:13px; line-height:1.8; }
-.reader-empty-tags { display:flex; justify-content:center; flex-wrap:wrap; gap:8px; margin-top:24px; }
-.reader-empty-tags span {
-  padding:5px 10px; border:1px solid var(--line); border-radius:20px;
-  background:var(--paper); color:var(--muted); font-size:11px;
-}
+.reader-empty .button { margin:16px auto 0; max-width:100%; white-space:normal; overflow-wrap:anywhere; }
 .paper-list-empty { margin:12px 2px; padding:30px 14px; }
 .paper-list-empty h2 { margin:16px 0 6px; font-size:14px; font-weight:600; }
 .paper-list-empty p { max-width:220px; line-height:1.7; }
@@ -535,16 +536,37 @@ pre,code,kbd,samp { font-family:var(--font-mono); }
 .connection-indicator[data-state="loading"] { background:var(--gold); animation:pulse 1.6s infinite; }
 .chat-actions { display:flex; gap:2px; }
 .chat-actions .icon-button { color:var(--muted); }
-.chat-context { display:flex; align-items:center; gap:8px; padding:6px 14px 0; }
-.chat-context>div { flex:1; min-width:0; display:flex; gap:6px; flex-wrap:wrap; }
-.chat-context>.icon-button { width:25px; height:25px; color:var(--faint); }
-.chat-context>.icon-button svg { width:13px; height:13px; }
-.context-chip {
-  display:flex; align-items:center; gap:6px; background:var(--tint); border:1px solid var(--line);
-  border-radius:3px; padding:3px 7px; color:var(--muted); font:11px var(--font-mono);
+.folder-scope.button { display:none; }
+@media(max-width:680px) {
+  .folder-scope.button { display:inline-flex; max-width:100%; margin-bottom:8px; }
+  .folder-scope span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .sidebar .section-head { display:none; }
 }
-.context-chip:hover { background:var(--selected); color:var(--accent); }
-.context-chip svg { width:11px; height:11px; opacity:.6; }
+.folder-drawer,.comparison-dialog { padding:16px; border:1px solid var(--line); border-radius:12px;
+  background:var(--paper); color:var(--ink); }
+.folder-drawer { margin:auto 0 0; width:100%; max-width:100%; max-height:75dvh; border-radius:14px 14px 0 0; }
+.folder-drawer::backdrop,.comparison-dialog::backdrop { background:rgba(22,35,48,.35); }
+.folder-drawer header,.comparison-dialog header { display:flex; align-items:center; justify-content:space-between; }
+.folder-drawer header { position:sticky; top:0; background:var(--paper); }
+.folder-drawer h2,.comparison-dialog h2 { margin:0; font-size:16px; }
+.folder-drawer nav button,.comparison-options button { display:block; width:100%; padding:9px 12px;
+  text-align:left; border-radius:6px; overflow-wrap:anywhere; }
+.folder-drawer .child { padding-left:32px; }
+.folder-drawer [aria-current="true"],.comparison-options button:hover { background:var(--selected); color:var(--accent); }
+.question-papers { display:flex; flex-wrap:wrap; align-items:center; gap:4px 8px; margin:4px 14px; font-size:12px; }
+.question-current,.comparison-chip { display:flex; align-items:center; min-width:0; max-width:100%; gap:5px; }
+.question-current { flex:1 1 130px; }
+.question-current>span { flex:none; color:var(--muted); }
+.question-current strong,.comparison-chip>span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.chat-context { display:flex; align-items:center; flex-wrap:wrap; gap:4px; }
+.comparison-chip { max-width:min(160px,100%); border-radius:5px; padding-left:6px; background:var(--tint); }
+.comparison-chip button { display:grid; place-items:center; width:24px; height:24px; flex:none; }
+.comparison-chip svg,.comparison-add svg { width:13px; height:13px; }
+.comparison-add { display:inline-flex; align-items:center; gap:3px; min-height:26px; color:var(--accent); }
+.comparison-dialog { width:min(420px,92vw); margin:auto; }
+.comparison-dialog input { width:100%; margin:12px 0 4px; }
+.comparison-options { height:min(45dvh,360px); overflow:auto; }
+.comparison-options small { color:var(--muted); }
 .paper-actions { display:flex; flex-wrap:wrap; gap:6px; }
 .chat-panel > .paper-actions { flex-shrink:0; padding:8px 12px; border-bottom:1px solid var(--line); }
 .reader-content .paper-actions { justify-content:center; margin-top:8px; }

@@ -19,7 +19,7 @@ const title = computed(() => paper.value ? titleOf(paper.value) : '文献已不�
     </div>
     <div class="translation-job-stage">
       <span>{{ job.stage }}</span>
-      <span v-if="job.status === 'queued' && job.queuePosition">第 {{ job.queuePosition }} 位</span>
+      <span v-if="job.status === 'queued'">第 {{ w.queuePositions.value.get(job.id) }} 位</span>
       <span v-else-if="activeTranslationJob(job)">{{ Math.round(job.percent) }}%</span>
     </div>
     <progress

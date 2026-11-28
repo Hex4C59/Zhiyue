@@ -129,6 +129,7 @@ export function createWorkspaceChatActions({
   function newChat(): void {
     if (state.sending) return;
     state.chatEpoch++;
+    state.context.clear();
     state.chat = null;
     saveUiState({ chatId: null });
     state.focusComposer++;
@@ -177,8 +178,9 @@ export function createWorkspaceChatActions({
         chat.messages = mergeMessages(chat.messages || [], state.chat.messages || [], started,
           (status) => activeStatuses.includes(status));
       }
+      // 历史 paperIds 是以往提问引用过的文献，重新打开时由用户选择本次比较范围。
+      if (state.chat?.id !== id) state.context.clear();
       state.chat = chat;
-      state.context = new Set(chat.paperIds || []);
       saveUiState({ chatId: chat.id });
       if (agent.value.available !== true) reconnectAgent();
     } catch (error) {
@@ -279,8 +281,12 @@ export function createWorkspaceChatActions({
     }
   }
 
+  function questionPaperIds(): string[] {
+    return [...new Set([...(state.current ? [state.current] : []), ...state.context])];
+  }
+
   /** 界面操作直接执行，Pi 终端命令交给随包 CLI。服务端回执与技能仍走会话接口。 */
-  async function runCommand(text: string, paperIds = [...state.context]): Promise<boolean> {
+  async function runCommand(text: string, paperIds = questionPaperIds()): Promise<boolean> {
     if (!canStartTurn.value) return false;
     const [, name = '', rawArgs = ''] = /^\/([^\s/]+)(?:\s+([\s\S]*))?$/.exec(text) ?? [];
     const command = state.commands.find((item) => item.name === name);
@@ -338,7 +344,7 @@ export function createWorkspaceChatActions({
     }
     const text = state.draft.trim();
     const files = [...state.attachments];
-    const paperIds = [...state.context];
+    const paperIds = questionPaperIds();
     const place = { activePaperId: state.current || undefined, pdfPage: state.pdfPage };
     state.sending = true;
     try {

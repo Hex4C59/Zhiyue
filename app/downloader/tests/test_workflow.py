@@ -68,6 +68,34 @@ class WorkflowTests(unittest.TestCase):
   d,x=self.batch();before=(d/'下载状态.json').read_bytes();workflow.download(self.root,'sample',dry_run=True);self.assertEqual((d/'下载状态.json').read_bytes(),before)
  def test_existing_uppercase_hash_is_equivalent(self):
   p=fixture_pdf(self.root/'papers/topic/old.pdf');digest=sha256(p);source={'文献编号':'L001','题名':TITLE,'DOI':DOI,'作者':['Alice Example'],'年份':2026,'文件名':p.name,'SHA-256':digest.upper()};save(p.with_suffix('.来源.json'),source);text=(self.root/'README.md').read_text('utf-8')+'| L001 | 2026 | Example | [Paper](papers/topic/old.pdf) | 待标记 | |\n';(self.root/'README.md').write_text(text,'utf-8');c=library.build(self.root);self.assertFalse(any(i['kind']=='hash_mismatch' for i in c['issues']))
+ def test_archive_hash_reads_follow_changed_primary_files(self):
+  self.batch()
+  old=self.root/'papers/topic/old.pdf'
+  old.write_bytes(b'%PDF-old')
+  source=old.with_suffix('.来源.json')
+  save(source,{'文献编号':'L002','文件名':old.name,'SHA-256':sha256(old)})
+  with patch.object(library,'sha256',wraps=sha256) as hashed:
+   archive(self.root,'sample')
+   self.assertEqual([args[0] for args,_ in hashed.call_args_list],[old])
+   hashed.reset_mock()
+   archive(self.root,'sample')
+   hashed.assert_not_called()
+   d,state=batches.read(self.root,'sample');candidate=self.root/'candidate.pdf'
+   candidate.write_bytes(b'%PDF-new');digest=sha256(candidate)
+   state['entries'][0].update(status='verified',file=candidate.name,sha256=digest,pages=2,validation={
+    'sha256':digest,'all_pages_parsed':True,'identity_verified':True,'first_last_rendered':True})
+   batches.write(self.root,d,state)
+   archive(self.root,'sample')
+   self.assertNotIn(old,[args[0] for args,_ in hashed.call_args_list])
+   hashed.reset_mock()
+   replacement=self.root/'replaced.pdf';replacement.write_bytes(b'%PDF-bad');replacement.replace(old)
+   archive(self.root,'sample')
+   hashed.assert_called_once_with(old)
+   self.assertIn('hash_mismatch',[issue['kind'] for issue in library.read(self.root)['issues']])
+   hashed.reset_mock()
+   library.build(self.root,write=False)
+   self.assertEqual(hashed.call_count,2)
+
  def test_pack_refuses_incomplete_batch(self):
   self.batch()
   with self.assertRaises(ValueError):pack(self.root,['sample'],output='outputs/incomplete.zip')

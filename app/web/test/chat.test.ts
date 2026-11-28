@@ -188,7 +188,7 @@ test('用户消息与占位回答只保存一次，持久化成功后才发布�
   const publications: Array<{ messages: number; commits: number }> = [];
   t.mock.method(chats, 'emit', (event: ChatEvent) => {
     if (event.type === 'message') {
-      const committed = new ChatStore(path.dirname(chats.store.directory)).data.chats.find(({ id }) => id === chat.id)!;
+      const committed = new ChatStore(path.dirname(chats.store.directory)).get(chat.id)!;
       publications.push({ messages: committed.messages.length, commits: commits.length });
     }
     return emit(event);
@@ -220,7 +220,7 @@ test('消息受理保存失败回滚正文、上下文和标题，不发布事�
   assert.equal(events.filter(({ type }) => type === 'message').length, 0);
   assert.deepEqual(await fs.readFile(chats.store.fileFor(chat.id)), before);
   assert.throws(() => chats.create(), /受理保存失败/);
-  assert.equal(chats.store.data.chats.length, 1, '新建失败不残留无法恢复的内存会话');
+  assert.equal(chats.store.summaries().length, 1, '新建失败不残留无法恢复的内存会话');
 });
 
 test('归档与草稿状态保存失败回滚内存，并保留可重试的完整草稿', async (t) => {
@@ -247,7 +247,46 @@ test('归档与草稿状态保存失败回滚内存，并保留可重试的完�
   assert.equal(events.some(({ type }) => type === 'noteDraftResolved'), false);
   discard.mock.restore();
   assert.deepEqual(await chats.resolveNoteDraft(draft.id, 'discard'), { discarded: true });
-  assert.deepEqual(new ChatStore(dir).data.chats[0]!.noteDrafts, []);
+  assert.deepEqual(new ChatStore(dir).get(chat.id)!.noteDrafts, []);
+});
+
+test('已结束回答的异步工具和草稿保存仍持有原正文，淘汰后从磁盘恢复操作结果', async (t) => {
+  const { chats, client, dir } = await fixture(t);
+  const chat = chats.create();
+  await chats.send(chat.id, { text: '生成文稿' });
+  await until(() => !!chat.threadId);
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const paper = { id: 'L001', file: 'papers/L001.pdf', title: '示例', category: '01_测试', notes: [], authors: [],
+    titleZh: '', subcategory: '', readStatus: 'unread' as const, starred: false };
+  chats.library.getPaper = async () => { await gate; return paper; };
+  const tool = chats.serverRequest({ id: 97, method: 'item/tool/call', params: {
+    threadId: chat.threadId, tool: 'draft_document', arguments: {
+      target: 'outputs', title: '保留草稿', content: '第一行\n'.repeat(60), paperIds: ['L001'],
+    },
+  } });
+  chats.finish(chat.id, 'completed');
+  const pressure = () => { for (let index = 0; index < 10; index++) chats.create(); };
+  pressure();
+  const retained = chats.get(chat.id);
+  release();
+  await tool;
+  assert.equal(retained, chat);
+  assert.equal(client.responses.at(-1)?.result.success, true);
+  const draft = chat.noteDrafts[0]!;
+  pressure();
+  assert.notEqual(chats.get(chat.id), chat);
+  const settled = chats.get(chat.id);
+  let refreshed = false;
+  const refreshing = new Promise<void>((resolve) => { release = resolve; });
+  chats.library.refresh = async () => { refreshed = true; await refreshing; };
+  const resolution = chats.resolveNoteDraft(draft.id, 'save');
+  await until(() => refreshed);
+  pressure();
+  assert.equal(chats.get(chat.id), settled);
+  release();
+  await resolution;
+  assert.deepEqual(new ChatStore(dir).get(chat.id)!.noteDrafts, []);
 });
 
 test('重启只提交中断回答所属会话，其他会话和固定回执保持不变', async (t) => {

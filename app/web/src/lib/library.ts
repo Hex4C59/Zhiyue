@@ -30,6 +30,7 @@ export interface Paper extends Record<string, unknown> {
   titleZh: string;
   category: string;
   subcategory: string;
+  relatedFolders?: string[];
   notes: NoteRef[];
 }
 
@@ -141,16 +142,22 @@ export class Library {
       if (this._validRelative(rel)) allowed.add(rel);
     };
     const records = catalog.records ?? [];
-    const indexRecord = (record: CatalogRecord): void => {
+    const indexRecord = (record: CatalogRecord, folders: Set<string>): void => {
+      for (const value of [record.file, record.source_record]) {
+        if (typeof value !== 'string') continue;
+        const rel = normalize(value);
+        if (!rel.startsWith('papers/') || !this._validRelative(rel)) continue;
+        const parts = rel.split('/');
+        if (parts.length >= 3) folders.add(parts.slice(1, Math.min(3, parts.length - 1)).join('/'));
+      }
       if (path.extname(typeof record.file === 'string' ? record.file : '').toLowerCase() === '.pdf') add(record.file);
       if (path.extname(typeof record.source_record === 'string' ? record.source_record : '').toLowerCase() === '.json') {
         add(record.source_record);
       }
       for (const version of Array.isArray(record.versions) ? record.versions : []) {
-        if (version && typeof version === 'object') indexRecord(version as CatalogRecord);
+        if (version && typeof version === 'object') indexRecord(version as CatalogRecord, folders);
       }
     };
-    records.forEach(indexRecord);
     const notes = new Map<string, NoteRef[]>();
     const walk = async (dir: string, prefix: string): Promise<void> => {
       const entries = await readdir(dir, { withFileTypes: true }).catch((error: NodeJS.ErrnoException) => {
@@ -178,6 +185,9 @@ export class Library {
       const parts = file.split('/');
       const category = parts[0] === 'papers' ? parts[1] ?? '' : '';
       const subcategory = parts.length > 3 ? parts[2] ?? '' : '';
+      const folders = new Set<string>();
+      indexRecord(record, folders);
+      folders.delete(subcategory ? `${category}/${subcategory}` : category);
       const id = String(record.literature_id ?? '');
       let titleZh = typeof record.display_title_zh === 'string' ? record.display_title_zh : '';
       if (record.source_record && allowed.has(normalize(record.source_record))) {
@@ -197,25 +207,31 @@ export class Library {
       const authors = Array.isArray(record.authors)
         ? record.authors.map(String)
         : String(record.authors ?? '').split(/[;；]/).map((s) => s.trim()).filter(Boolean);
-      // versions 体积约占索引一半，但只用于上面的白名单；界面不读它，所以不随接口下发。
-      const { versions: _versions, ...rest } = record;
-      return { ...rest, id, file, authors, titleZh, category, subcategory, notes: notes.get(id) ?? [] };
+      // 界面只需额外关联的目录，不必下发整份版本元数据。
+      const { versions: _versions, relatedFolders: _derived, ...rest } = record;
+      return { ...rest, id, file, authors, titleZh, category, subcategory, notes: notes.get(id) ?? [],
+        ...(folders.size ? { relatedFolders: [...folders] } : {}) };
     }));
     const categoryMap = new Map<string, Category>();
     for (const paper of papers) {
-      if (!categoryMap.has(paper.category)) {
-        categoryMap.set(paper.category, { id: paper.category, name: paper.category, count: 0, children: [] });
-      }
-      const category = categoryMap.get(paper.category) as Category;
-      category.count++;
-      if (paper.subcategory) {
-        const id = `${paper.category}/${paper.subcategory}`;
-        let child = category.children.find((item) => item.id === id);
-        if (!child) {
-          child = { id, name: paper.subcategory, count: 0 };
-          category.children.push(child);
+      const primary = paper.subcategory ? `${paper.category}/${paper.subcategory}` : paper.category;
+      const countedParents = new Set<string>();
+      for (const id of [primary, ...(paper.relatedFolders ?? [])]) {
+        const [parent = '', name] = id.split('/');
+        let category = categoryMap.get(parent);
+        if (!category) {
+          category = { id: parent, name: parent, count: 0, children: [] };
+          categoryMap.set(parent, category);
         }
-        child.count++;
+        if (!countedParents.has(parent)) {
+          category.count++;
+          countedParents.add(parent);
+        }
+        if (name) {
+          const child = category.children.find((item) => item.id === id);
+          if (child) child.count++;
+          else category.children.push({ id, name, count: 1 });
+        }
       }
     }
     // 空文件夹也属于分类，需要和已归档文献一起出现在侧栏。

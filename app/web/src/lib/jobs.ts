@@ -434,18 +434,22 @@ export class JobManager {
     }
   }
 
-  async _catalogDuplicate(digest: string): Promise<Record<string, unknown> | null> {
+  async _catalogByDigest(): Promise<Map<string, Record<string, unknown>>> {
+    const byDigest = new Map<string, Record<string, unknown>>();
     let data: { records?: Array<Record<string, unknown>> };
     try {
       const catalogFile = path.join(libraryPaths(this.root).catalog, '文献索引.json');
       data = JSON.parse((await readFile(catalogFile, 'utf8')).replace(/^\uFEFF/, '')) as typeof data;
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return byDigest;
       throw error;
     }
-    return (data.records ?? []).find((record) =>
-      record.sha256 && String(record.sha256).toLowerCase() === digest &&
-      record.file_exists !== false) ?? null;
+    for (const record of data.records ?? []) {
+      if (!record.sha256 || record.file_exists === false) continue;
+      const key = String(record.sha256).toLowerCase();
+      if (!byDigest.has(key)) byDigest.set(key, record);
+    }
+    return byDigest;
   }
 
   async listBatches(): Promise<BatchSummary[]> {
@@ -679,11 +683,12 @@ export class JobManager {
     const files: string[] = [];
     const skipped: SkippedImport[] = [];
     const seen = new Map<string, number>();
+    const catalog = await this._catalogByDigest();
     for (const [index, upload] of uploads.entries()) {
       const entry = await this._importEntry(upload);
       const file = await this._uploadedPdf(upload?.uploadPath);
       const digest = await fileDigest(file);
-      const archived = await this._catalogDuplicate(digest);
+      const archived = catalog.get(digest);
       if (archived) {
         skipped.push({
           index, title: entry.title, literature_id: String(archived.literature_id ?? ''),

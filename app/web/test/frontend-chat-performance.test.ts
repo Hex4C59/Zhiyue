@@ -2,6 +2,23 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { fixture, flush, click, until } from './helpers/frontendFixture.js';
 
+test('SSE 的历史预览只保留有限正文和状态，当前会话仍收到全文和推理', async (t) => {
+  const page = await fixture(t);
+  const { state, receive } = page.workspace;
+  state.chats = [{ id: 'preview-chat', title: '预览' }];
+  state.chat = { id: 'preview-chat', messages: [] };
+  const text = '正文'.repeat(1000);
+  const thinking = '推理'.repeat(1000);
+  receive({ type: 'message', chatId: 'preview-chat', message: {
+    id: 'answer', role: 'assistant', text, thinking, status: 'streaming',
+  } });
+  assert.equal(state.chat.messages[0].text, text);
+  assert.equal(state.chat.messages[0].thinking, thinking);
+  assert.equal(state.chats[0].messages[0].text, text.slice(0, 160));
+  assert.equal(state.chats[0].messages[0].status, 'streaming');
+  assert.equal(state.chats[0].messages[0].thinking, undefined);
+});
+
 test('收起结果与推理不挂载正文，展开后公式引用正确且SSE更新保持展开', async (t) => {
   const page = await fixture(t);
   page.workspace.state.chat = { id: 'render-chat', messages: [

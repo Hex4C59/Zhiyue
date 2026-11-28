@@ -50,6 +50,9 @@ function legacy(directory: string, chats: Chat[]): { file: string; source: Buffe
 function backupFiles(directory: string): string[] {
   return fs.readdirSync(path.join(directory, 'chat-store-backups')).filter((file) => file.endsWith('.json'));
 }
+function all(store: ChatStore): Chat[] {
+  return store.summaries().map(({ id }) => store.get(id)!);
+}
 function read(store: ChatStore, id: string): ChatRecord {
   return JSON.parse(fs.readFileSync(store.fileFor(id), 'utf8')) as ChatRecord;
 }
@@ -60,7 +63,7 @@ test('迁移保留原始字节备份、全部会话字段和相同时间的原�
   Object.assign(chats[0]!, { extraMetadata: { keep: ['未知扩展字段也保留', 123] } });
   const { file, source } = legacy(root, chats);
   const store = new ChatStore(root);
-  assert.deepEqual(store.data.chats, chats);
+  assert.deepEqual(all(store), chats);
   assert.equal(fs.existsSync(file), false);
   assert.equal(fs.existsSync(path.join(root, 'chat-store-migration.json')), false);
   assert.equal(fs.existsSync(path.join(root, 'chat-store-migrating')), false);
@@ -78,17 +81,17 @@ test('迁移保留原始字节备份、全部会话字段和相同时间的原�
     reads.push(String(args[0]));
     return readFile(...args);
   });
-  assert.deepEqual(new ChatStore(root).data.chats, chats);
+  assert.deepEqual(all(new ChatStore(root)), chats);
   assert.ok(reads.every((name) => path.dirname(name) === store.directory), '迁移完成后只读取正式记录');
 });
 
 test('新空库与旧空数组均可初始化，空数组迁移仍保留字节备份', (t) => {
   const fresh = new ChatStore(directory(t));
-  assert.deepEqual(fresh.data.chats, []);
+  assert.deepEqual(fresh.summaries(), []);
   assert.deepEqual(fs.readdirSync(fresh.directory), []);
   const root = directory(t);
   const { file } = legacy(root, []);
-  assert.deepEqual(new ChatStore(root).data.chats, []);
+  assert.deepEqual(new ChatStore(root).summaries(), []);
   assert.equal(fs.existsSync(file), false);
   assert.equal(backupFiles(root).length, 1);
 });
@@ -102,7 +105,7 @@ test('较早的会话可缺省后来新增的草稿与归类字段，迁移不�
   delete item.classifyRuns;
   delete item.classifyRevision;
   legacy(root, [item as Chat]);
-  assert.deepEqual(new ChatStore(root).data.chats, [item]);
+  assert.deepEqual(all(new ChatStore(root)), [item]);
 });
 
 test('只序列化和替换指定会话，其余大历史记录的字节及修改时间保持不变', (t) => {
@@ -111,9 +114,8 @@ test('只序列化和替换指定会话，其余大历史记录的字节及修�
   const first = chat('first');
   const other = chat('other');
   other.messages[0]!.text = '大段合成历史。'.repeat(10000);
-  store.data.chats.push(first, other);
-  store.save(first.id);
-  store.save(other.id);
+  store.create(first);
+  store.create(other);
   const before = fs.readFileSync(store.fileFor(other.id));
   const modified = fs.statSync(store.fileFor(other.id), { bigint: true }).mtimeNs;
   Object.defineProperty(other, 'toJSON', { value: () => { throw new Error('不应序列化其他会话'); } });
@@ -122,7 +124,7 @@ test('只序列化和替换指定会话，其余大历史记录的字节及修�
   assert.equal(read(store, first.id).chat.messages[0]!.text, '只更新第一篇会话');
   assert.deepEqual(fs.readFileSync(store.fileFor(other.id)), before);
   assert.equal(fs.statSync(store.fileFor(other.id), { bigint: true }).mtimeNs, modified);
-  assert.deepEqual(new ChatStore(root).data.chats.map(({ id }) => id), ['first', 'other']);
+  assert.deepEqual(new ChatStore(root).summaries().map(({ id }) => id), ['first', 'other']);
   assert.throws(() => store.save('missing'), /不存在的会话/);
 });
 
@@ -130,8 +132,7 @@ test('单篇写入或rename失败保持原记录并清理临时文件，后续�
   for (const operation of ['write', 'rename']) await t.test(operation, (t) => {
     const store = new ChatStore(directory(t));
     const item = chat('one');
-    store.data.chats.push(item);
-    store.save(item.id);
+    store.create(item);
     const before = fs.readFileSync(store.fileFor(item.id));
     const rename = fs.renameSync;
     const write = fs.writeFileSync;
@@ -150,7 +151,7 @@ test('单篇写入或rename失败保持原记录并清理临时文件，后续�
     assert.deepEqual(fs.readdirSync(store.directory), [recordName(item.id)]);
     intercept.mock.restore();
     store.save(item.id);
-    assert.equal(new ChatStore(path.dirname(store.directory)).data.chats[0]!.title, item.title);
+    assert.equal(new ChatStore(path.dirname(store.directory)).get(item.id)!.title, item.title);
   });
 });
 
@@ -185,11 +186,11 @@ test('迁移在暂存、标记、目录发布及清理阶段中断后均能按�
     if (phase !== 'remove-marker') assert.deepEqual(fs.readFileSync(file), source);
     assert.ok(backupFiles(root).length >= 1);
     const store = new ChatStore(root);
-    assert.deepEqual(store.data.chats, chats);
+    assert.deepEqual(all(store), chats);
     assert.equal(fs.existsSync(file), false);
     assert.equal(fs.existsSync(marker), false);
     assert.equal(fs.existsSync(staging), false);
-    assert.deepEqual(new ChatStore(root).data.chats, chats);
+    assert.deepEqual(all(new ChatStore(root)), chats);
   });
 });
 
@@ -253,9 +254,8 @@ test('正式记录版本、内容、编号或位置损坏时拒绝加载，不�
   for (const [label, mutate] of mutations) await t.test(label, (t) => {
     const root = directory(t);
     const store = new ChatStore(root);
-    store.data.chats.push(chat('one'), chat('two'));
-    store.save('one');
-    store.save('two');
+    store.create(chat('one'));
+    store.create(chat('two'));
     const record = read(store, 'two');
     mutate(record);
     const content = JSON.stringify(record);
@@ -278,13 +278,96 @@ test('孤立暂存目录和没有迁移标记的新旧并存状态明确报错�
   assert.deepEqual(fs.readFileSync(file), source);
 });
 
+test('列表预览有界且不加载正文，按最近访问淘汰，淘汰后能恢复完整记录', (t) => {
+  const root = directory(t);
+  const seed = new ChatStore(root);
+  for (let i = 0; i < 9; i++) {
+    const item = chat(String(i));
+    item.messages.at(-1)!.text = '长'.repeat(159) + '😀后半段'.repeat(1000);
+    item.messages.at(-1)!.thinking = '完整思考';
+    seed.create(item);
+  }
+  const store = new ChatStore(root);
+  const reads = t.mock.method(fs, 'readFileSync');
+  const summaries = store.summaries();
+  assert.equal(store.residentCount, 0);
+  assert.equal(reads.mock.callCount(), 0);
+  assert.equal(summaries[0]!.messages[0]!.text, '长'.repeat(159));
+  assert.equal('thinking' in summaries[0]!.messages[0]!, false);
+  assert.equal('noteDrafts' in summaries[0]!, false);
+  const first = store.get('0');
+  const second = store.get('1');
+  store.get('2'); store.get('3');
+  assert.equal(store.get('0'), first);
+  store.get('4');
+  assert.equal(store.residentCount, 4);
+  assert.equal(store.get('0'), first);
+  const reloaded = store.get('1');
+  assert.notEqual(reloaded, second);
+  assert.deepEqual(reloaded, second);
+  assert.equal(store.residentCount, 4);
+});
+
+test('多重持有与写入失败都能跨越淘汰压力，成功提交后才发布摘要并允许重载', (t) => {
+  const store = new ChatStore(directory(t), 1);
+  const first = chat('1');
+  store.create(first);
+  const pressure = () => { for (let i = 2; i < 5; i++) store.get(String(i)); };
+  const release = store.pin(first.id);
+  const otherRelease = store.pin(first.id);
+  for (let i = 2; i < 5; i++) store.create(chat(String(i)));
+  release();
+  pressure();
+  assert.equal(store.get(first.id), first);
+  const previous = store.summaries()[0]!.title;
+  first.title = '等待重试';
+  const rename = t.mock.method(fs, 'renameSync', () => { throw new Error('模拟磁盘已满'); });
+  assert.throws(() => store.save(first.id), /磁盘已满/);
+  otherRelease();
+  pressure();
+  assert.equal(store.get(first.id), first);
+  assert.equal(store.summaries()[0]!.title, previous);
+  rename.mock.restore();
+  store.save(first.id);
+  pressure();
+  assert.equal(store.residentCount, 1);
+  assert.notEqual(store.get(first.id), first);
+  assert.equal(store.get(first.id)?.title, first.title);
+});
+
+test('合成百篇会话测量启动、列表与轮流打开后的常驻堆', { skip: !global.gc }, (t) => {
+  const root = directory(t);
+  const records = path.join(root, 'chats');
+  fs.mkdirSync(records);
+  const count = 100;
+  function seed(): void {
+    for (let i = 0; i < count; i++) {
+      const id = `synthetic-chat-step-five-${i}`;
+      const item = chat(id);
+      item.messages = [{ ...item.messages[0]!, text: '合成大段历史。'.repeat(5000), thinking: '合成思考。'.repeat(5000) }];
+      fs.writeFileSync(path.join(records, recordName(id)), JSON.stringify({ version: 1, position: i, chat: item }));
+    }
+  }
+  const heap = () => { global.gc!(); global.gc!(); return process.memoryUsage().heapUsed; };
+  seed();
+  const base = heap();
+  const store = new ChatStore(root);
+  const startup = heap() - base;
+  assert.equal(store.summaries().length, count);
+  assert.equal(store.residentCount, 0);
+  const list = heap() - base;
+  for (let i = 0; i < count; i++) store.get(`synthetic-chat-step-five-${i}`);
+  const opened = heap() - base;
+  assert.equal(store.residentCount, 4);
+  t.diagnostic(`合成会话 ${count} 篇，强制 GC 后堆增量（字节）：启动 ${startup}，列表 ${list}，轮流打开 ${opened}`);
+});
+
 test('重启丢弃未发布的单篇临时文件，继续读取已原子提交的完整记录', (t) => {
   const root = directory(t);
   const store = new ChatStore(root);
-  store.data.chats.push(chat('one'));
-  store.save('one');
+  store.create(chat('one'));
   const temp = `${store.fileFor('one')}.00000000-0000-0000-0000-000000000000.writing`;
   fs.writeFileSync(temp, '{unfinished');
-  assert.deepEqual(new ChatStore(root).data.chats, store.data.chats);
+  assert.deepEqual(all(new ChatStore(root)), all(store));
   assert.equal(fs.existsSync(temp), false);
 });

@@ -38,6 +38,10 @@ export const statusLabels: Record<string, string> = {
 export const activeJob = (job: Pick<JobRecord, 'status'>): boolean =>
   ['queued', 'pending', 'running', 'in_progress'].includes(job.status);
 
+export function inPrimaryFolder(paper: Paper, category: string, subcategory: string): boolean {
+  return (!category || (paper.category || '未分类') === category) && (!subcategory || paper.subcategory === subcategory);
+}
+
 export interface CreateWorkspaceOptions {
   api?: ApiFn;
   EventSourceImpl?: typeof EventSource;
@@ -105,7 +109,7 @@ export function createWorkspace({
     pdfTranslation: '',
     pdfTranslationEvent: null,
     translationModel: storedTranslationModel(),
-    translationSnapshot: { engineAvailable: false, model: null, batches: [], jobs: [] },
+    translationSnapshot: { revision: 0, engineAvailable: false, model: null, batches: [], jobs: [] },
     translationReady: false,
     translationLoading: false,
     translationOpen: false,
@@ -164,13 +168,15 @@ export function createWorkspace({
   });
   const filteredPapers = computed(() => {
     const query = state.query.trim().toLocaleLowerCase();
+    const { category, subcategory } = state;
+    const folder = subcategory ? `${category}/${subcategory}` : category;
     return sortedPapers.value.filter((paper) =>
       (!query || searchText(paper).includes(query)) &&
       (!state.year || String(paper.year) === state.year) &&
       (!state.read || readKey(paper.readStatus) === state.read) &&
       (!state.starred || paper.starred) &&
-      (!state.category || (paper.category || '未分类') === state.category) &&
-      (!state.subcategory || paper.subcategory === state.subcategory));
+      (inPrimaryFolder(paper, category, subcategory) || paper.relatedFolders?.some((id) =>
+        id === folder || (!subcategory && id.startsWith(`${folder}/`)))));
   });
   const agent = computed<PiAgentStatus>(() => state.status.agents?.pi || {});
   const models = computed<ModelOption[]>(() =>
@@ -270,6 +276,7 @@ export function createWorkspace({
     loadDownloads: library.loadDownloads,
     loadCommands: chat.loadCommands,
     loadUiState: library.loadUiState,
+    pollTranslations: translations.pollTranslations,
     loadTranslations: translations.loadTranslations,
     receiveTranslation: translations.receiveTranslation,
     openChat: chat.openChat,

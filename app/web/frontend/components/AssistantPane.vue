@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, inject, nextTick, onBeforeUnmount, ref, watch } from 'vue';
-import { titleOf } from '../lib/content';
+import QuestionPapers from './QuestionPapers.vue';
 import Icon from './Icon.vue';
 import PanelHandle from './PanelHandle.vue';
 import Composer from './Composer.vue';
@@ -11,7 +11,6 @@ import FolderActionCard from './FolderActionCard.vue';
 import ClassifyProposalCard from './ClassifyProposalCard.vue';
 import AgentSettingsDialog from './AgentSettingsDialog.vue';
 import PaperActions from './PaperActions.vue';
-import type { PaperLike } from '../lib/content';
 import type { Chat, ChatHistoryState } from '../lib/types';
 import type { WorkspaceApi } from '../lib/workspace';
 
@@ -63,8 +62,6 @@ const promptTemplates: Array<[string, string, string]> = [
   ['link', '比较论文', '请比较选中论文的研究任务、数据、评价条件和局限；不可比的指标请明确指出。'],
   ['download', '查找与下载', '请帮我检索并下载相关论文，先核对来源与版本，按项目约定归档并更新索引。'],
 ];
-const paperTitle = (id: string): string =>
-  titleOf((workspace.paperById.value.get(id) || { literature_id: id }) as PaperLike);
 let scrollFrame: number | null = null;
 let following = true;
 let forceScroll = false;
@@ -222,30 +219,6 @@ function historyDate(chat: Chat): string {
         <button id="retry-status" @click="workspace.reconnectAgent">重新检测</button>
       </span>
     </div>
-    <div v-if="state.context.size" class="chat-context">
-      <div id="context-papers">
-        <button
-          v-for="id in state.context"
-          :key="id"
-          class="context-chip"
-          :data-context-remove="id"
-          :title="paperTitle(id)"
-          :aria-label="`移除 ${id}`"
-          @click="state.context.delete(id)"
-        >
-          {{ id }}<Icon name="close" />
-        </button>
-      </div>
-      <button
-        id="clear-context"
-        class="icon-button"
-        title="清空论文上下文"
-        aria-label="清空论文上下文"
-        @click="state.context.clear()"
-      >
-        <Icon name="close" />
-      </button>
-    </div>
     <PaperActions v-if="!isArchived" />
     <div id="messages" ref="messages" class="messages" role="log" aria-label="对话消息" aria-live="off"
       @scroll.passive="messageScroll">
@@ -292,7 +265,7 @@ function historyDate(chat: Chat): string {
         @click="workspace.changeChatHistory(state.chat.id, 'active')"
       ><Icon name="restore" />恢复会话</button>
     </div>
-    <Composer v-else />
+    <template v-else><QuestionPapers /><Composer /></template>
     <AgentSettingsDialog v-if="state.agentSettingsOpen" @close="state.agentSettingsOpen = false" />
   </aside>
 </template>

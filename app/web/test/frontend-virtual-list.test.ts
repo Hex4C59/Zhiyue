@@ -60,7 +60,7 @@ test('864 篇长标题只挂载窗口，键盘首尾可达、阅读选择与离�
   assert.ok(retained.some((row) => row.dataset.virtualKey === 'L0001'));
   assert.ok(visible.length < 80);
   assert.equal(page.workspace.state.current, 'L0001');
-  assert.ok(page.workspace.state.context.has('L0001'));
+  assert.equal(page.workspace.state.context.size, 0);
 
   key(first, 'End');
   await frames(5);
@@ -153,7 +153,8 @@ test('搜索、排序和分类筛选回到结果开头，空状态与连接失�
   page.workspace.state.libraryError = '';
   page.workspace.resetFilters();
   await frames(3);
-  assert.equal(page.$('#result-count').textContent, '864 篇文献');
+  assert.equal(page.workspace.state.category, '02_模型');
+  assert.equal(page.$('#result-count').textContent, '432 篇文献');
 });
 
 test('共享索引与排序缓存按元数据失效，搜索缓存不随关键词和阅读筛选重复拼接', async (t) => {

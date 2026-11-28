@@ -236,6 +236,10 @@ async function handleLibraryAndJobRoutes(
   req: IncomingMessage, res: ServerResponse, url: URL, method: string, route: string, ctx: RouteContext,
 ): Promise<boolean> {
   const { root, python, library, jobs, translations, uploads, emit } = ctx;
+  if (method === 'GET' && route === '/api/translations/status') {
+    json(res, translations.environment());
+    return true;
+  }
   if (method === 'GET' && route === '/api/translations') {
     json(res, translations.snapshot());
     return true;

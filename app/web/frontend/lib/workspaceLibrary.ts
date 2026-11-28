@@ -1,3 +1,4 @@
+import { nextTick } from 'vue';
 import { endpoint, json, readKey } from './content';
 import type { Category, JobRecord, Paper, UiState, WorkspaceState } from './types';
 
@@ -49,6 +50,11 @@ export function createWorkspaceLibraryActions({ state, api, toast, setPanel }: L
   }
 
   function selectPaper(id: string): void {
+    if (state.current === id) {
+      setPanel('reader');
+      void nextTick(() => document.getElementById('reader-content')?.focus({ preventScroll: true }));
+      return;
+    }
     state.current = id;
     // 重启后恢复到上次阅读的那篇：助手靠 state.current 判断“当前打开”的是哪一篇。
     saveUiState({ paperId: id });
@@ -59,13 +65,11 @@ export function createWorkspaceLibraryActions({ state, api, toast, setPanel }: L
     state.pdfZoom = 100;
     state.pdfBrowser = false;
     state.pdfTranslation = '';
-    if (state.context.size < 6 || state.context.has(id)) state.context.add(id);
-    else toast('最多附带 6 篇论文；请先移除不需要的上下文。', true);
-    if (window.matchMedia('(max-width:680px)').matches) setPanel('reader');
+    if (window.matchMedia('(max-width:1050px)').matches) setPanel('reader');
   }
 
   function resetFilters(): void {
-    Object.assign(state, { query: '', year: '', read: '', starred: false, category: '', subcategory: '' });
+    Object.assign(state, { query: '', year: '', read: '', starred: false });
   }
 
   async function loadLibrary(): Promise<void> {

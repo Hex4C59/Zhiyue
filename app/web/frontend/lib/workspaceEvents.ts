@@ -1,5 +1,5 @@
 import type { ComputedRef } from 'vue';
-import type { PdfTranslationEvent } from '../../shared/pdfTranslation.js';
+import { chatMessagePreview } from '../../shared/chatPreview';
 import { endpoint } from './content';
 import type {
   Chat, ChatFolderAction, ChatHistoryState, ChatMessage, JobRecord, StatusInfo, WorkspaceEvent, WorkspaceState,
@@ -23,7 +23,8 @@ export interface EventsDeps {
   loadDownloads: () => Promise<void>;
   loadCommands: () => Promise<void>;
   loadUiState: () => Promise<void>;
-  loadTranslations: () => Promise<void>;
+  loadTranslations: (reconnect?: boolean) => Promise<void>;
+  pollTranslations: () => Promise<void>;
   receiveTranslation: (data: WorkspaceEvent) => boolean;
   openChat: (id: string) => Promise<void>;
   syncChat: (id: string) => Promise<void>;
@@ -37,7 +38,7 @@ export interface EventsDeps {
 export function createWorkspaceEvents({
   state, api, EventSourceImpl, pollInterval, busy, statusLabels, activeJob, isStopped, markStopped,
   toast, loadLibrary, loadStatus, loadChats, loadDownloads, loadCommands, loadUiState, openChat, syncChat,
-  selectPaper, applyChatHistory, clearToasts, loadTranslations, receiveTranslation,
+  selectPaper, applyChatHistory, clearToasts, loadTranslations, pollTranslations, receiveTranslation,
   receiveClassification, needsClassifySync,
 }: EventsDeps) {
   let source: EventSource | undefined;
@@ -62,11 +63,6 @@ export function createWorkspaceEvents({
 
   function receive(data: WorkspaceEvent): void {
     if (isStopped()) return;
-    if (data.type === 'pdfTranslation' && (data.job as PdfTranslationEvent['job'] | undefined)?.paperId) {
-      state.pdfTranslationEvent = data as unknown as PdfTranslationEvent;
-      receiveTranslation(data);
-      return;
-    }
     if (receiveTranslation(data) || receiveClassification(data)) return;
     const chat = state.chat;
     const history = data.historyState;
@@ -111,7 +107,7 @@ export function createWorkspaceEvents({
     if (data.type === 'message' && (data.message as ChatMessage | undefined)?.id) {
       const message = data.message as ChatMessage;
       const summary = state.chats.find((item) => item.id === data.chatId);
-      if (summary && summary !== chat) summary.messages = [message];
+      if (summary && summary !== chat) summary.messages = [chatMessagePreview(message)];
       if (data.chatId === chat?.id) upsertMessage(message);
     }
     if (data.type === 'delta' && data.chatId === chat?.id) {
@@ -170,7 +166,7 @@ export function createWorkspaceEvents({
     if (document.hidden || polling || isStopped()) return;
     polling = true;
     try {
-      const work: Array<Promise<unknown>> = [loadStatus(), loadTranslations()];
+      const work: Array<Promise<unknown>> = [loadStatus(), pollTranslations()];
       const chat = state.chat;
       if (chat && (!state.eventsOpen || busy.value || needsClassifySync(chat.id))) work.push(syncChat(chat.id));
       if (state.historyOpen) work.push(loadChats());
@@ -201,7 +197,7 @@ export function createWorkspaceEvents({
       source.onopen = () => {
         state.eventsOpen = true;
         loadStatus();
-        void loadTranslations();
+        void loadTranslations(connectedBefore);
         if (connectedBefore) void loadChats();
         connectedBefore = true;
         if (state.chat) syncChat(state.chat.id).catch(() => {});

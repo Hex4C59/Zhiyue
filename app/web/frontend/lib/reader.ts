@@ -12,16 +12,18 @@ export interface ReaderOptions {
   toast: (message: string, error?: boolean) => void;
   patchPaper: (id: string, update: Record<string, unknown>) => Promise<boolean>;
   deleteNote: (relativePath: string) => Promise<boolean>;
+  selectPaper: (id: string) => void;
   scope: HTMLElement;
 }
 
 export interface ReaderController {
   render: () => void;
+  updateTranslation: () => void;
   dispose: () => void;
 }
 
 export function createReader({
-  state, api, toast, patchPaper, deleteNote, scope,
+  state, api, toast, patchPaper, deleteNote, selectPaper, scope,
 }: ReaderOptions): ReaderController {
   const $ = (selector: string): HTMLElement => scope.querySelector(selector) as HTMLElement;
   const $$ = (selector: string): HTMLElement[] => [...scope.querySelectorAll<HTMLElement>(selector)];
@@ -554,15 +556,17 @@ export function createReader({
       if (!name || name.includes('/')) return raw;
       return `${assetBase}${encodeURIComponent(name)}`;
     };
+    // 对照模式可单独刷新译文，原文会话的 epoch 此时保持不变。
+    const current = () => epoch === state.noteEpoch && state.pdfTranslation === key && scope.contains(target);
     api<{ text?: string }>(
       `/api/papers/${endpoint(paper.literature_id)}/translation/markdown?key=${encodeURIComponent(key)}`,
     )
       .then((data) => {
-        if (epoch !== state.noteEpoch) return;
+        if (!current()) return;
         target.innerHTML = `<article class="translation-document markdown">${markdown(data.text, '', resolveAsset)}</article>`;
       })
       .catch((error: Error) => {
-        if (epoch === state.noteEpoch) {
+        if (current()) {
           target.innerHTML = `<div class="empty"><p class="error-text">${esc(error.message)}</p><button id="retry-translation" class="button subtle">重试</button></div>`;
         }
       });
@@ -573,19 +577,17 @@ export function createReader({
     const epoch = ++state.noteEpoch;
     if (!paper) {
       releasePreview();
-      $('#reader-header').innerHTML = [
-        `<div class="reader-empty-header"><span class="reader-header-mark">${icon('book')}</span>`,
-        '<span>阅读空间</span></div><span class="reader-header-badge">原文 · 精读 · 笔记</span>',
-      ].join('');
+      const last = state.papers.find((item) => item.literature_id === state.ui.paperId);
+      $('#reader-header').innerHTML = `<div class="reader-empty-header">${icon('book')}阅读空间</div>`;
       $('#reader-toolbar').hidden = true;
       $('#reader-content').innerHTML = [
         '<div class="empty reader-empty"><div class="reader-empty-card">',
         `<div class="reader-empty-art"><span>${icon('book')}</span></div>`,
         '<h2>选择一篇文献，开始阅读</h2>',
-        '<p>原文、中文精读、笔记与 AI 助手，在这里汇成你的研究思路。</p>',
-        '<div class="reader-empty-tags"><span>原文 PDF</span><span>中文精读</span><span>阅读笔记</span></div>',
+        last ? `<button class="button subtle" id="resume-reading">继续阅读《${esc(titleOf(last))}》</button>` : '',
         '</div></div>',
       ].join('');
+      if (last) $('#resume-reading')?.addEventListener('click', () => selectPaper(last.literature_id), { once: true });
       return;
     }
     releasePreview();
@@ -834,6 +836,16 @@ export function createReader({
   );
   return {
     render: renderReader,
+    updateTranslation: () => {
+      for (const button of scope.querySelectorAll<HTMLButtonElement>(
+        '[data-reader-mode="translation"], [data-reader-mode="split"]',
+      )) button.disabled = !state.pdfTranslation;
+      const paper = currentPaper();
+      if (paper && (state.readerMode === 'translation' || state.readerMode === 'split')) {
+        const target = $(state.readerMode === 'split' ? '#reader-split-translation' : '#reader-content');
+        if (target) loadTranslationMarkdown(paper, state.pdfTranslation, target, state.noteEpoch);
+      }
+    },
     dispose: () => {
       ++state.noteEpoch;
       view.clearTimeout(highlightTimer);

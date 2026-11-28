@@ -24,6 +24,7 @@ export interface Paper extends Record<string, unknown> {
   file?: string;
   category?: string;
   subcategory?: string;
+  relatedFolders?: string[];
   notes?: NoteRef[];
   readStatus?: ReadStatus;
   starred?: boolean;

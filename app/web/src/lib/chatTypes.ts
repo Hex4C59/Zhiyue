@@ -80,6 +80,8 @@ export interface ChatStatusResult extends ChatStatusSnapshot {
 }
 
 export interface ThreadResult {
+  /** 进程内客户端从载入到提交回合的持有凭据，准备失败或取消时同样必须释放。 */
+  release?: () => void;
   thread: { id: string };
 }
 

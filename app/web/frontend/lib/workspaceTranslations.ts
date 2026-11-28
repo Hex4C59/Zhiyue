@@ -1,8 +1,9 @@
 import { computed, shallowReactive } from 'vue';
 import {
-  activeTranslationJob, PDF_TRANSLATION_MAX_BATCH, translationCounts,
+  activeTranslationJob, PDF_TRANSLATION_MAX_BATCH, translationBatchStatus, translationCounts,
   type PdfTranslationBatch, type PdfTranslationBatchRequest, type PdfTranslationBatchSubmission,
-  type PdfTranslationCounts, type PdfTranslationJob, type PdfTranslationSnapshot,
+  type PdfTranslationCounts, type PdfTranslationEnvironment, type PdfTranslationJob, type PdfTranslationServiceEvent,
+  type PdfTranslationSnapshot,
 } from '../../shared/pdfTranslation';
 import type { ApiFn } from './workspaceLibrary';
 import { json } from './content';
@@ -32,9 +33,12 @@ interface TranslationDeps {
 export function createWorkspaceTranslationActions({
   state, api, paperById, models, isStopped, toast,
 }: TranslationDeps) {
-  let requestVersion = 0;
-  let eventVersion = 0;
-  const jobVersions = new Map<string, number>();
+  let loading: Promise<void> | undefined;
+  let observedRevision = 0;
+  let reconnectDuringLoad = false;
+  const batchesById = new Map<string, PdfTranslationBatch>();
+  const queuedIds = shallowReactive(new Set<string>());
+  const queuePositions = computed(() => new Map([...queuedIds].map((id, index) => [id, index + 1])));
   let pending: { request: PdfTranslationBatchRequest; signature: string } | null = null;
 
   const translationModelOption = computed(() => models().find(({ id }) => id === state.translationModel) ||
@@ -81,10 +85,14 @@ export function createWorkspaceTranslationActions({
   /** 快照加载时重建位置索引；保留未变任务的对象及 Map 项，增量事件只触发所属批次。 */
   function rebuildJobIndex(): void {
     jobPositions.clear();
+    queuedIds.clear();
+    batchesById.clear();
+    for (const batch of state.translationSnapshot.batches) batchesById.set(batch.id, batch);
     const present = new Set<string>();
     const groups = new Map<string, PdfTranslationCounts>();
     state.translationSnapshot.jobs.forEach((job, index) => {
       present.add(job.id);
+      if (job.status === 'queued') queuedIds.add(job.id);
       jobPositions.set(job.id, index);
       if (jobsById.get(job.id) !== job) jobsById.set(job.id, job);
       if (!job.batchId) singlesById.set(job.id, job);
@@ -94,7 +102,7 @@ export function createWorkspaceTranslationActions({
       groups.set(job.batchId ?? '', group);
     });
     for (const id of jobsById.keys()) {
-      if (!present.has(id)) { jobsById.delete(id); singlesById.delete(id); jobVersions.delete(id); }
+      if (!present.has(id)) { jobsById.delete(id); singlesById.delete(id); }
     }
     // Map 更新已有值不会改变插入顺序；完整快照重排时同步单篇列表的实际顺序。
     const singles = state.translationSnapshot.jobs.filter((job) => !job.batchId);
@@ -123,6 +131,8 @@ export function createWorkspaceTranslationActions({
     } else jobs[index] = { ...job };
     const next = jobs[index]!;
     jobsById.set(job.id, next);
+    if (next.status === 'queued') queuedIds.add(job.id);
+    else queuedIds.delete(job.id);
     if (next.batchId) singlesById.delete(job.id);
     else singlesById.set(job.id, next);
     if (previous?.batchId === next.batchId && previous?.status === next.status) return;
@@ -142,55 +152,95 @@ export function createWorkspaceTranslationActions({
     return batch.jobIds.map((id) => translationJobs.value.get(id)).filter((job): job is PdfTranslationJob => !!job);
   }
 
-  function applySnapshot(snapshot: PdfTranslationSnapshot, started: number): void {
-    const jobs = new Map(snapshot.jobs.map((job) => [job.id,
-      sameJob(jobsById.get(job.id), job) ? jobsById.get(job.id)! : job]));
-    // 请求开始后收到的逐篇事件优先；仍采用快照中的批次元数据，避免丢失刚受理的批次。
-    for (const previous of state.translationSnapshot.jobs) {
-      if ((jobVersions.get(previous.id) ?? 0) > started) jobs.set(previous.id, previous);
-    }
-    state.translationSnapshot = { ...snapshot, jobs: [...jobs.values()] };
-    rebuildJobIndex();
-    state.translationReady = true;
-    state.translationLoading = false;
-    state.translationLoadError = '';
-    if (pending) {
-      const recovered = snapshot.batches.find(({ requestId }) => requestId === pending!.request.requestId);
-      if (recovered) {
-        state.translationBatchId = recovered.id;
-        state.translationMode = 'tasks';
-        state.translationError = '';
-        pending = null;
-      }
-    }
+  function recoverPending(batch: PdfTranslationBatch): void {
+    if (batch.requestId !== pending?.request.requestId) return;
+    state.translationBatchId = batch.id;
+    state.translationMode = 'tasks';
+    state.translationError = '';
+    pending = null;
   }
 
-  async function loadTranslations(): Promise<void> {
-    const version = ++requestVersion;
-    const started = eventVersion;
-    state.translationLoading = true;
-    try {
-      const snapshot = await api<PdfTranslationSnapshot>('/api/translations');
-      if (!isStopped() && version === requestVersion) applySnapshot(snapshot, started);
-    } catch (error) {
-      if (!isStopped() && version === requestVersion) {
-        state.translationLoadError = (error as Error).message || '无法读取翻译任务。';
-      }
-    } finally {
-      if (!isStopped() && version === requestVersion) state.translationLoading = false;
+  function applySnapshot(snapshot: PdfTranslationSnapshot): void {
+    if (isStopped() || (state.translationReady && snapshot.revision < state.translationSnapshot.revision)) return;
+    state.translationSnapshot = { ...snapshot, jobs: snapshot.jobs.map((job) =>
+      sameJob(jobsById.get(job.id), job) ? jobsById.get(job.id)! : job) };
+    rebuildJobIndex();
+    state.translationReady = true;
+    state.translationLoadError = '';
+    if (pending) for (const batch of snapshot.batches) recoverPending(batch);
+  }
+
+  function loadTranslations(reconnect = false): Promise<void> {
+    if (loading) {
+      if (reconnect) reconnectDuringLoad = true;
+      return loading;
     }
+    state.translationLoading = true;
+    loading = (async () => {
+      do {
+        reconnectDuringLoad = false;
+        const expected = observedRevision;
+        const snapshot = await api<PdfTranslationSnapshot>('/api/translations');
+        applySnapshot(snapshot);
+        if (expected > state.translationSnapshot.revision) {
+          throw new Error('队列快照尚未覆盖已收到的事件，请稍后刷新。');
+        }
+        // 请求在途时收到缺口后的事件，只记最高修订，再补覆盖缺口的基线。
+      } while (!isStopped() && (reconnectDuringLoad || observedRevision > state.translationSnapshot.revision));
+    })().catch((error: Error) => {
+      if (!isStopped()) state.translationLoadError = error.message || '无法读取翻译任务。';
+    }).finally(() => {
+      loading = undefined;
+      if (!isStopped()) state.translationLoading = false;
+    });
+    return loading;
+  }
+
+  async function pollTranslations(): Promise<void> {
+    if (!state.eventsOpen || !state.translationReady) return loadTranslations();
+    const environment = await api<PdfTranslationEnvironment>('/api/translations/status');
+    if (isStopped()) return;
+    state.translationSnapshot.engineAvailable = environment.engineAvailable;
+    state.translationSnapshot.model = environment.model;
+    if (environment.revision > state.translationSnapshot.revision) await loadTranslations();
   }
 
   function receiveTranslation(data: WorkspaceEvent): boolean {
-    if (data.type === 'pdfTranslationQueue') {
+    if (data.type !== 'pdfTranslation' && data.type !== 'pdfTranslationQueue') return false;
+    const event = data as unknown as PdfTranslationServiceEvent;
+    if (!Number.isSafeInteger(event.revision)) { void loadTranslations(); return true; }
+    observedRevision = Math.max(observedRevision, event.revision);
+    const snapshot = state.translationSnapshot;
+    if (state.translationReady && event.revision <= snapshot.revision) return true;
+    if (!state.translationReady || event.revision !== snapshot.revision + 1) {
       void loadTranslations();
       return true;
     }
-    if (data.type !== 'pdfTranslation') return false;
-    const job = data.job as PdfTranslationJob | undefined;
-    if (!job?.id || !job.paperId) return false;
-    jobVersions.set(job.id, ++eventVersion);
-    upsertJob(job);
+    if (event.type === 'pdfTranslation') {
+      const { job } = event;
+      upsertJob(job);
+      const batch = job.batchId && batchesById.get(job.batchId);
+      if (batch) {
+        const counts = groupCounts.get(batch.id)!;
+        batch.status = translationBatchStatus(counts, batch.status === 'cancelling' || batch.status === 'cancelled');
+        batch.counts = counts;
+      }
+      state.pdfTranslationEvent = event;
+    } else if ('batch' in event) {
+      snapshot.batches.unshift(event.batch);
+      batchesById.set(event.batch.id, snapshot.batches[0]!);
+      for (const job of event.jobs) {
+        upsertJob(job);
+        if (job.paperId === state.current && job.status === 'queued') {
+          state.pdfTranslationEvent = { type: 'pdfTranslation', revision: event.revision, job };
+        }
+      }
+      recoverPending(event.batch);
+    } else {
+      const batch = batchesById.get(event.cancelledBatchId);
+      if (batch) batch.status = translationBatchStatus(batch.counts, true);
+    }
+    snapshot.revision = event.revision;
     return true;
   }
 
@@ -245,20 +295,10 @@ export function createWorkspaceTranslationActions({
     else pending = { signature, request };
     state.translationSubmitting = true;
     state.translationError = '';
-    const started = eventVersion;
-    const version = ++requestVersion;
     try {
       const result = await api<PdfTranslationBatchSubmission>('/api/translations/batches', json('POST', request));
       if (isStopped()) return;
-      if (version === requestVersion) applySnapshot(result.snapshot, started);
-      else await loadTranslations();
-      // 即使补查暂时失败，也保留已确认受理的新批次；已有事件状态不被旧提交响应覆盖。
-      if (!state.translationSnapshot.batches.some(({ id }) => id === result.batch.id)) {
-        state.translationSnapshot.batches.unshift(result.batch);
-        for (const job of result.snapshot.jobs.filter(({ batchId }) => batchId === result.batch.id)) {
-          if (!jobsById.has(job.id)) upsertJob(job);
-        }
-      }
+      applySnapshot(result.snapshot);
       state.translationBatchId = result.batch.id;
       state.translationMode = 'tasks';
       pending = null;
@@ -289,16 +329,11 @@ export function createWorkspaceTranslationActions({
     if (state.translationCancelling.has(id)) return;
     state.translationCancelling.add(id);
     state.translationError = '';
-    const started = eventVersion;
-    const version = ++requestVersion;
     try {
       const snapshot = await api<PdfTranslationSnapshot>(
         `/api/translations/batches/${encodeURIComponent(id)}/cancel`, json('POST', {}),
       );
-      if (!isStopped()) {
-        if (version === requestVersion) applySnapshot(snapshot, started);
-        else await loadTranslations();
-      }
+      applySnapshot(snapshot);
     } catch (error) {
       if (!isStopped()) state.translationError = (error as Error).message;
       await loadTranslations();
@@ -321,7 +356,8 @@ export function createWorkspaceTranslationActions({
 
   return {
     translationModelOption, translationJobs, translationSingles, translationActivity, batchJobs,
-    loadTranslations, receiveTranslation, setTranslationModel, selectAllTranslations, toggleTranslation,
+    queuePositions, pollTranslations, loadTranslations, receiveTranslation, setTranslationModel,
+    selectAllTranslations, toggleTranslation,
     openBatchTranslation, openTranslationTasks, submitTranslations, cancelTranslationBatch, retryTranslationBatch,
   };
 }

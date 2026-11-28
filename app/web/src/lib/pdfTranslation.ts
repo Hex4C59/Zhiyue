@@ -263,11 +263,14 @@ export class PdfTranslationService {
     return target;
   }
 
-  snapshot(): PdfTranslationSnapshot {
+  environment(): Omit<PdfTranslationSnapshot, 'jobs' | 'batches'> {
     return {
-      engineAvailable: existsSync(this.mineru), model: this.options.getModel()?.id ?? null,
-      ...this.queue.snapshot(),
+      revision: this.queue.revision, engineAvailable: existsSync(this.mineru), model: this.options.getModel()?.id ?? null,
     };
+  }
+
+  snapshot(): PdfTranslationSnapshot {
+    return { ...this.environment(), ...this.queue.snapshot() };
   }
 
   private requireModel(approvedModel: unknown): TranslationModel {

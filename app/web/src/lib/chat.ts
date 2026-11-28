@@ -1,6 +1,7 @@
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { redact } from './store.js';
+import type { ChatSummary } from './chatStore.js';
 import { ChatStore } from './chatStore.js';
 import { statusError } from './errors.js';
 import { buildCommands, findCommand, parseCommand, runCommand } from './commands.js';
@@ -32,6 +33,8 @@ export type {
 };
 
 interface ActiveTurn {
+  release: () => void;
+  threadId?: string;
   message: ChatMessage;
   turnId: string | null;
   items: Map<string, boolean>;
@@ -85,7 +88,7 @@ export class ChatService {
   private readonly runningCommands = new Set<string>();
   readonly resolvingFolders = new Set<string>();
   readonly resolvingClassifications = new Set<string>();
-  loaded: Set<string>;
+  private readonly activeByThread = new Map<string, string>();
   active: Map<string, ActiveTurn>;
   approvals: Map<string, ApprovalRecord>;
   account: { type?: string; email?: string; planType?: string } | null;
@@ -111,13 +114,13 @@ export class ChatService {
     this.compactSession = compact;
     this.store = new ChatStore(stateDir);
     this.client = client;
-    this.loaded = new Set();
     this.active = new Map();
     this.approvals = new Map();
     this.account = null;
     this.models = [];
     this.authenticated = false;
-    for (const chat of this.store.data.chats) {
+    for (const id of this.store.candidates('streaming')) {
+      const chat = this.store.get(id)!;
       let interrupted = false;
       for (const message of chat.messages) {
         if (message.status === 'streaming') {
@@ -133,7 +136,6 @@ export class ChatService {
       this.serverRequest(message).catch((error: Error) => this.client.respondError(message.id, redact(error.message)));
     });
     this.client.on('disconnected', (error: string) => {
-      this.loaded.clear();
       for (const [id] of this.active) this.finish(id, 'failed', error);
       for (const id of this.approvals.keys()) this.emit({ type: 'approvalResolved', id });
       this.approvals.clear();
@@ -188,18 +190,19 @@ export class ChatService {
     return this.connecting;
   }
 
-  list(): Array<Omit<Chat, 'noteDrafts' | 'folderActions' | 'classifyProposals' | 'classifyRuns'> & {
-    messages: ChatMessage[]; classifyRunning: boolean;
-  }> {
-    return this.store.data.chats.map(({ noteDrafts, folderActions, classifyProposals, classifyRuns, ...chat }) => ({
-      ...chat,
-      classifyRunning: classificationBusy(this.classificationHost(), { ...chat, classifyRuns }),
-      messages: chat.historyState === 'trashed' ? [] : chat.messages.slice(-1),
-    })).reverse();
+  list(): ChatSummary[] {
+    return this.store.summaries().reverse().map((summary) => ({ ...summary,
+      classifyRunning: summary.classifyRunning || this.resolvingClassifications.has(summary.id),
+    }));
+  }
+
+  private activeChat(threadId: unknown): Chat | undefined {
+    const id = typeof threadId === 'string' ? this.activeByThread.get(threadId) : undefined;
+    return id ? this.store.get(id) : undefined;
   }
 
   get(id: string): Chat {
-    const chat = this.store.data.chats.find((item) => item.id === id);
+    const chat = this.store.get(id);
     if (!chat || chat.historyState === 'trashed') throw statusError('会话不存在。', 404);
     if (!chat.noteDrafts) chat.noteDrafts = [];
     if (!chat.folderActions) chat.folderActions = [];
@@ -210,7 +213,7 @@ export class ChatService {
   }
 
   private assertIdle(id: string): void {
-    const chat = this.store.data.chats.find((item) => item.id === id);
+    const chat = this.store.get(id);
     if (chat && classificationBusy(this.classificationHost(), chat)) {
       throw statusError('归类移动正在处理，请稍候。', 409);
     }
@@ -231,7 +234,7 @@ export class ChatService {
   }
 
   changeHistory(id: string, historyState: ChatHistoryState): { id: string; historyState: ChatHistoryState } {
-    const chat = this.store.data.chats.find((item) => item.id === id);
+    const chat = this.store.get(id);
     if (!chat) throw statusError('会话不存在。', 404);
     this.assertIdle(id);
     if (this.resolvingFolders.has(id)) throw statusError('文件夹删除正在处理，请稍候。', 409);
@@ -260,12 +263,7 @@ export class ChatService {
       classifyProposals: [], classifyRuns: [], classifyRevision: 0,
       createdAt: new Date().toISOString(), threadId: null,
     };
-    this.store.data.chats.push(chat);
-    try { this.store.save(chat.id); }
-    catch (error) {
-      this.store.data.chats.splice(this.store.data.chats.indexOf(chat), 1);
-      throw error;
-    }
+    this.store.create(chat);
     return chat;
   }
 
@@ -284,6 +282,11 @@ export class ChatService {
    * 本地命令直接生成回执；技能命令展开为技能说明后作为用户回合交给模型。
    */
   async command(chatId: string, text: string, context: PaperContext = {}):
+    Promise<{ kind: 'local' | 'skill'; chatId: string; text: string }> {
+    return this.store.withPin(chatId, () => this.runChatCommand(chatId, text, context));
+  }
+
+  private async runChatCommand(chatId: string, text: string, context: PaperContext):
     Promise<{ kind: 'local' | 'skill'; chatId: string; text: string }> {
     const chat = this.writableChat(chatId);
     this.assertIdle(chatId);
@@ -371,10 +374,6 @@ export class ChatService {
     };
     chat.messages.push(user, assistant);
     if (chat.messages.length === 2 && !chat.title.includes('L0')) chat.title = text.trim().slice(0, 40) || '附件讨论';
-    const active: ActiveTurn = {
-      message: assistant, turnId: null, items: new Map(), thinkingItems: new Map(),
-      turnStarting: false, cancelled: false,
-    };
     // 用户消息、上下文和占位回答在同一次提交中可靠保存，随后才发布两条消息事件。
     try { this.store.save(chatId); }
     catch (error) {
@@ -383,12 +382,17 @@ export class ChatService {
       chat.title = previous.title;
       throw error;
     }
+    const active: ActiveTurn = {
+      release: this.store.pin(chatId), message: assistant, turnId: null, items: new Map(), thinkingItems: new Map(),
+      turnStarting: false, cancelled: false,
+    };
     this.active.set(chatId, active);
     this.emit({ type: 'message', chatId, message: user });
     this.emit({ type: 'message', chatId, message: assistant });
-    this.run(chat, promptOverride ?? text, attachments, model, active, incoming).catch((error: Error) => {
-      if (this.active.get(chatId) === active) this.finish(chatId, 'failed', redact(error.message));
-    });
+    this.store.withPin(chatId, () => this.run(chat, promptOverride ?? text, attachments, model, active, incoming))
+      .catch((error: Error) => {
+        if (this.active.get(chatId) === active) this.finish(chatId, 'failed', redact(error.message));
+      });
     return { accepted: true };
   }
 
@@ -400,20 +404,27 @@ export class ChatService {
     if (!this.client.available || !this.authenticated) await this.connect();
     if (!current()) return;
     if (!this.authenticated) throw new Error('请先在本机 Pi 配置可用模型，然后重新检测。');
-    const instructions = this.instructions();
-    if (!chat.threadId) {
-      const started = await this.client.request<ThreadResult>('thread/start', {
-        cwd: this.root, developerInstructions: instructions, dynamicTools, ...(model ? { model } : {}),
+    const thread = chat.threadId
+      ? await this.client.request<ThreadResult>('thread/resume', { threadId: chat.threadId, retain: true }, 60000)
+      : await this.client.request<ThreadResult>('thread/start', {
+        cwd: this.root, developerInstructions: this.instructions(), dynamicTools, retain: true, ...(model ? { model } : {}),
       }, 60000);
+    try {
       if (!current()) return;
-      chat.threadId = started.thread.id;
-      this.loaded.add(chat.threadId);
-      this.store.save(chat.id);
-    } else if (!this.loaded.has(chat.threadId)) {
-      await this.client.request('thread/resume', { threadId: chat.threadId }, 60000);
-      if (!current()) return;
-      this.loaded.add(chat.threadId);
-    }
+      if (!chat.threadId) {
+        chat.threadId = thread.thread.id;
+        this.store.save(chat.id);
+      }
+      active.threadId = chat.threadId;
+      this.activeByThread.set(chat.threadId, chat.id);
+      await this.startTurn(chat, text, attachments, model, active, context, current);
+    } finally { thread.release?.(); }
+  }
+
+  private async startTurn(
+    chat: Chat, text: string, attachments: AttachmentInput[], model: string | undefined, active: ActiveTurn,
+    context: PaperContext, current: () => boolean,
+  ): Promise<void> {
     const selected: Array<Record<string, unknown>> = [];
     for (const id of chat.paperIds) {
       const paper = await this.library.getPaper(id);
@@ -501,7 +512,7 @@ export class ChatService {
       turn?: { id?: string; status?: ChatStatus; error?: { message?: string } };
       thread?: { id?: string }; error?: { message?: string }; willRetry?: boolean;
     };
-    const chat = this.store.data.chats.find((c) => c.threadId === (p.threadId || p.thread?.id));
+    const chat = this.activeChat(p.threadId || p.thread?.id);
     if (!chat) return;
     const active = this.active.get(chat.id);
     if (!active) return;
@@ -557,7 +568,9 @@ export class ChatService {
       this.get(chatId).lastContextOperationId = active.operationMessageId;
     }
     this.active.delete(chatId);
-    this.updateMessage(chatId, active.message);
+    if (active.threadId && this.activeByThread.get(active.threadId) === chatId) this.activeByThread.delete(active.threadId);
+    try { this.updateMessage(chatId, active.message); }
+    finally { active.release(); }
     for (const [id, approval] of this.approvals) {
       if (approval.chatId !== chatId) continue;
       this.client.respond(approval.rpcId, this.denial(approval.method));
@@ -571,7 +584,9 @@ export class ChatService {
     if (!active) return { stopped: true };
     active.cancelled = true;
     if (active.turnId) {
-      await this.client.request('turn/interrupt', { threadId: this.get(chatId).threadId, turnId: active.turnId });
+      await this.store.withPin(chatId, () => this.client.request('turn/interrupt', {
+        threadId: this.get(chatId).threadId, turnId: active.turnId,
+      }));
     } else if (!active.turnStarting) this.finish(chatId, 'interrupted');
     return { stopped: true };
   }
@@ -591,7 +606,7 @@ export class ChatService {
   createDocumentDraft(chatId: string, input: {
     target: 'synthesis' | 'outputs'; title: string; content: string; paperIds?: string[];
   }): Promise<ChatNoteDraft> {
-    return createDocumentDraft(this.draftHost(), chatId, input);
+    return this.store.withPin(chatId, () => createDocumentDraft(this.draftHost(), chatId, input));
   }
 
   draftTarget(relative: string): Promise<string> {
@@ -605,13 +620,14 @@ export class ChatService {
   }
 
   resolveFolderActions(chatId: string, action: unknown, ids: unknown): Promise<FolderActionResolution> {
-    return resolveFolderActions(this.draftHost(), chatId, action, ids);
+    return this.store.withPin(chatId, () => resolveFolderActions(this.draftHost(), chatId, action, ids));
   }
 
   resolveClassifyProposals(
     chatId: string, action: unknown, ids: unknown, requestId?: unknown,
   ): Promise<ClassifyResolution | ClassifySubmission> {
-    return resolveClassifyProposals(this.classificationHost(), chatId, action, ids, requestId);
+    return this.store.withPin(chatId, () =>
+      resolveClassifyProposals(this.classificationHost(), chatId, action, ids, requestId));
   }
 
   reconcileClassifications(restarting = false, changed?: JobRecord): void {
@@ -621,11 +637,12 @@ export class ChatService {
   async serverRequest(message: ClientRequest): Promise<void> {
     const { method, id: rpcId } = message;
     const p = message.params;
-    const chat = this.store.data.chats.find((c) => c.threadId === p.threadId);
+    const chat = this.activeChat(p.threadId);
     if (method === 'item/tool/call') {
       if (!chat || !this.active.has(chat.id)) {
         return this.client.respond(rpcId, { success: false, contentItems: [{ type: 'inputText', text: '会话已结束。' }] });
       }
+      const release = this.store.pin(chat.id);
       try {
         const args = typeof p.arguments === 'string'
           ? JSON.parse(p.arguments) as Record<string, unknown>
@@ -650,7 +667,7 @@ export class ChatService {
         this.client.respond(rpcId, { success: true, contentItems });
       } catch (error) {
         this.client.respond(rpcId, { success: false, contentItems: [{ type: 'inputText', text: redact((error as Error).message) }] });
-      }
+      } finally { release(); }
       return;
     }
     if (method.endsWith('/requestApproval') || method === 'item/tool/requestUserInput') {

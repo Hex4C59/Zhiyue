@@ -8,7 +8,7 @@ import { createHash } from 'node:crypto';
 import type { IncomingMessage } from 'node:http';
 import { createApp, checkRequest } from '../src/server.js';
 import { downloaderScript, resolvePython } from '../src/lib/python.js';
-import type { Chat, ChatClassifyProposal, ChatFolderAction, ChatNoteDraft } from '../src/lib/chat.js';
+import type { Chat, ChatClassifyProposal, ChatFolderAction } from '../src/lib/chat.js';
 
 // 服务端返回的 JSON 只在这里按用到的字段声明结构，读取后立即断言。
 interface LibraryResponse {
@@ -300,11 +300,10 @@ test('本地HTTP服务提供目录、PDF范围读取和上传，拒绝跨站与�
   assert.equal(response.status, 202);
   // 非法编号被过滤，会话记录记下服务端实际接受的范围。
   assert.deepEqual(app.chats.get(chat.id).paperIds, ['L001', 'L002']);
-  // 路由只读取笔记草案的标识、题名与正文，其余字段按服务端类型补齐。
-  app.chats.get(chat.id).noteDrafts.push({
-    id: 'draft-1', paperId: 'L001', title: '测试笔记', content: '## 要点\n\n内容', createdAt: new Date().toISOString(),
-  } as ChatNoteDraft);
-  response = await fetch(base + '/api/note-drafts/draft-1', {
+  const paper = await app.library.getPaper('L001');
+  assert.ok(paper);
+  const draft = app.chats.createNoteDraft(chat.id, { paper, title: '测试笔记', content: '## 要点\n\n内容' });
+  response = await fetch(`${base}/api/note-drafts/${draft.id}`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'save' }),
   });
   assert.equal(response.status, 200);

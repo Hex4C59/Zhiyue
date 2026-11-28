@@ -56,9 +56,13 @@ export interface PdfTranslationBatch {
   counts: PdfTranslationCounts;
 }
 
-export interface PdfTranslationSnapshot {
+export interface PdfTranslationEnvironment {
+  revision: number;
   engineAvailable: boolean;
   model: string | null;
+}
+
+export interface PdfTranslationSnapshot extends PdfTranslationEnvironment {
   batches: PdfTranslationBatch[];
   jobs: PdfTranslationJob[];
 }
@@ -92,14 +96,27 @@ export interface PdfTranslationMarkdown {
 
 export interface PdfTranslationEvent {
   type: 'pdfTranslation';
+  revision: number;
   job: PdfTranslationJob;
 }
 
-export interface PdfTranslationQueueEvent {
-  type: 'pdfTranslationQueue';
-}
+export type PdfTranslationQueueEvent = { type: 'pdfTranslationQueue'; revision: number } & (
+  { batch: PdfTranslationBatch; jobs: PdfTranslationJob[] } | { cancelledBatchId: string }
+);
 
 export type PdfTranslationServiceEvent = PdfTranslationEvent | PdfTranslationQueueEvent;
+
+export function translationBatchStatus(
+  counts: PdfTranslationCounts, cancelRequested: boolean,
+): PdfTranslationBatch['status'] {
+  if (counts.running || counts.queued) {
+    if (cancelRequested) return 'cancelling';
+    return counts.running || counts.processed ? 'running' : 'queued';
+  }
+  if (cancelRequested || counts.cancelled === counts.total) return 'cancelled';
+  if (counts.failed || counts.cancelled) return counts.failed === counts.total ? 'failed' : 'partial';
+  return 'completed';
+}
 
 /** 汇总终态时分别计数，跳过或失败仅计入已处理，不计作新生成的译本。 */
 export function translationCounts(jobs: readonly PdfTranslationJob[]): PdfTranslationCounts {

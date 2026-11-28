@@ -82,9 +82,11 @@ flowchart LR
 ### 本地 PDF 从导入到出现在列表
 
 1. `ImportPaperDialog.submit` 校验书目表单和核对勾选，逐个调用 `workspace.uploadFile`。`POST /api/uploads` 校验扩展名、大小和 PDF 文件头，把内容写到 `.zhiyue/data/uploads/` 并在 `.zhiyue/data/uploads.json` 登记，返回上传 ID。随后 `workspace.importPdfs` 发 `POST /api/library/import`，携带上传 ID、书目信息和分类。服务端按 ID 查找已登记文件。[导入对话框](app/web/frontend/components/ImportPaperDialog.vue) · [workspace.ts](app/web/frontend/lib/workspace.ts) · [server.ts](app/web/src/server.ts)
-2. `JobManager.startLocalImports` 检查分类、上传位置和元数据，对当前批次和索引记录中的主文件做 SHA-256 查重。分类不存在时在提交任务前按编号规则创建；`import` 只接受已存在的分类目录。部分重复时跳过对应项，全部跳过时返回 409。`_enqueue` 在 `.zhiyue/data/jobs.json` 持久化任务，接口以 202 返回 `{ job, skipped }`。后台队列顺序运行 `import → 每项 attach、review --accept-identity → 整批 archive`。身份确认来自前端勾选，提交载荷没有单独的确认字段，后台按此入口传入人工身份确认参数。[jobs.ts](app/web/src/lib/jobs.ts) · [server.ts](app/web/src/server.ts) · [导入和查重测试](app/web/test/jobs.test.ts)
+2. `JobManager.startLocalImports` 检查分类、上传位置和元数据，每次提交读取一次索引，按 SHA-256 建表，对照库内有效主记录和本批已出现的文件查重。分类不存在时在提交任务前按编号规则创建；`import` 只接受已存在的分类目录。部分重复时跳过对应项，全部跳过时返回 409。`_enqueue` 在 `.zhiyue/data/jobs.json` 持久化任务，接口以 202 返回 `{ job, skipped }`。后台队列顺序运行 `import → 每项 attach、review --accept-identity → 整批 archive`。身份确认来自前端勾选，提交载荷没有单独的确认字段，后台按此入口传入人工身份确认参数。[jobs.ts](app/web/src/lib/jobs.ts) · [server.ts](app/web/src/server.ts) · [导入和查重测试](app/web/test/jobs.test.ts)
 3. `run.py:main` 按批次加锁。`workflow.ingest` 把候选放到 `.zhiyue/tmp/`，用 `validation.verify` 检查身份、解析和首末页渲染，将结果写进 `.zhiyue/batches/<批次>/下载状态.json`。`archiving.archive` 在批次锁内取库写锁，重新读取批次台账，检查身份、全页解析、首末页渲染及哈希，分配或复用 L 编号，保存原字节和同名 `.来源.json`，更新文献库 README、批次及由 `library.build` 生成的 `.zhiyue/catalog/文献索引.json` 等目录文件。分类目录缺失时停止并提示修复台账，不再自动创建。未通过项留在批次，供人工处理或续跑。归档涉及多个文件，按 PDF → 来源记录 → README → 批次台账 → 派生索引的顺序写入；事务日志的 `prepared`/`committed` 语义和恢复依据见下文“归档事务的证据与恢复”。[run.py](app/downloader/run.py) · [workflow.py](app/downloader/workflow.py) · [validation.py](app/downloader/validation.py) · [batches.py](app/downloader/batches.py) · [archiving.py](app/downloader/archiving.py) · [索引构建](app/downloader/library.py)
 4. `_enqueue` 从批次重新统计 `job.result.counts`。终态任务事件使服务侧 `Library.refresh` 清理缓存。导入对话框轮询 `GET /api/jobs/:id` 并重新读取 `GET /api/library`，通用工作区也处理 SSE 任务更新；SSE 只负责实时推送，断线后由轮询和 `GET /api/downloads` 补查已知任务，见下文“事件推送、断线恢复与停止”。以 `counts.archived` 判断归档数量，`completed` 仅表示命令流程结束。部分失败要查步骤日志与批次台账。[jobs.ts](app/web/src/lib/jobs.ts) · [server.ts](app/web/src/server.ts) · [导入对话框](app/web/frontend/components/ImportPaperDialog.vue) · [workspace.ts](app/web/frontend/lib/workspace.ts)
+
+归档时先读取编号、DOI 和来源元数据。批次提交后统一发布索引。候选、拟复用的旧主文件、恢复现场和复制结果按实际字节核验。其余主文件用 `.zhiyue/catalog/archive-digests.json` 中与路径、文件标识、大小和高精度时间匹配的摘要，与最新来源记录比较。缓存由归档在库写锁内重建，显式 `catalog` 默认重新计算全部主文件摘要。
 
 ### Pi 问答从发送到保存结果
 
@@ -97,17 +99,19 @@ flowchart LR
 
 `Library._load` 的内部快照同时建立按编号的 Map，与文献缓存一起刷新；Map 不进入 HTTP 载荷。`getPaper` 只合成目标文献的阅读状态并复制单篇，完整列表仍由 `getLibrary` 汇总。阅读状态只合并重叠的读取，不长期缓存，因此外部修改在下次查询仍可见；原子提交后使提交前的读取失效，后续串行更新不会复用旧状态。收藏和阅读状态 PATCH 返回更新后的单篇，前端只更新对应记录及统计。[library.ts](app/web/src/lib/library.ts) · [workspaceLibrary.ts](app/web/frontend/lib/workspaceLibrary.ts)
 
+阅读器收到已有译本状态时更新工具栏。在左右对照模式中，译本键变化只刷新译文区域，原文会话继续保留页节点、文字选区和滚动位置。
+
 `previewPaper` 在渲染限流之前校验有效缓存，命中时不占用或等待两个渲染名额；未命中仍按图像路径去重，进入名额后再检查缓存。源文件签名在等待或渲染期间变化时，释放名额后重试一次，重复变化返回原文更新错误；每次签名检查同时重新核对真实路径，目录被替换成链接时拒绝继续。快路径与重新渲染使用相同的真实路径、链接、元数据、PNG、页序和清晰度检查。[preview.ts](app/web/src/lib/preview.ts)
 
 工作区共享 `paperById`，搜索文本只随元数据变化，筛选和排序分别缓存。文献、翻译候选及展开后的任务行复用 `VirtualList`：实际行高按稳定键记录，前缀偏移与二分查找确定窗口，上下各预留六行；尺寸测量按动画帧合并，保留首个可见键及偏移。仅挂载可见窗口和至多一个离屏聚焦行，集合位置与总数仍提供给辅助技术。筛选和排序回到开头，状态更新及尺寸变化保持锚点，方向键和 Home/End 可访问完整列表。勾选集合与 DOM 独立，全选和提交始终覆盖完整候选范围。[VirtualList.vue](app/web/frontend/components/VirtualList.vue) · [virtualWindow.ts](app/web/frontend/lib/virtualWindow.ts) · [workspace.ts](app/web/frontend/lib/workspace.ts)
 
-翻译任务以 ID 建立对象与数组位置索引，增量事件只替换对应记录；每个批次独立计算摘要。收起的逐篇进度不挂载行，展开后才显示窗口。全部历史、错误和重试入口继续保留，慢快照保护沿用任务与请求版本。[TranslationBatchCard.vue](app/web/frontend/components/TranslationBatchCard.vue) · [workspaceTranslations.ts](app/web/frontend/lib/workspaceTranslations.ts)
+翻译任务以 ID 建立对象与数组位置索引，增量事件只替换对应记录；每个批次独立计算摘要。收起的逐篇进度不挂载行，展开后才显示窗口。全部历史、错误和重试入口继续保留，慢响应按服务端队列修订号合并。[TranslationBatchCard.vue](app/web/frontend/components/TranslationBatchCard.vue) · [workspaceTranslations.ts](app/web/frontend/lib/workspaceTranslations.ts)
 
 操作结果与推理在 details 展开后才转换 Markdown 并挂载正文，同一消息的后续更新保留展开状态。流式正文和已展开推理只在显示层每 50 毫秒合并更新，原始 SSE 正文立即入状态；终态和切换消息立即显示最终内容，卸载清理计时器。补查和重新打开当前会话均按 ID 合并，未改变的消息保留对象，较长正文及推理、新终态与新消息不会被慢响应覆盖。自动滚动按动画帧合并，依据末条消息和实际正文更新跟随，用户向上阅读时暂停。[ChatMessage.vue](app/web/frontend/components/ChatMessage.vue) · [messageRendering.ts](app/web/frontend/lib/messageRendering.ts) · [chatMessages.ts](app/web/frontend/lib/chatMessages.ts)
 
 ### 聊天记录与迁移恢复
 
-`ChatStore` 在 `.zhiyue/data/pi/chats/` 为每个会话保存一个 JSON，文件名为会话 ID 的 SHA-256，内容为 `{ version: 1, position, chat }`。`position` 保持原数组顺序，创建时间相同也不重排。内存仍使用 `data.chats`，调用方必须 `save(chatId)`；每次只序列化并同步原子替换该会话，写入失败继续抛错，归类发布仍可回滚。归档、回收、草稿、提案、运行、修订及固定回执都保存在同一条记录，不另建运行时索引。[chatStore.ts](app/web/src/lib/chatStore.ts)
+`ChatStore` 在 `.zhiyue/data/pi/chats/` 为每个会话保存一个 JSON，文件名为会话 ID 的 SHA-256，内容为 `{ version: 1, position, chat }`。`position` 保持原数组顺序，创建时间相同也不重排。启动时逐条验证记录，内存目录保存列表摘要和恢复所需的索引。列表返回限长文字预览，详情按需读取完整记录。每次保存只原子替换目标会话，成功后更新目录。聊天正文和 Pi SDK 会话分别保留最近四个空闲项。正在执行的操作固定其对象，结束后释放。再次提问按原 `threadId` 恢复 SDK 会话。[chatStore.ts](app/web/src/lib/chatStore.ts)
 
 启动监听 HTTP 前一次性迁移旧 `pi/chats.json`：先把原始字节备份到 `pi/chat-store-backups/chats-<时间>-<编号>.json` 并写 SHA-256，再在 `pi/chat-store-migrating/` 写入全部记录，逐条核对内容、数量、顺序和哈希。`pi/chat-store-migration.json` 记录来源哈希、备份和新文件清单；暂存目录原子改名为正式目录并复核后，先移除旧文件，再移除标记。
 
@@ -133,7 +137,8 @@ flowchart LR
 
 | 接口 | 行为 |
 | --- | --- |
-| `GET /api/translations` | 当前服务会话的解析环境、默认模型、批次与逐篇任务快照 |
+| `GET /api/translations` | 当前服务会话的修订号、解析环境、默认模型、批次与逐篇任务快照 |
+| `GET /api/translations/status` | 健康连接轮询用的修订号、解析环境和默认模型 |
 | `POST /api/translations/batches` | 接受 `{ requestId, paperIds, model, regenerate? }`；新批次返回 202，幂等重放返回 200 |
 | `POST /api/translations/batches/:id/cancel` | 只取消该批次，重复调用安全，返回更新快照 |
 | `POST /api/papers/:id/translation` 及 `/cancel` | 单篇提交及取消，使用同一队列；保留已有成品读取、图片与导出接口 |
@@ -146,17 +151,17 @@ flowchart LR
 
 取消排队项立即生效；取消运行项后先等待解析进程、所有已启动的并发模型请求及临时目录清理，才释放执行位置。工作器用 `Promise.allSettled` 等待所有已启动的段落工作器，再传播取消或首个异常。进入保存阶段后继续完成原子发布，批次其余排队项仍取消。`close()` 先关闭派发并取消待执行项，再中止可取消任务并等待当前操作结束。
 
-[工作区翻译状态](app/web/frontend/lib/workspaceTranslations.ts) 独立维护选择集合、共享模型偏好、提交请求 ID 与全局快照。文献列表打开弹窗时保存当前筛选与排序范围，不改助手上下文。快照在启动、SSE 重连、队列变化和轮询时补查；逐篇事件版本及 HTTP 请求版本共同防止慢响应覆盖更新状态。批次汇总区分已生成、已跳过、失败和已取消，重试只提交失败及取消项。队列与批次历史只存在于当前服务进程，刷新页面或关闭到托盘不影响运行；退出后重新提交原范围，依靠已发布译本的原文哈希跳过已完成项。回归见[批次 API 测试](app/web/test/pdfTranslationBatch.test.ts)、[队列测试](app/web/test/pdfTranslationQueue.test.ts) 与[界面测试](app/web/test/frontend-translations.test.ts)。
+[工作区翻译状态](app/web/frontend/lib/workspaceTranslations.ts) 独立维护选择集合、共享模型偏好、提交请求 ID 与全局快照。文献列表打开弹窗时保存当前筛选与排序范围，不改助手上下文。启动、断线恢复和事件修订不连续时补查完整快照。连接正常时通过轻量状态接口核对修订，保留模型与解析环境变更。批次汇总区分已生成、已跳过、失败和已取消，重试只提交失败及取消项。队列与批次历史只存在于当前服务进程，刷新页面或关闭到托盘不影响运行；退出后重新提交原范围，依靠已发布译本的原文哈希跳过已完成项。回归见[批次 API 测试](app/web/test/pdfTranslationBatch.test.ts)、[队列测试](app/web/test/pdfTranslationQueue.test.ts) 与[界面测试](app/web/test/frontend-translations.test.ts)。
 
 ### 事件推送、断线恢复与停止
 
 **推送与补查**
 
-- `GET /api/events` 是单向广播：连接建立时先发 `connected`（含待处理审批快照），之后推送 `delta`、`message`、`activity`、`approval`、`approvalResolved`、`noteDraft`、`noteDraftResolved`、`status`、`job`、`classifyRun`（归类运行与提案快照）、`pdfTranslation`（逐篇翻译状态）和 `pdfTranslationQueue`（补查队列通知），每 20 秒写一个 keepalive 注释。流里没有事件 ID、断线重放或 `Last-Event-ID` 处理，断线期间的事件不会补发。[server.ts](app/web/src/server.ts) · [chat.ts](app/web/src/lib/chat.ts)
+- `GET /api/events` 是单向广播：连接建立时先发 `connected`（含待处理审批快照），之后推送 `delta`、`message`、`activity`、`approval`、`approvalResolved`、`noteDraft`、`noteDraftResolved`、`status`、`job`、`classifyRun`（归类运行与提案快照）、`pdfTranslation`（逐篇翻译状态）和 `pdfTranslationQueue`（批次受理的成员清单或批次取消请求），每 20 秒写一个 keepalive 注释。流里没有事件 ID、断线重放或 `Last-Event-ID` 处理，断线期间的事件不会补发。[server.ts](app/web/src/server.ts) · [chat.ts](app/web/src/lib/chat.ts)
 - 恢复靠 HTTP 补查：`onopen` 重新 `loadStatus` 并 `syncChat` 当前会话；`onerror` 将 `eventsOpen` 置 false，聊天由 8 秒轮询接管（`document.hidden` 时跳过）。轮询每次拉状态，会话在断线或正在生成时补查，`state.jobs` 中仍活跃的任务逐个 `GET /api/jobs/:id`。`syncChat` 按 ID 合并消息，保留未改变对象、SSE 已收到且更长的正文与推理、新终态和 HTTP 尚未返回的消息。[workspace.ts](app/web/frontend/lib/workspace.ts)
 - 断线期间不发新消息：`canSend` 要求 `eventsOpen`。已受理的轮次在服务端继续，回答完成写入该会话的 `.zhiyue/data/pi/chats/<SHA-256>.json`，重连或刷新后由 `syncChat` 读回最终文本；丢失的 `delta` 只影响过程显示。轮询只覆盖前端已知任务，断线期间由工具新建的任务要等 `GET /api/downloads`（启动时或进入“下载任务”）才出现。这是下载任务当前恢复范围的上界。[workspace.ts](app/web/frontend/lib/workspace.ts) · [server.ts](app/web/src/server.ts)
 - 归类运行从 `GET /api/chats/:id` 与关联的 `GET /api/jobs/:id` 补查；即使 SSE 连通也轮询当前活动归类。`classifyRun` 的修订号覆盖运行及提案变化，慢响应不能恢复已处理提案或把终态回退到运行中。[workspaceClassifications.ts](app/web/frontend/lib/workspaceClassifications.ts)
-- 翻译在工作区启动、`onopen`、`onerror` 和轮询时读取 `GET /api/translations`；逐篇 `pdfTranslation` 事件直接更新任务，`pdfTranslationQueue` 触发快照补查，因此关闭弹窗和切换论文不影响全局进度。下载任务的补查范围继续遵循上述规则。[workspaceTranslations.ts](app/web/frontend/lib/workspaceTranslations.ts) · [workspaceEvents.ts](app/web/frontend/lib/workspaceEvents.ts)
+- 翻译事件和完整快照携带队列修订号。受理时一次推送成员及初始队位，后续按逐篇事件更新进度、计数和批次终态。界面按入队顺序显示剩余队位，重连和发现修订缺口时合并快照请求。下载任务的补查范围继续遵循上述规则。[workspaceTranslations.ts](app/web/frontend/lib/workspaceTranslations.ts) · [workspaceEvents.ts](app/web/frontend/lib/workspaceEvents.ts)
 
 - `job` 仍发送当前完整任务快照；日志立即脱敏并保留最后 10 万字符，日志专用通知每任务最多每 100 毫秒一次，阶段和终态立即带上最新日志。任务快照由 `SnapshotWriter` 合并，仅开始写入时序列化最新任务；相应修订成功原子替换后才解除保存等待，失败向所有未提交等待者报告，后续可重试；首次入队保存失败会移除尚未受理的内存任务，避免留下无法执行的排队记录。关闭时刷新日志并等待工作与最新快照，不遗留日志计时器。下载批次摘要按真实台账路径、mtime、ctime 与大小缓存，命中前仍做路径校验，失效读取最多四路并发。[snapshotWriter.ts](app/web/src/lib/snapshotWriter.ts) · [jobs.ts](app/web/src/lib/jobs.ts)
 

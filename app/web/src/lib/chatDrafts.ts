@@ -11,7 +11,7 @@ import type {
 export interface ChatDraftHost {
   readonly root: string;
   readonly library: ChatServiceOptions['library'];
-  readonly store: Pick<ChatStore, 'data' | 'save'>;
+  readonly store: Pick<ChatStore, 'get' | 'draftOwner' | 'save' | 'candidates' | 'withPin'>;
   readonly emit: (event: ChatEvent) => unknown;
   readonly resolvingFolders: Set<string>;
   readonly resolvingClassifications: Set<string>;
@@ -106,13 +106,15 @@ export async function resolveNoteDraft(
   action: unknown,
 ): Promise<{ saved: true; path: string | undefined } | { discarded: true }> {
   if (!['save', 'discard'].includes(action as string)) throw new Error('请指定保存或丢弃。');
-  let owner: Chat | undefined;
-  for (const chat of host.store.data.chats) {
-    if ((chat.noteDrafts || []).some((d) => d.id === id)) { owner = chat; break; }
-  }
-  const draft = owner?.noteDrafts.find((d) => d.id === id);
-  if (!owner || !draft) throw statusError('草稿不存在或已处理。', 404);
-  host.writableChat(owner.id);
+  const chatId = host.store.draftOwner(id);
+  if (!chatId) throw statusError('草稿不存在或已处理。', 404);
+  return host.store.withPin(chatId, () => resolveOwnedDraft(host, host.writableChat(chatId), id, action));
+}
+
+async function resolveOwnedDraft(host: ChatDraftHost, owner: Chat, id: string, action: unknown):
+  Promise<{ saved: true; path: string | undefined } | { discarded: true }> {
+  const draft = owner.noteDrafts.find((d) => d.id === id);
+  if (!draft) throw statusError('草稿不存在或已处理。', 404);
   let savedPath: string | undefined;
   if (action === 'save') {
     const target = draft.target ?? 'notes';

@@ -74,6 +74,21 @@ test('catalog enrichment and user-only reading persistence; refresh sees catalog
   await library.refresh(); assert.equal((await library.getLibrary()).stats.total, 2);
 });
 
+test('跨目录版本及来源记录在各自文件夹可见，同一篇在父目录只计一次', async t => {
+  const { library, put, records, file } = await fixture(t);
+  records[0]!.versions = [{ file }, {
+    file: 'papers/08_SER/02_正式版/paper.pdf', source_record: 'papers/08_SER/02_正式版/paper.来源.json',
+    versions: [{ source_record: 'papers/09_来源/paper.来源.json' }],
+  }];
+  await put('.zhiyue/catalog/文献索引.json', JSON.stringify({ records }));
+  const { stats, papers, categories } = await library.getLibrary();
+  assert.equal(stats.total, 1);
+  assert.equal(papers[0]?.file, file);
+  assert.deepEqual(papers[0]?.relatedFolders, ['08_SER/02_正式版', '09_来源']);
+  assert.deepEqual(categories.map(c => [c.id, c.count]), [['08_SER', 1], ['09_来源', 1]]);
+  assert.deepEqual(categories[0]?.children.map(c => [c.name, c.count]), [['01_资源', 1], ['02_正式版', 1]]);
+});
+
 test('按编号查询只复制单篇，返回值隔离且刷新同步编号索引', async t => {
   const { library, put, records } = await fixture(t);
   const expected = (await library.getLibrary()).papers[0];

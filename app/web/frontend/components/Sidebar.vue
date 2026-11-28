@@ -31,10 +31,7 @@ const rows = computed<CategoryRow[]>(() => {
       name: category.name ?? category.id,
       count: category.count ?? 0,
     });
-    // 选中的分类默认展开；用户点第二次折叠后隐藏。拖动时临时展开，方便放到子文件夹。
-    const open = state.category === category.id
-      ? collapsedCategory.value !== category.id
-      : !!state.draggingPaper || !!state.movingPaper;
+    const open = isExpanded(category.id);
     if (!open) continue;
     for (const child of category.children || []) {
       result.push({
@@ -49,14 +46,13 @@ const rows = computed<CategoryRow[]>(() => {
   return result;
 });
 const label = (text: string): string => text.replace(/^\d+_/, '').replaceAll('_', ' ');
-// 记录用户主动折叠的分类；再次点击同一分类行时复位。
-const collapsedCategory = ref('');
+const expanded = ref(new Map<string, boolean>());
 const hasChildren = (row: CategoryRow): boolean =>
   !row.child && (state.categories || []).some(
     (category) => category.id === row.category && (category.children || []).length > 0,
   );
-const isExpanded = (row: CategoryRow): boolean =>
-  collapsedCategory.value !== row.category;
+const isExpanded = (id: string): boolean =>
+  !!state.draggingPaper || !!state.movingPaper || (expanded.value.get(id) ?? state.category === id);
 const creating = ref(false);
 const creatingChildOf = ref('');
 const editing = ref<{ category: string; child: string } | null>(null);
@@ -70,14 +66,9 @@ const setEditor = (element: unknown): void => {
   if (element) editor.value = element as HTMLInputElement;
 };
 function choose(row: CategoryRow): void {
-  // 点击已选中的父文件夹切换展开状态，其他情况仍然进入该分类并确保展开。
-  if (row.category && !row.child && hasChildren(row) && state.category === row.category) {
-    collapsedCategory.value = collapsedCategory.value === row.category ? '' : row.category;
-    return;
-  }
   state.category = row.category;
   state.subcategory = row.child;
-  collapsedCategory.value = '';
+  if (row.category) expanded.value.set(row.category, true);
   workspace.setView('library');
   workspace.setPanel('list');
 }
@@ -341,6 +332,12 @@ async function submitRename(row: CategoryRow): Promise<void> {
           @drop="dropPaper($event, row)"
           @contextmenu.prevent.stop="openMenu($event, row)"
         >
+          <button v-if="hasChildren(row)" class="category-disclosure" type="button"
+            :aria-expanded="isExpanded(row.category)" :aria-label="`${isExpanded(row.category) ? '折叠' : '展开'}${label(row.label)}`"
+            :title="isExpanded(row.category) ? '折叠子文件夹' : '展开子文件夹'"
+            @click="expanded.set(row.category, !isExpanded(row.category))">
+            <span class="cat-caret" :class="{ open: isExpanded(row.category) }" aria-hidden="true" />
+          </button>
           <button
             class="category-button"
             :class="{
@@ -349,18 +346,12 @@ async function submitRename(row: CategoryRow): Promise<void> {
               'parent-open': !row.child && state.category === row.category && !!state.subcategory,
               'has-children': hasChildren(row),
             }"
-            :aria-expanded="hasChildren(row) ? isExpanded(row) : undefined"
-            :title="hasChildren(row) ? '点击折叠或展开子文件夹' : undefined"
+            :aria-current="state.category === row.category && state.subcategory === row.child"
             @click="choose(row)"
           >
             <Icon v-if="!row.child" name="folder" />
-            <span class="cat-name" :title="label(row.label)">{{ label(row.label) }}</span
-            ><span
-              v-if="hasChildren(row)"
-              class="cat-caret"
-              :class="{ open: isExpanded(row) }"
-              aria-hidden="true"
-            /><span class="cat-count">{{ row.count }}</span>
+            <span class="cat-name" :title="label(row.label)">{{ label(row.label) }}</span>
+            <span class="cat-count">{{ row.count }}</span>
           </button>
           <button
             v-if="row.category"

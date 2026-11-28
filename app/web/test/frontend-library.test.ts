@@ -19,6 +19,23 @@ test('Vue 3 挂载全部面板，文献筛选与收藏保留节点和未读状�
   assert.equal(page.$('[data-paper]').dataset.paper, 'L002');
 });
 
+test('选中仅存其他版本的分类时显示关联文献，防止拖错主版本', async (t) => {
+  const page = await fixture(t);
+  const { state } = page.workspace;
+  state.papers[0].relatedFolders = ['09_档案/01_正式版'];
+  state.category = '09_档案';
+  await flush();
+  assert.equal(page.target.querySelectorAll('[data-paper]').length, 1);
+  state.subcategory = '01_正式版';
+  await flush();
+  const card = page.$('[data-paper="L001"]');
+  assert.match(card.textContent, /关联文献/);
+  assert.equal(card.draggable, false);
+  state.subcategory = '01_正式版备份';
+  await flush();
+  assert.equal(page.target.querySelectorAll('[data-paper]').length, 0);
+});
+
 test('文件夹导入忽略来源记录等非 PDF，并明确提示数量上限', async (t) => {
   const page = await fixture(t);
   const file = (name: string) => new File([new Uint8Array(16)], name, { type: 'application/octet-stream' });
@@ -231,7 +248,7 @@ test('侧栏加号在列表末尾新建顶层文件夹', async (t) => {
   assert.equal(document.querySelector('#categories .category-editor'), null);
 });
 
-test('再次点击已选中的文件夹折叠子文件夹', async (t) => {
+test('分类名称返回父目录，独立箭头只折叠子项', async (t) => {
   const page = await fixture(t);
   const { workspace } = page;
   workspace.state.categories = [{
@@ -243,13 +260,18 @@ test('再次点击已选中的文件夹折叠子文件夹', async (t) => {
   click(button());
   await flush();
   assert.ok(page.$('[data-subcategory="01_子项"]'));
-  assert.equal(button().getAttribute('aria-expanded'), 'true');
+  const arrow = () => page.$('[data-category="01_超声"] .category-disclosure');
+  click(page.$('[data-subcategory="01_子项"] .category-button'));
+  await flush();
   click(button());
+  assert.equal(workspace.state.subcategory, '');
+  assert.equal(arrow().getAttribute('aria-expanded'), 'true');
+  click(arrow());
   await flush();
   assert.equal(page.$('[data-subcategory="01_子项"]'), null);
-  assert.equal(button().getAttribute('aria-expanded'), 'false');
+  assert.equal(arrow().getAttribute('aria-expanded'), 'false');
   assert.equal(workspace.state.category, '01_超声');
-  click(button());
+  click(arrow());
   await flush();
   assert.ok(page.$('[data-subcategory="01_子项"]'));
 });
@@ -451,7 +473,7 @@ test('当前阅读的文献存于服务端文件，并在重启后恢复', async
   // 重新挂载并以同样的服务端状态读取，等价于重启应用：选中项与“当前打开”都要回来。
   const restarted = await fixture(t, { ui: page.ui });
   assert.equal(restarted.workspace.state.current, 'L002');
-  assert.ok(restarted.workspace.state.context.has('L002'));
+  assert.equal(restarted.workspace.state.context.size, 0);
 
   // 索引里已不存在的编号不能凭存储复活。
   const stale = await fixture(t, { ui: { paperId: 'L999' } });

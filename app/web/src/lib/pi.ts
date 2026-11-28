@@ -226,6 +226,7 @@ export interface PiClientOptions {
   stateDir: string;
   sdk?: PiSdk;
   agentDir?: string;
+  idleSessionLimit?: number;
 }
 
 export interface CreateSessionParams {
@@ -306,9 +307,19 @@ export class PiClient extends EventEmitter implements AssistantClient {
   toolDefinitions?: unknown;
   skills: SkillRuntime;
   private starting?: Promise<void>;
+  private readonly idleSessionLimit: number;
+  private readonly pins = new Map<string, number>();
+  private readonly opening = new Map<string, Promise<void>>();
+  private readonly compacting = new Set<string>();
+  private closed = false;
+  private closing?: Promise<void>;
+  private drained?: () => void;
 
-  constructor({ root, stateDir, sdk, agentDir = process.env.PI_CODING_AGENT_DIR || path.join(os.homedir(), '.pi', 'agent') }: PiClientOptions) {
+  constructor({ root, stateDir, sdk, idleSessionLimit = 4,
+    agentDir = process.env.PI_CODING_AGENT_DIR || path.join(os.homedir(), '.pi', 'agent') }: PiClientOptions) {
     super();
+    if (!Number.isSafeInteger(idleSessionLimit) || idleSessionLimit < 1) throw new Error('Pi 会话缓存容量无效。');
+    this.idleSessionLimit = idleSessionLimit;
     this.root = root;
     this.sdk = sdk;
     this.agentDir = agentDir;
@@ -322,6 +333,7 @@ export class PiClient extends EventEmitter implements AssistantClient {
   }
 
   async start(): Promise<void> {
+    if (this.closed) throw new Error('服务已关闭。');
     if (this.available) return;
     if (this.starting) return this.starting;
     this.starting = (async () => {
@@ -422,6 +434,7 @@ export class PiClient extends EventEmitter implements AssistantClient {
 
   // 第三个参数由聊天层的 RPC 形状保留；Pi SDK 是进程内调用，忽略超时值。
   async request<R = unknown>(method: string, params: Record<string, unknown> = {}, _timeout?: number): Promise<R> {
+    if (this.closed) throw new Error('服务已关闭。');
     if (method === 'account/read') {
       // Recheck availability after the user has configured Pi in another terminal or in the settings panel.
       this.models = await this.runtime.getAvailable();
@@ -442,41 +455,58 @@ export class PiClient extends EventEmitter implements AssistantClient {
       } as ModelListResult as R;
     }
     if (method === 'account/login/start') throw new Error('请在终端运行 pi 完成登录，然后回到网页点击重新检测。');
-    if (method === 'thread/start') return await this.createSession(params as unknown as CreateSessionParams) as ThreadResult as R;
-    if (method === 'thread/resume') {
-      return await this.createSession({}, params.threadId as string) as ThreadResult as R;
+    if (method === 'thread/start' || method === 'thread/resume') {
+      return await this.createSession(params as CreateSessionParams,
+        method === 'thread/resume' ? params.threadId as string : undefined, params.retain === true) as R;
     }
     if (method === 'turn/start') {
       const turnParams = params as unknown as TurnStartParams;
-      const session = this.sessions.get(turnParams.threadId);
-      if (!session) throw new Error('Pi 会话尚未载入。');
-      if (this.turns.has(turnParams.threadId)) throw new Error('Pi 当前回答尚未结束。');
-      if (turnParams.model) {
-        const model = this.pickModel(turnParams.model);
-        if (model) await session.setModel(model, { persist: false });
-      }
+      const id = turnParams.threadId;
+      if (this.turns.has(id) || this.compacting.has(id)) throw new Error('Pi 当前回答或压缩尚未结束。');
       const turn: Turn = { id: randomUUID(), cancelled: false };
-      this.turns.set(turnParams.threadId, turn);
-      setImmediate(() => this.runTurn(turnParams, session, turn));
-      return { turn: { id: turn.id } } as TurnResult as R;
+      this.turns.set(id, turn);
+      const release = this.pin(id);
+      try {
+        await this.createSession({}, id);
+        const session = this.sessions.get(id)!;
+        if (turnParams.model) {
+          const model = this.pickModel(turnParams.model);
+          if (model) await session.setModel(model, { persist: false });
+        }
+        setImmediate(() => { void this.runTurn(turnParams, session, turn).finally(release); });
+        return { turn: { id: turn.id } } as TurnResult as R;
+      } catch (error) {
+        this.turns.delete(id);
+        release();
+        throw error;
+      }
     }
     if (method === 'turn/interrupt') {
       const turn = this.turns.get(params.threadId as string);
       if (turn) turn.cancelled = true;
-      await this.sessions.get(params.threadId as string)?.abort();
+      const id = params.threadId as string;
+      const release = this.pin(id);
+      try { await this.sessions.get(id)?.abort(); }
+      finally { release(); }
       return {} as R;
     }
     if (method === 'thread/compact') {
       const threadId = params.threadId as string;
-      if (this.turns.has(threadId)) throw new Error('当前回答尚未结束，请先停止后再压缩上下文。');
-      // 服务重启后会话文件尚未载入，先按路径恢复再压缩；摘要写回同一个会话文件。
-      if (!this.sessions.has(threadId)) await this.createSession({}, threadId);
-      const session = this.sessions.get(threadId);
-      if (!session) throw new Error('Pi 会话尚未载入，无法压缩上下文。');
-      if (!session.compact) throw new Error('当前 Pi SDK 不支持手动压缩上下文。');
-      const instructions = typeof params.instructions === 'string' ? params.instructions.trim() : '';
-      const result = await session.compact(instructions || undefined);
-      return { tokensBefore: result.tokensBefore, estimatedTokensAfter: result.estimatedTokensAfter } as R;
+      if (this.turns.has(threadId) || this.compacting.has(threadId)) throw new Error('请等待当前回答或压缩结束。');
+      this.compacting.add(threadId);
+      const release = this.pin(threadId);
+      try {
+        await this.createSession({}, threadId);
+        if (this.closed) throw new Error('服务已关闭。');
+        const session = this.sessions.get(threadId)!;
+        if (!session.compact) throw new Error('当前 Pi SDK 不支持手动压缩上下文。');
+        const instructions = typeof params.instructions === 'string' ? params.instructions.trim() : '';
+        const result = await session.compact(instructions || undefined);
+        return { tokensBefore: result.tokensBefore, estimatedTokensAfter: result.estimatedTokensAfter } as R;
+      } finally {
+        this.compacting.delete(threadId);
+        release();
+      }
     }
     throw new Error(`Pi 不支持此请求：${method}`);
   }
@@ -663,8 +693,36 @@ export class PiClient extends EventEmitter implements AssistantClient {
     this.settings = this.settingsManager.getGlobalSettings();
   }
 
-  async createSession(params: CreateSessionParams, file?: string): Promise<{ thread: { id: string } }> {
-    if (file && this.sessions.has(file)) return { thread: { id: file } };
+  private pin(id: string): () => void {
+    this.pins.set(id, (this.pins.get(id) ?? 0) + 1);
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      const count = this.pins.get(id)! - 1;
+      if (count) this.pins.set(id, count);
+      else this.pins.delete(id);
+      if (!this.closed) this.trimSessions();
+      if (!this.pins.size) this.drained?.();
+    };
+  }
+
+  private disposeSession(id: string): void {
+    const session = this.sessions.get(id)!;
+    this.sessions.delete(id);
+    this.sessionSettings.delete(id);
+    session.dispose();
+  }
+
+  private trimSessions(): void {
+    if (this.sessions.size <= this.idleSessionLimit) return;
+    const idle = [...this.sessions.keys()].filter((id) => !this.pins.has(id));
+    for (const id of idle.slice(0, Math.max(0, idle.length - this.idleSessionLimit))) this.disposeSession(id);
+  }
+
+  /** retain 将租约交给提问方，覆盖 SDK 尚未写出首条消息时的文献查询及附件提取。 */
+  async createSession(params: CreateSessionParams, file?: string, retain = false): Promise<ThreadResult> {
+    if (this.closed) throw new Error('服务已关闭。');
     fs.mkdirSync(this.sessionsDir, { recursive: true });
     if (file) {
       const target = fs.existsSync(file)
@@ -674,10 +732,31 @@ export class PiClient extends EventEmitter implements AssistantClient {
       if (relative.startsWith('..') || path.isAbsolute(relative)) throw new Error('Pi 会话路径越界。');
     }
     const sdk = this.sdk as PiSdk;
-    const manager = file
-      ? sdk.SessionManager.open(file, this.sessionsDir, this.root)
-      : sdk.SessionManager.create(this.root, this.sessionsDir);
-    const id = manager.getSessionFile();
+    const manager = file ? undefined : sdk.SessionManager.create(this.root, this.sessionsDir);
+    const id = manager?.getSessionFile() ?? path.resolve(file!);
+    const release = this.pin(id);
+    try {
+      const existing = this.sessions.get(id);
+      if (existing) {
+        this.sessions.delete(id);
+        this.sessions.set(id, existing);
+      } else {
+        let opening = this.opening.get(id);
+        if (!opening) {
+          opening = this.loadSession(params, manager ?? sdk.SessionManager.open(id, this.sessionsDir, this.root), id)
+            .finally(() => this.opening.delete(id));
+          this.opening.set(id, opening);
+        }
+        await opening;
+      }
+      if (this.closed) throw new Error('服务已关闭。');
+      if (!retain) release();
+      return { thread: { id }, ...(retain ? { release } : {}) };
+    } catch (error) { release(); throw error; }
+  }
+
+  private async loadSession(params: CreateSessionParams, manager: PiSessionManager, id: string): Promise<void> {
+    const sdk = this.sdk as PiSdk;
     const instructions = params.developerInstructions || this.instructions || '你是文献研究助手，使用中文回答并核对原文证据。';
     this.instructions = instructions;
     const projectRules = path.join(this.root, '.zhiyue', 'AGENTS.md');
@@ -738,7 +817,6 @@ export class PiClient extends EventEmitter implements AssistantClient {
     });
     this.sessions.set(id, session);
     this.sessionSettings.set(id, sessionSettings);
-    return { thread: { id } };
   }
 
   async runTurn(params: TurnStartParams, session: PiSession, turn: Turn): Promise<void> {
@@ -747,7 +825,7 @@ export class PiClient extends EventEmitter implements AssistantClient {
     const notify = (method: string, extra: Record<string, unknown>): void => {
       this.emit('notification', { method, params: { threadId: params.threadId, turnId: turn.id, ...extra } });
     };
-    const unsubscribe = session.subscribe((event) => {
+    const onEvent = (event: PiEvent): void => {
       if (event.type === 'message_start' && event.message?.role === 'assistant') itemId = randomUUID();
       if (event.type === 'message_update' && event.assistantMessageEvent?.type === 'text_delta') {
         notify('item/agentMessage/delta', { itemId, delta: event.assistantMessageEvent.delta });
@@ -767,8 +845,10 @@ export class PiClient extends EventEmitter implements AssistantClient {
       if (event.type === 'tool_execution_start') {
         notify('item/started', { item: { type: 'dynamicToolCall', tool: event.toolName, status: 'inProgress' } });
       }
-    });
+    };
+    let unsubscribe: (() => void) | undefined;
     try {
+      unsubscribe = session.subscribe(onEvent);
       if (!turn.cancelled) {
         const images = params.input.filter((c) => c.type === 'localImage' && c.path).map((c) => ({
           type: 'image',
@@ -787,7 +867,7 @@ export class PiClient extends EventEmitter implements AssistantClient {
     } catch (error) {
       failure = redact((error as Error).message);
     } finally {
-      unsubscribe();
+      try { unsubscribe?.(); } catch (error) { failure ??= redact((error as Error).message); }
       this.turns.delete(params.threadId);
       notify('turn/completed', {
         turn: {
@@ -799,7 +879,8 @@ export class PiClient extends EventEmitter implements AssistantClient {
   }
 
   callTool(threadId: string, tool: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<ToolReply> {
-    if (signal?.aborted) return Promise.reject(new Error('已停止。'));
+    if (signal?.aborted || this.closed) return Promise.reject(new Error('已停止。'));
+    const release = this.pin(threadId);
     const id = ++this.sequence;
     return new Promise<ToolReply>((resolve, reject) => {
       const cleanup = (): void => {
@@ -812,21 +893,34 @@ export class PiClient extends EventEmitter implements AssistantClient {
       this.pending.set(id, { resolve: (value) => { cleanup(); resolve(value); }, reject: (error) => { cleanup(); reject(error); } });
       signal?.addEventListener('abort', abort, { once: true });
       this.emit('request', { id, method: 'item/tool/call', params: { threadId, tool, arguments: args } });
-    });
+    }).finally(release);
   }
 
   respond(id: number, result: unknown): void { this.pending.get(id)?.resolve(result as ToolReply); }
 
   respondError(id: number, message: string): void { this.pending.get(id)?.reject(new Error(redact(message))); }
 
-  async close(): Promise<void> {
+  close(): Promise<void> {
+    this.closed = true;
+    return this.closing ??= this.closeSessions();
+  }
+
+  private async closeSessions(): Promise<void> {
     for (const turn of this.turns.values()) turn.cancelled = true;
     for (const pending of [...this.pending.values()]) pending.reject(new Error('服务已关闭。'));
-    for (const session of this.sessions.values()) session.dispose();
-    this.sessions.clear();
-    this.sessionSettings.clear();
+    // SDK 的 abort 会中止提示与压缩；持有方（含仍在创建的会话）全部退出后才能 dispose。
+    const ids = new Set([...this.turns.keys(), ...this.compacting]);
+    const results = await Promise.allSettled([...ids].map((id) => this.sessions.get(id)?.abort()));
+    if (this.pins.size) await new Promise<void>((resolve) => { this.drained = resolve; });
+    this.drained = undefined;
+    const failures = results.flatMap((result) => result.status === 'rejected' ? [result.reason] : []);
+    for (const id of this.sessions.keys()) {
+      try { this.disposeSession(id); } catch (error) { failures.push(error); }
+    }
+    await this.starting?.catch(() => {});
     this.available = false;
-    await this.runtime?.settleCredentialWrites?.();
+    try { await this.runtime?.settleCredentialWrites?.(); } catch (error) { failures.push(error); }
+    if (failures.length) throw new AggregateError(failures, 'Pi 会话关闭失败。');
   }
 }
 

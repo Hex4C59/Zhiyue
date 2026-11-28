@@ -57,6 +57,7 @@ interface MockSessionOptions {
     name: string;
     execute(callId: string, args: Record<string, unknown>, signal: AbortSignal): Promise<MockToolReply>;
   }>;
+  sessionManager: { getSessionFile(): string };
   settingsManager: MockMemoryManager;
   resourceLoader: { getSystemPrompt(): string };
   tools: string[];
@@ -65,6 +66,7 @@ interface MockSessionOptions {
 interface MockSession {
   model: MockModel;
   options: MockSessionOptions;
+  disposed: number;
   thinkingLevel: string;
   thinkingOptions?: unknown;
   lastPrompt?: { text: string; images?: Array<{ data: string }>; expandPromptTemplates?: boolean };
@@ -95,7 +97,6 @@ function mockSDK(agentDir: string): MockSdk {
   ];
   const created: MockSession[] = [];
   const sessionManagers: MockMemoryManager[] = [];
-  let hold: (() => void) | undefined;
   const credentials = new Map<string, MockCredential>([
     ['test', { providerId: 'test', type: 'api_key' }],
     ['oauth', { providerId: 'oauth', type: 'oauth' }],
@@ -161,16 +162,17 @@ function mockSDK(agentDir: string): MockSdk {
     SessionManager: {
       create: (_cwd: string, dir: string) => {
         const file = path.join(dir, `${randomUUID()}.jsonl`);
-        fs.writeFileSync(file, '{}');
         return { getSessionFile: () => file };
       },
       open: (file: string) => ({ getSessionFile: () => file }),
     },
     createAgentSession: async (options: MockSessionOptions) => {
+      let hold: (() => void) | undefined;
       let listener: ((event: Record<string, unknown>) => void) | undefined;
       const session: MockSession = {
         model: models[0] as MockModel,
         options,
+        disposed: 0,
         thinkingLevel: 'medium',
         subscribe: (fn) => {
           listener = fn;
@@ -183,6 +185,7 @@ function mockSDK(agentDir: string): MockSdk {
         },
         getAvailableThinkingLevels: () => (session.model.reasoning ? ['off', 'minimal', 'low', 'medium', 'high'] : ['off']),
         prompt: async (text, promptOptions) => {
+          fs.appendFileSync(options.sessionManager.getSessionFile(), `${JSON.stringify({ text })}\n`);
           session.lastPrompt = { text, ...promptOptions, images: promptOptions?.images as Array<{ data: string }> | undefined };
           if (text.includes('等待停止')) {
             await new Promise<void>((resolve) => { hold = resolve; });
@@ -210,7 +213,7 @@ function mockSDK(agentDir: string): MockSdk {
           session.compaction = instructions ?? '';
           return { tokensBefore: 5000, estimatedTokensAfter: 1500 };
         },
-        dispose: () => { hold?.(); },
+        dispose: () => { session.disposed++; },
       };
       created.push(session);
       return { session };
@@ -229,13 +232,12 @@ interface Fixture {
   agentDir: string;
 }
 
-function fixture(t: test.TestContext): Fixture {
+function fixture(t: test.TestContext, idleSessionLimit?: number): Fixture {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'literature-pi-test-'));
   const agentDir = path.join(dir, 'pi-agent');
-  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const sdk = mockSDK(agentDir);
   const events: ChatEvent[] = [];
-  const pi = new PiClient({ root: dir, stateDir: dir, sdk: sdk as unknown as PiSdk, agentDir });
+  const pi = new PiClient({ root: dir, stateDir: dir, sdk: sdk as unknown as PiSdk, agentDir, idleSessionLimit });
   const options = {
     root: dir,
     stateDir: dir,
@@ -252,7 +254,10 @@ function fixture(t: test.TestContext): Fixture {
     renderPage: async () => ({ data: 'cG5n', mimeType: 'image/png', totalPages: 1, page: 1 }),
   } as unknown as ConstructorParameters<typeof AssistantService>[0];
   const chats = new AssistantService(options);
-  t.after(() => chats.client.close());
+  t.after(async () => {
+    try { await chats.client.close(); }
+    finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  });
   return { chats, pi, sdk, dir, events, options, agentDir };
 }
 
@@ -626,6 +631,138 @@ test('HTTP 提供 Pi 状态和连接接口', async (t) => {
   const chats = await (await fetch(base + '/api/chats')).json() as unknown[];
   assert.equal(chats.length, 1);
   assert.equal((await post('/api/agents/codex/connect')).status, 404);
+});
+
+function gate() {
+  let release!: () => void;
+  const promise = new Promise<void>((resolve) => { release = resolve; });
+  return { promise, release };
+}
+
+test('首轮附件和模型切换期间保留同一未落盘会话，活动回答结束后按需淘汰并恢复', async (t) => {
+  const { chats, sdk, pi } = fixture(t, 1);
+  await chats.connect();
+  const extract = gate();
+  const model = gate();
+  const chat = chats.create();
+  chats.extract = async () => { await extract.promise; return { text: '附件正文' }; };
+  await chats.send(chat.id, { text: '等待停止', model: 'test/test-model', attachments: [
+    { id: 'doc', name: 'doc.txt', mime: 'text/plain', path: 'doc.txt', size: 4 },
+  ] });
+  await wait(() => !!chat.threadId);
+  const id = chat.threadId!;
+  const original = sdk.created[0]!;
+  assert.equal(fs.existsSync(id), false);
+  let changing = false;
+  original.setModel = async () => { changing = true; await model.promise; };
+  const pressure = async (): Promise<void> => {
+    await pi.createSession({});
+    await pi.createSession({});
+    for (let index = 0; index < 12; index++) chats.create();
+    assert.equal(original.disposed, 0);
+    assert.equal(chats.get(chat.id), chat);
+  };
+  try {
+    await pressure();
+    extract.release();
+    await wait(() => changing);
+    await pressure();
+    await assert.rejects(pi.request('turn/start', { threadId: id, input: [] }), /尚未结束/);
+    model.release();
+    await wait(() => !!original.lastPrompt);
+    await pressure();
+    assert.equal(fs.existsSync(id), true);
+    await chats.interrupt(chat.id);
+    await wait(() => lastMessage(chats, chat.id).status === 'interrupted');
+  } finally { extract.release(); model.release(); }
+  await pi.createSession({});
+  assert.equal(original.disposed, 1);
+  assert.equal(pi.sessions.size, 1);
+  assert.equal(pi.sessionSettings.has(id), false);
+  const persisted = fs.readFileSync(id, 'utf8');
+  await chats.send(chat.id, { text: '恢复后继续' });
+  await wait(() => lastMessage(chats, chat.id).status === 'completed');
+  assert.equal(chats.get(chat.id).threadId, id);
+  assert.equal(chats.get(chat.id).messages.length, 4);
+  assert.ok(fs.readFileSync(id, 'utf8').startsWith(persisted));
+  await pi.close();
+  await pi.close();
+  assert.ok(sdk.created.every(({ disposed }) => disposed === 1));
+});
+
+test('同时恢复只创建一个实例，压缩完成及工具退出后才释放会话', async (t) => {
+  const { sdk, pi } = fixture(t, 1);
+  await pi.start();
+  const { thread: { id } } = await pi.createSession({});
+  await pi.createSession({});
+  await Promise.all([pi.createSession({}, id), pi.createSession({}, id)]);
+  assert.equal(sdk.created.length, 3);
+  const original = sdk.created.at(-1)!;
+  const compact = gate();
+  let entered = false;
+  original.compact = async () => { entered = true; await compact.promise; return { tokensBefore: 50 }; };
+  const pending = pi.request('thread/compact', { threadId: id });
+  await wait(() => entered);
+  try {
+    await pi.createSession({});
+    await pi.createSession({});
+    assert.equal(original.disposed, 0);
+    await assert.rejects(pi.request('turn/start', { threadId: id, input: [] }), /尚未结束/);
+    const controller = new AbortController();
+    // 此处模拟尚未返回的工具处理方；默认聊天监听器会立即拒绝非活动会话的工具调用。
+    pi.removeAllListeners('request');
+    const tool = pi.callTool(id, 'synthetic', {}, controller.signal);
+    const reply = assert.rejects(tool, /关闭/);
+    let closed = false;
+    const closing = pi.close().then(() => { closed = true; });
+    await reply;
+    assert.equal(closed, false);
+    assert.equal(original.disposed, 0);
+    compact.release();
+    await pending;
+    await closing;
+  } finally { compact.release(); }
+  assert.ok(sdk.created.every(({ disposed }) => disposed === 1));
+  assert.equal(pi.sessions.size, 0);
+  assert.equal(pi.sessionSettings.size, 0);
+  await assert.rejects(pi.createSession({}), /已关闭/);
+});
+
+test('关闭与异步创建交错时等待 SDK 返回并只销毁一次', async (t) => {
+  const { sdk, pi } = fixture(t);
+  await pi.start();
+  const create = pi.sdk!.createAgentSession.bind(pi.sdk);
+  const unblock = gate();
+  pi.sdk!.createAgentSession = async (options) => { await unblock.promise; return create(options); };
+  const starting = pi.createSession({});
+  const rejected = assert.rejects(starting, /已关闭/);
+  const closing = pi.close();
+  unblock.release();
+  await Promise.all([rejected, closing]);
+  assert.equal(sdk.created[0]?.disposed, 1);
+  assert.equal(pi.sessions.size, 0);
+});
+
+test('同一批合成 SDK 上下文在全保留和默认缓存容量下的常驻堆', { skip: !global.gc }, async (t) => {
+  const heap = () => { global.gc!(); global.gc!(); return process.memoryUsage().heapUsed; };
+  const count = 80;
+  for (const limit of [count, undefined]) {
+    const { pi, sdk } = fixture(t, limit);
+    await pi.start();
+    const before = heap();
+    for (let i = 0; i < count; i++) {
+      await pi.createSession({});
+      // 模拟 SDK 持有独立的模型上下文，并清掉测试框架自己的强引用。
+      const session = sdk.created.pop()!;
+      session.lastPrompt = { text: Buffer.alloc(128 * 1024, 32 + i).toString('latin1') };
+      sdk.sessionManagers.length = 0;
+    }
+    const after = heap();
+    assert.equal(pi.sessions.size, limit ?? 4);
+    assert.equal(pi.sessionSettings.size, pi.sessions.size);
+    t.diagnostic(`Pi 合成上下文 ${count} × 128 KiB，常驻 ${pi.sessions.size}，强制 GC 后堆增量 ${after - before} 字节`);
+    await pi.close();
+  }
 });
 
 export type { ChatServiceOptions };

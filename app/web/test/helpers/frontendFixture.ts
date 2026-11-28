@@ -202,6 +202,7 @@ export async function fixture(
     ui = {}, uiPatchError = '', pdfTextLines, pdfTranslation, papers: suppliedPapers, virtualLayout,
     chats: suppliedChats = [], classificationApi,
     translations = {
+      revision: 0,
       engineAvailable: pdfTranslation?.engineAvailable ?? false,
       model: pdfTranslation?.model ?? null, batches: [], jobs: [],
     },
@@ -308,6 +309,10 @@ export async function fixture(
     }
   }
   async function translationResponse({ path, method, body }: TranslationApiCall) {
+    if (path === '/api/translations/status') {
+      const { revision, model, engineAvailable } = translations;
+      return { revision, model, engineAvailable };
+    }
     if (path === '/api/translations') return structuredClone(translations);
     if (path === '/api/translations/batches' && method === 'POST') {
       const request = body as PdfTranslationBatchRequest;
@@ -328,6 +333,7 @@ export async function fixture(
         model: request.model, regenerate: request.regenerate === true, createdAt, status: 'queued',
         counts: translationCounts(jobs),
       };
+      translations.revision++;
       translations.jobs.push(...jobs);
       translations.batches.unshift(batch);
       return { batch: structuredClone(batch), snapshot: structuredClone(translations), replayed: false };
@@ -341,6 +347,7 @@ export async function fixture(
         if (job.status === 'queued') Object.assign(job, { status: 'cancelled', stage: '已取消' });
         else if (job.status === 'running') Object.assign(job, { status: 'cancelling', stage: '正在取消' });
       }
+      translations.revision++;
       batch.counts = translationCounts(jobs);
       batch.status = batch.counts.running ? 'cancelling'
         : batch.counts.cancelled === batch.counts.total ? 'cancelled' : 'partial';

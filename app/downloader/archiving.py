@@ -35,7 +35,8 @@ def archive(root,batch,item=None,category=None):
   if override is not None and state.get('category')!=rel(root,destdir):
    # 明确指定现有分类时同步台账，后续续跑不再回到旧目录。
    state['category']=rel(root,destdir);batches.write(root,d,state)
-  catalog=library.build(root);records=catalog['records']
+  digests=library.ArchiveDigests(root)
+  catalog=library.build(root,hash_files=False,write=False);records=catalog['records']
   for e in selected(state,item):
    if e['status']=='archived':
     journal=meta(root)/'tmp'/batch/'archive_backups'/(e['item_id']+'_归档事务.json')
@@ -59,6 +60,9 @@ def archive(root,batch,item=None,category=None):
    elif len(matches)>1:raise ValueError('该DOI有多个固定编号，请先set明确literature_id')
    else:existing=matches[0] if matches else None
    backup=meta(root)/'tmp'/batch/'archive_backups';journal=backup/(e['item_id']+'_归档事务.json')
+   if existing and existing.get('file_exists'):
+    # 来源记录可能过期。复用前也对旧主文件重新读字节，不能仅凭记录或命中缓存判定。
+    existing['sha256']=digests.digest(within(root,existing['file']),verify=True)
    if existing and existing.get('sha256')==actual and existing.get('file_exists'):
     existing_source=within(root,existing['source_record']) if existing.get('source_record') else None
     if not existing_source or not existing_source.is_file():raise ValueError('库内已有相同字节但缺少来源记录，请先修复来源记录，未覆盖文件。')
@@ -81,7 +85,8 @@ def archive(root,batch,item=None,category=None):
     if not dest.is_relative_to(papers_root) or source.parent!=dest.parent:raise ValueError('归档恢复记录的目标不在 papers/ 内。')
     if any(r['literature_id']==lid and r.get('file')!=record['file'] for r in records):raise ValueError('归档恢复记录的编号已被其他文献占用，请核对。')
     if dest.is_file():
-     if sha256(dest)!=actual:raise ValueError('归档恢复记录与目标PDF不一致，请核对，未覆盖文件。')
+     if digests.digest(dest,verify=True)!=actual:
+      raise ValueError('归档恢复记录与目标PDF不一致，请核对，未覆盖文件。')
     elif source.exists():raise ValueError('归档恢复记录有来源记录但缺少目标PDF，请核对，未覆盖文件。')
     if source.exists():
      prior=load(source,{})
@@ -108,7 +113,7 @@ def archive(root,batch,item=None,category=None):
    if not dest.is_file():
     # 事务记录已写但复制尚未发生，沿用记录中的编号和目标路径继续复制。
     with src.open('rb') as a,dest.open('xb') as b:shutil.copyfileobj(a,b);b.flush();os.fsync(b.fileno())
-    if sha256(dest)!=actual:raise RuntimeError('复制校验失败，保留事务记录供恢复。')
+    if digests.digest(dest,verify=True)!=actual:raise RuntimeError('复制校验失败，保留事务记录供恢复。')
    metadata={'文献编号':lid,'题名':e['title'],'DOI':e.get('doi') or '待核实','作者':authors,'年份':year,'期刊或会议':e.get('venue','待核实'),'版本':version,'文献类型':e.get('document_type','full_article'),'文件名':dest.name,'当前路径':record['file'],'来源':e.get('download_source') or '用户导入文件；原始获取渠道待核实','下载日期':e.get('downloaded_at') or '待核实（本次为归档日期，不能替代实际下载日期）','归档日期':now(),'PDF页数':e['pages'],'文件字节数':dest.stat().st_size,'SHA-256':actual,'核验':v,'下载历史':e.get('attempts',[]),'用户阅读状态':'待标记','批次':state['batch_id']}
    if not source.exists():save(source,metadata)
    append_index(root,record,new_id=not bool(existing))
@@ -118,5 +123,6 @@ def archive(root,batch,item=None,category=None):
    if existing:existing.setdefault('versions',[]).append(record)
    else:records.append(record)
    saved.append(lid)
-  catalog=library.build(root)
+  catalog=library.build(root,archive_digests=digests)
+  digests.publish(catalog['records'])
  return {'archived_items':saved,'catalog_records':catalog['record_count']}

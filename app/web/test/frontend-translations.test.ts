@@ -30,7 +30,7 @@ function papers(count = 8): FixturePaper[] {
 }
 
 function emptySnapshot(): PdfTranslationSnapshot {
-  return { engineAvailable: true, model: 'test/luna', batches: [], jobs: [] };
+  return { revision: 0, engineAvailable: true, model: 'test/luna', batches: [], jobs: [] };
 }
 
 function history(statuses: PdfTranslationJobStatus[]): PdfTranslationSnapshot {
@@ -50,7 +50,7 @@ function history(statuses: PdfTranslationJobStatus[]): PdfTranslationSnapshot {
     createdAt, updatedAt: createdAt,
   }));
   return {
-    engineAvailable: true, model: 'test/luna', jobs,
+    revision: 0, engineAvailable: true, model: 'test/luna', jobs,
     batches: [{
       id: 'history-batch', requestId: 'history-request', paperIds: jobs.map(({ paperId }) => paperId),
       jobIds: jobs.map(({ id }) => id), model: 'test/sonnet', regenerate: true,
@@ -298,9 +298,11 @@ test('慢提交期间重复点击与表单提交只创建一批，早到的 SSE 
     '[aria-label="选择 L001"]', '.translation-regenerate input',
   ]) assert.equal(page.$(`.translation-dialog ${selector}`).disabled, true);
   assert.match(page.$('[data-translation-submit]').textContent, /正在加入队列/);
+  page.events.message({ type: 'pdfTranslationQueue', revision: page.translations.revision,
+    batch: page.translations.batches[0], jobs: page.translations.jobs });
   const job = page.translations.jobs[0];
   Object.assign(job, { status: 'running', key: 'a'.repeat(64), percent: 73, stage: '正在翻译正文' });
-  page.events.message({ type: 'pdfTranslation', job });
+  page.events.message({ type: 'pdfTranslation', revision: ++page.translations.revision, job });
   await flush();
   release.resolve();
   await until(() => !!page.$('[data-translation-batch="batch-1"]'));
@@ -309,7 +311,7 @@ test('慢提交期间重复点击与表单提交只创建一批，早到的 SSE 
   assert.equal(page.translations.jobs.length, 8);
   assert.equal(page.$(`[data-translation-job="${job.id}"] progress`).value, 73);
   assert.match(page.$(`[data-translation-job="${job.id}"]`).textContent, /正在翻译正文/);
-  assert.match(page.$('[data-translation-job="batch-1-job-2"]').textContent, /第 2 位/);
+  assert.match(page.$('[data-translation-job="batch-1-job-2"]').textContent, /第 1 位/);
 });
 
 test('提交响应丢失且补查失败后保留 requestId 重试，服务端重放原批次', async (t) => {
@@ -414,7 +416,9 @@ test('汇总分别展示成功、跳过、失败和取消，取消收尾后只�
   }
   translations.batches[0].status = 'partial';
   translations.batches[0].counts = translationCounts(translations.jobs);
-  page.events.message({ type: 'pdfTranslationQueue' });
+  for (const index of [4, 6, 7]) {
+    page.events.message({ type: 'pdfTranslation', revision: ++translations.revision, job: translations.jobs[index] });
+  }
   await until(() => !!page.$('[data-translation-retry="history-batch"]'));
   assert.equal(page.$('[data-translation-cancel="history-batch"]'), null);
   assert.deepEqual(counts(batch(page)), ['已生成 2', '已跳过 1', '失败 1', '已取消 4']);
@@ -441,7 +445,7 @@ test('关闭翻译窗口后继续接收任务进度，重开仍展示原批次�
   const job = page.translations.jobs[0];
   Object.assign(job, { status: 'running', percent: 61, stage: '窗口关闭后仍在翻译' });
   page.translations.batches[0].status = 'running';
-  page.events.message({ type: 'pdfTranslation', job });
+  page.events.message({ type: 'pdfTranslation', revision: ++page.translations.revision, job });
   await flush();
   assert.equal(page.workspace.state.translationSnapshot.jobs[0].percent, 61);
   assert.equal(page.events.closed, false);
@@ -461,6 +465,8 @@ test('EventSource 断线与重新连接均补查快照，恢复断线期间遗�
   assert.equal(page.workspace.state.eventsOpen, true);
   Object.assign(translations.jobs[0], { status: 'completed', percent: 100, stage: '翻译完成' });
   Object.assign(translations.jobs[1], { status: 'running', percent: 64, stage: '断线期间已开始' });
+  translations.batches[0].counts = translationCounts(translations.jobs);
+  translations.revision++;
   const beforeError = translationGets(page);
   page.events.error();
   await until(() => !page.workspace.state.translationLoading &&
@@ -470,6 +476,8 @@ test('EventSource 断线与重新连接均补查快照，恢复断线期间遗�
   assert.deepEqual(counts(batch(page)), ['已生成 1', '已跳过 0', '失败 0', '已取消 0']);
   Object.assign(translations.jobs[1], { status: 'completed', percent: 100, stage: '翻译完成' });
   translations.batches[0].status = 'completed';
+  translations.batches[0].counts = translationCounts(translations.jobs);
+  translations.revision++;
   const beforeOpen = translationGets(page);
   page.events.open();
   await until(() => !page.workspace.state.translationLoading && batch(page).querySelector('progress')!.value === 2);
@@ -501,12 +509,12 @@ test('慢 GET 返回旧快照时保留其请求期间收到的逐篇 SSE 进度�
   await openTasks(page);
   await expandBatch(page);
   delayNext = true;
-  page.events.message({ type: 'pdfTranslationQueue' });
+  void page.workspace.loadTranslations();
   await started.promise;
   assert.equal(page.workspace.state.translationLoading, true);
   Object.assign(translations.jobs[0], { percent: 87, stage: 'SSE 已收到最新进度' });
   Object.assign(translations.jobs[1], { status: 'completed', key: 'c'.repeat(64), percent: 100, stage: '翻译完成' });
-  for (const job of translations.jobs) page.events.message({ type: 'pdfTranslation', job });
+  for (const job of translations.jobs) page.events.message({ type: 'pdfTranslation', revision: ++translations.revision, job });
   await until(() => page.$('[data-translation-job="history-job-1"] progress')?.value === 87);
   assert.deepEqual(counts(batch(page)), ['已生成 1', '已跳过 0', '失败 0', '已取消 0']);
   release.resolve();
@@ -619,9 +627,10 @@ test('千篇历史收起时不挂载任务行，单项事件只重算所属批�
   const jobIndex = w.translationJobs.value;
   summarized.length = 0;
   const first = translations.jobs[0];
-  page.events.message({ type: 'pdfTranslation', job: { ...first, reason: '刚收到的失败说明' } });
+  page.events.message({ type: 'pdfTranslation', revision: ++translations.revision,
+    job: { ...first, reason: '刚收到的失败说明' } });
   await flush();
-  assert.deepEqual(summarized, ['history-batch']);
+  assert.deepEqual(summarized, [], '收起的卡片直接使用批次计数');
   assert.equal(w.translationJobs.value, jobIndex);
   assert.equal(w.translationJobs.value.get('other-job'), untouched);
   assert.equal(page.target.querySelectorAll('[data-translation-job]').length, 0);
@@ -665,7 +674,7 @@ test('快照重排后增量索引仍更新正确任务，单篇历史列表也�
   translations.jobs.reverse();
   await w.loadTranslations();
   const changed = { ...translations.jobs[0], status: 'running', percent: 43, stage: '快照重排后的新进度' };
-  page.events.message({ type: 'pdfTranslation', job: changed });
+  page.events.message({ type: 'pdfTranslation', revision: ++translations.revision, job: changed });
   await flush();
   assert.equal(w.state.translationSnapshot.jobs[0].id, changed.id);
   assert.equal(w.state.translationSnapshot.jobs[0].percent, 43);
@@ -713,7 +722,7 @@ test('单篇 key 为空的排队任务以任务编号关联完成结果，仍自
     completedAt: '2026-11-20T01:00:00.000Z', sections: 3, images: 1,
   };
   Object.assign(pdfTranslation.job, { key, status: 'completed', percent: 100, stage: '翻译完成' });
-  page.events.message({ type: 'pdfTranslation', job: pdfTranslation.job });
+  page.events.message({ type: 'pdfTranslation', revision: ++page.translations.revision, job: pdfTranslation.job });
   await until(() => page.workspace.state.readerMode === 'translation' && !!page.$('.translation-document'));
   assert.equal(pdfTranslation.job.id, id);
   assert.equal(page.workspace.state.pdfTranslation, key);

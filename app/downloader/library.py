@@ -1,6 +1,6 @@
 """Read legacy archive layouts without rewriting source records."""
 from __future__ import annotations
-import re,urllib.parse
+import json,re,urllib.parse
 from collections import defaultdict
 from pathlib import Path
 from common import load,save,atomic_text,csv_text,normalize_doi,sha256,rel,within,now,safe_url,meta
@@ -38,7 +38,41 @@ def normalize_source(root,path,data,fallback_id=''):
   if possible.exists():file=possible
  return {'literature_id':lid,'title':pick(data,'题名','英文题名','title',default='待核实'),'doi':normalize_doi(pick(data,'DOI','doi',default='')),'authors':pick(data,'作者','authors','作者_原清单',default=[]),'year':pick(data,'年份','year','对应期刊出版年',default='待核实'),'venue':pick(data,'期刊或会议','期刊','venue','期刊_原清单',default='待核实'),'version':pick(data,'归档版本','版本','version',default='待核实'),'document_type':pick(data,'文献类型','document_type',default='待核实'),'file':rel(root,file) if file.exists() else None,'source_record':rel(root,path),'pages':pick(data,'PDF页数','pdf_pages'),'sha256':str(pick(data,'SHA-256','SHA256','sha256',default='')).casefold() or None,'source_url':safe_url(pick(data,'来源URL','来源','pdf_url','source_url',default='')),'downloaded_date':pick(data,'下载日期','downloaded_date',default='待核实'),'file_exists':file.exists(),'format':file.suffix.lstrip('.').upper() if file.exists() else 'unknown'}
 
-def build(root,hash_files=True,write=True):
+class ArchiveDigests:
+ """仅在归档的库写锁内使用。缓存缺失或损坏时从原文件重建。"""
+ def __init__(self,root):
+  self.root=Path(root)
+  self.path=meta(root)/'catalog'/'archive-digests.json'
+  try:previous=load(self.path,{})
+  except (UnicodeError,json.JSONDecodeError):previous={}
+  self.previous=previous if isinstance(previous,dict) else {}
+  self.current={}
+
+ @staticmethod
+ def signature(path):
+  info=path.stat()
+  return [info.st_dev,info.st_ino,info.st_size,info.st_mtime_ns,info.st_ctime_ns]
+
+ def digest(self,path,*,verify=False):
+  key=rel(self.root,path)
+  signature=self.signature(path)
+  entry=self.current.get(key,self.previous.get(key))
+  if (not verify and signature[1] and isinstance(entry,list) and len(entry)==2 and entry[0]==signature
+      and isinstance(entry[1],str) and re.fullmatch(r'[a-f0-9]{64}',entry[1])):
+   self.current[key]=entry
+   return entry[1]
+  digest=sha256(path)
+  if self.signature(path)!=signature:raise ValueError('归档期间文件发生变化，请重新核验。')
+  self.current[key]=[signature,digest]
+  return digest
+
+ def publish(self,records):
+  active={r['file'] for r in records if r.get('file_exists')}
+  entries={k:v for k,v in self.current.items() if k in active}
+  if entries!=self.previous:save(self.path,entries)
+
+
+def build(root,hash_files=True,write=True,*,archive_digests=None):
  root=Path(root);index=md_rows(root);byid=defaultdict(list);issues=[];source_count=0
  for p in sorted((root/'papers').rglob('*.来源.json')):
   source_count+=1
@@ -67,7 +101,9 @@ def build(root,hash_files=True,write=True):
   if not row:issues.append({'kind':'id_missing_from_readme','literature_id':lid})
   if not primary['file_exists']:issues.append({'kind':'primary_file_missing','literature_id':lid,'file':primary.get('file')})
   if hash_files and primary['file_exists']:
-   actual=sha256(root/primary['file']);primary['integrity_status']='matched' if primary.get('sha256') else 'unrecorded'
+   path=root/primary['file']
+   actual=archive_digests.digest(path) if archive_digests is not None else sha256(path)
+   primary['integrity_status']='matched' if primary.get('sha256') else 'unrecorded'
    if primary.get('sha256') and actual!=primary['sha256']:
     primary['integrity_status']='mismatch'
     issues.append({'kind':'hash_mismatch','literature_id':lid,'file':primary['file']})

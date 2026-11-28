@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { JobManager, type BatchSummary, type JobEvent, type JobRecord } from '../src/lib/jobs.js';
 
@@ -103,6 +104,32 @@ test('台账摘要缓存按文件变化失效，返回值隔离且命中前仍�
   await rm(directory, { recursive: true });
   await symlink(outside, directory, process.platform === 'win32' ? 'junction' : 'dir');
   await assert.rejects(manager._summary('batch-one'), /批次目录逃逸/);
+});
+
+test('一次提交一百个 PDF 只读取一次索引，下一批重新查重', async (t) => {
+  const { manager, root } = await fixture(t);
+  const catalog = path.join(root, '.zhiyue/catalog');
+  const uploads = path.join(manager.stateDir, 'uploads');
+  await Promise.all([mkdir(catalog, { recursive: true }), mkdir(uploads, { recursive: true })]);
+  const uploadPath = path.join(uploads, 'sample.pdf');
+  const bytes = Buffer.from('%PDF-1.4 synthetic');
+  await writeFile(uploadPath, bytes);
+  const digest = createHash('sha256').update(bytes).digest('hex');
+  const records = ['L000', 'L001', 'L002'].map((literature_id, index) => ({
+    literature_id, sha256: digest.toUpperCase(), file_exists: index > 0,
+  }));
+  const submit = () => manager.startLocalImports({ category: 'papers/topic',
+    uploads: Array.from({ length: 100 }, () => ({ title: '合成论文', uploadPath })) });
+  const read = t.mock.method(manager, '_catalogByDigest');
+  await writeFile(path.join(catalog, '文献索引.json'), JSON.stringify({ records }));
+  await assert.rejects(submit(), /L001/);
+  assert.equal(read.mock.callCount(), 1);
+  await writeFile(path.join(catalog, '文献索引.json'), JSON.stringify({ records: [] }));
+  t.mock.method(manager, '_enqueue', async () => record());
+  const { skipped } = await submit();
+  assert.equal(read.mock.callCount(), 2);
+  assert.equal(skipped.length, 99);
+  assert.ok(skipped.every((item) => item.reason.includes('与本批第 1 个文件相同')));
 });
 
 test('失效批次摘要最多四路读取，结果排序不受完成顺序影响', async (t) => {

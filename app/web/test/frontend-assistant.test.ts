@@ -292,6 +292,25 @@ test('多个删除请求合并，确认一次处理勾选项，失败和未选�
   assert.deepEqual(page.folderDecisions[1], { id: 'folder-chat', body: { action: 'discard', ids: ['blocked'] } });
 });
 
+test('浏览不累计引用，提问仅发送当前文献和手动固定的文献', async (t) => {
+  const page = await fixture(t);
+  const { workspace } = page;
+  workspace.selectPaper('L001');
+  workspace.selectPaper('L002');
+  await flush();
+  assert.equal(workspace.state.context.size, 0);
+  click(page.$('.comparison-add'));
+  await until(() => page.$('[data-pin-paper="L001"]'));
+  click(page.$('[data-pin-paper="L001"]'));
+  await flush();
+  input(page.$('#chat-input'), '比较两篇论文');
+  await workspace.submit();
+  const submitted = page.calls.find(call => call.method === 'POST' && call.path.endsWith('/messages'));
+  assert.deepEqual(submitted?.body.paperIds, ['L002', 'L001']);
+  assert.equal(submitted?.body.activePaperId, 'L002');
+  assert.equal(page.$('[data-context-remove="L002"]'), null);
+});
+
 test('附件上传与删除、Pi 标题与空上下文按 Vue 状态更新', async (t) => {
   const page = await fixture(t),
     { workspace } = page;
@@ -299,7 +318,7 @@ test('附件上传与删除、Pi 标题与空上下文按 Vue 状态更新', asy
   workspace.state.context.add('L001');
   await flush();
   assert.ok(page.$('[data-context-remove="L001"]'));
-  click(page.$('#clear-context'));
+  click(page.$('[data-context-remove="L001"]'));
   await flush();
   assert.equal(page.$('.chat-context'), null);
   const picker = page.$('.attachment-picker');

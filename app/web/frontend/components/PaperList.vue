@@ -1,11 +1,12 @@
 <script setup lang="ts">
 import { computed, inject } from 'vue';
 import { authorText, readKey, readLabels, titleOf } from '../lib/content';
+import FolderScope from './FolderScope.vue';
 import Icon from './Icon.vue';
 import PanelHandle from './PanelHandle.vue';
 import VirtualList from './VirtualList.vue';
 import type { Paper } from '../lib/types';
-import type { WorkspaceApi } from '../lib/workspace';
+import { inPrimaryFolder, type WorkspaceApi } from '../lib/workspace';
 
 const workspace = inject('workspace') as WorkspaceApi;
 const state = workspace.state;
@@ -30,12 +31,23 @@ const emptyText = computed(() =>
       : '文献库还没有文献',
 );
 const papers = workspace.filteredPapers;
+const showsPrimary = (paper: Paper): boolean => inPrimaryFolder(paper, state.category, state.subcategory);
+const relatedHint = '此文件夹存有该文献的关联版本或来源记录。点击可阅读主版本。';
 const paperKey = (paper: Paper): string => paper.literature_id;
 const resetKey = computed(() => JSON.stringify([
   state.query.trim().toLocaleLowerCase(), state.year, state.read, state.starred,
   state.category, state.subcategory, state.sort,
 ]));
 
+function firstAuthor(paper: Paper): string {
+  const first = Array.isArray(paper.authors) ? paper.authors[0] : paper.authors;
+  return (typeof first === 'string' ? first : first?.name) || '作者待核实';
+}
+function viewAll(): void {
+  state.category = '';
+  state.subcategory = '';
+  workspace.resetFilters();
+}
 function openImport(): void {
   state.importCategory = state.category
     ? `papers/${state.category}${state.subcategory ? `/${state.subcategory}` : ''}`
@@ -45,7 +57,7 @@ function openImport(): void {
 
 // 拖动只负责选中源；放置目标由左侧分类判断，实际移动由工作区提交给 Python。
 function dragStart(event: DragEvent, paper: Paper): void {
-  if (!workspace.beginPaperDrag(paper.literature_id)) {
+  if (!showsPrimary(paper) || !workspace.beginPaperDrag(paper.literature_id)) {
     event.preventDefault();
     return;
   }
@@ -60,6 +72,7 @@ function dragStart(event: DragEvent, paper: Paper): void {
 <template>
   <section id="paper-panel" class="paper-panel" aria-label="文献筛选与列表">
     <div class="list-controls">
+      <FolderScope />
       <label class="search-box"
         ><Icon name="search" /><input
           id="search"
@@ -130,8 +143,8 @@ function dragStart(event: DragEvent, paper: Paper): void {
           }"
           :data-paper="paper.literature_id"
           data-virtual-focus
-          draggable="true"
-          title="拖动到左侧文件夹可移动分类"
+          :draggable="showsPrimary(paper)"
+          :title="titleOf(paper)"
           tabindex="0"
           :aria-label="titleOf(paper)"
           :aria-current="state.current === paper.literature_id"
@@ -143,7 +156,6 @@ function dragStart(event: DragEvent, paper: Paper): void {
         >
           <div class="paper-top">
             <span class="paper-id">{{ paper.literature_id }}</span>
-            <span>· {{ paper.year || '年份待核实' }}</span>
             <button
               class="icon-button"
               :class="{ selected: paper.starred }"
@@ -159,9 +171,10 @@ function dragStart(event: DragEvent, paper: Paper): void {
             </button>
           </div>
           <h3>{{ titleOf(paper) }}</h3>
-          <div class="paper-authors" :title="authorText(paper)">{{ authorText(paper) }}</div>
+          <div class="paper-authors" :title="authorText(paper)">{{ firstAuthor(paper) }} · {{ paper.year || '年份待核实' }}</div>
           <div class="paper-bottom">
-            <span class="tag" :title="String(paper.subcategory || paper.venue || '')">
+            <span v-if="!showsPrimary(paper)" class="tag" :title="relatedHint">关联文献</span>
+            <span v-else class="tag" :title="String(paper.subcategory || paper.venue || '')">
               {{ String(paper.subcategory || paper.venue || paper.category || '未分类').replace(/^\d+_/, '') }}</span
             >
             <span :class="readKey(paper.readStatus)"
@@ -181,13 +194,14 @@ function dragStart(event: DragEvent, paper: Paper): void {
           <p>{{ filtering ? '试试其他关键词，或清除筛选条件。' : '导入 PDF，慢慢搭建你的专属文献库。' }}</p>
           <div class="empty-actions">
             <button
-              v-if="filtering || state.category"
+              v-if="filtering"
               id="reset-filters"
               class="button subtle"
               @click="workspace.resetFilters"
             >
-              {{ filtering ? '清除筛选' : '查看全部文献' }}
+              清除筛选
             </button>
+            <button v-if="state.category" class="button subtle" @click="viewAll">查看全部文献</button>
             <button v-if="!filtering" class="button primary" @click="openImport">
               <Icon name="upload" />导入 PDF
             </button>

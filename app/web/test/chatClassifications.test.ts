@@ -201,6 +201,8 @@ test('十四篇确认先返回202，目标去重且只移动一次，重放和�
   assert.equal(blocked.resolved, false);
   await until(() => calls.length === 1);
   assert.equal(f.app.jobs.getJob(submitted.job!.id)?.status, 'running');
+  for (let index = 0; index < 10; index++) f.app.chats.create();
+  assert.equal(f.app.chats.get(chat.id), chat, '归类任务排队、准备目录和等待回执时保留同一正文');
   const pending = await f.getChat(chat.id);
   assert.equal(pending.classifyProposals?.length, 14);
   assert.equal(runOf(pending, submitted.run.id).status, 'moving');

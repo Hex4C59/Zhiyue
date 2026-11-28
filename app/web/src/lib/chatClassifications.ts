@@ -302,7 +302,10 @@ function finishRun(host: ClassificationHost, chat: Chat, run: ChatClassifyRun, j
 }
 
 export function reconcileClassifications(host: ClassificationHost, restarting = false, changed?: JobRecord): void {
-  for (const chat of host.store.data.chats) {
+  const candidates = changed ? [changed.classification?.chatId] : host.store.candidates('reconcile');
+  for (const id of candidates) {
+    const chat = id && host.store.get(id);
+    if (!chat) continue;
     for (const run of chat.classifyRuns ?? []) {
       if (changed && (changed.classification?.chatId !== chat.id || changed.classification.runId !== run.id)) continue;
       const job = changed ?? (run.jobId ? host.jobs.getJob(run.jobId) : host.jobs.listJobs().find((candidate) =>
@@ -404,7 +407,7 @@ export async function resolveClassifyProposals(
   }
   try {
     const job = await host.jobs.startClassificationMove({ chatId, runId: run.id }, proposals.length,
-      (jobId, checkOpen) => prepareTargets(host, chat, run, jobId, checkOpen));
+      (jobId, checkOpen) => host.store.withPin(chatId, () => prepareTargets(host, chat, run, jobId, checkOpen)));
     if (run.jobId !== job.id) { run.jobId = job.id; publish(host, chat, run); }
     return { run, job: host.jobs.getJob(job.id) ?? job, replayed: false };
   } catch (error) {

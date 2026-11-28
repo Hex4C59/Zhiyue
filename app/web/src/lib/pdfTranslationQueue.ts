@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import {
-  activeTranslationJob,
+  activeTranslationJob, translationBatchStatus,
   type PdfTranslationBatch, type PdfTranslationBatchRequest, type PdfTranslationCounts,
   type PdfTranslationJob, type PdfTranslationServiceEvent,
 } from '../../shared/pdfTranslation.js';
@@ -34,6 +34,8 @@ export class PdfTranslationQueue {
   private readonly pending: TranslationQueueEntry[] = [];
   private active: ActiveEntry | undefined;
   private scheduled = false;
+  private version = 0;
+  get revision(): number { return this.version; }
   private closed = false;
 
   constructor(
@@ -53,13 +55,9 @@ export class PdfTranslationQueue {
     return result;
   }
 
-  private changed(): void {
-    this.emit({ type: 'pdfTranslationQueue' });
-  }
-
   update(entry: TranslationQueueEntry, patch: Partial<PdfTranslationJob>): void {
     Object.assign(entry.job, patch, { updatedAt: new Date().toISOString() });
-    this.emit({ type: 'pdfTranslation', job: this.copy(entry.job) });
+    this.emit({ type: 'pdfTranslation', revision: ++this.version, job: this.copy(entry.job) });
   }
 
   forPaper(paperId: string): PdfTranslationJob | null {
@@ -100,7 +98,6 @@ export class PdfTranslationQueue {
     if (!occupied) {
       this.lastByPaper.set(paperId, entry.job.id);
       this.pending.push(entry);
-      this.update(entry, {});
     }
     return entry;
   }
@@ -113,9 +110,10 @@ export class PdfTranslationQueue {
       return this.copy(existing.job);
     }
     const entry = this.create(paperId, model, fingerprint, regenerate, undefined, key);
-    this.changed();
+    const job = this.copy(entry.job);
+    this.emit({ type: 'pdfTranslation', revision: ++this.version, job });
     this.schedule();
-    return this.copy(entry.job);
+    return job;
   }
 
   private signature(request: PdfTranslationBatchRequest): string {
@@ -151,9 +149,12 @@ export class PdfTranslationQueue {
       const entry = this.create(paperId, request.model, fingerprint, record.batch.regenerate, id, null, occupied);
       record.batch.jobIds.push(entry.job.id);
     }
-    this.changed();
+    const positions = this.positions();
+    const batch = this.describe(record);
+    const jobs = batch.jobIds.map((id) => this.copy(this.entries.get(id)!.job, positions));
+    this.emit({ type: 'pdfTranslationQueue', revision: ++this.version, batch, jobs });
     this.schedule();
-    return this.describe(record);
+    return batch;
   }
 
   private counts(record: BatchRecord): PdfTranslationCounts {
@@ -172,13 +173,7 @@ export class PdfTranslationQueue {
 
   private describe(record: BatchRecord): PdfTranslationBatch {
     const counts = this.counts(record);
-    let status: PdfTranslationBatch['status'];
-    if (counts.running || counts.queued) {
-      status = record.cancelRequested ? 'cancelling' : counts.running || counts.processed ? 'running' : 'queued';
-    } else if (record.cancelRequested || counts.cancelled === counts.total) status = 'cancelled';
-    else if (counts.failed || counts.cancelled) {
-      status = counts.failed === counts.total ? 'failed' : 'partial';
-    } else status = 'completed';
+    const status = translationBatchStatus(counts, record.cancelRequested);
     return { ...record.batch, paperIds: [...record.batch.paperIds], jobIds: [...record.batch.jobIds], counts, status };
   }
 
@@ -206,7 +201,6 @@ export class PdfTranslationQueue {
       throw statusError('没有可取消的翻译任务。', 409);
     }
     this.cancelEntry(entry);
-    this.changed();
     this.schedule();
   }
 
@@ -215,9 +209,11 @@ export class PdfTranslationQueue {
     if (!record) throw statusError('翻译批次不存在。', 404);
     const entries = record.batch.jobIds.map((jobId) => this.entries.get(jobId)!);
     if (entries.some(({ job }) => activeTranslationJob(job))) {
-      record.cancelRequested = true;
+      if (!record.cancelRequested) {
+        record.cancelRequested = true;
+        this.emit({ type: 'pdfTranslationQueue', revision: ++this.version, cancelledBatchId: id });
+      }
       for (const entry of entries) this.cancelEntry(entry);
-      this.changed();
       this.schedule();
     }
   }
@@ -234,7 +230,6 @@ export class PdfTranslationQueue {
       const active: ActiveEntry = { entry, controller: new AbortController(), done: Promise.resolve() };
       this.active = active;
       this.update(entry, { status: 'running', stage: '准备翻译' });
-      this.changed();
       active.done = Promise.resolve().then(() => this.run(active.entry, active.controller.signal))
         .catch((error: unknown) => {
           this.update(active.entry, {
@@ -244,7 +239,6 @@ export class PdfTranslationQueue {
           });
         }).finally(() => {
           if (this.active === active) this.active = undefined;
-          this.changed();
           this.schedule();
         });
     });
@@ -255,7 +249,6 @@ export class PdfTranslationQueue {
     for (const entry of this.pending) if (entry.job.status === 'queued') this.cancelEntry(entry);
     const active = this.active;
     if (active && active.entry.job.status !== 'saving') this.cancelEntry(active.entry);
-    this.changed();
     if (active) await active.done;
   }
 }

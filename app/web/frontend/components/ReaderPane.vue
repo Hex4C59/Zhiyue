@@ -27,6 +27,7 @@ onMounted(() => {
     toast: workspace.toast,
     patchPaper: workspace.patchPaper,
     deleteNote: workspace.deleteNote,
+    selectPaper: workspace.selectPaper,
   });
   reader.render();
 });
@@ -37,10 +38,15 @@ watch(
     () => state.readerMode,
     () => state.notePath,
     () => state.pdfBrowser,
-    () => state.pdfTranslation,
+    () => state.current ? null : workspace.paperById.value.get(state.ui.paperId || '')?.title,
     visibleNoteCount,
+    () => state.pdfTranslation,
   ],
-  () => reader?.render(),
+  (next, previous) => {
+    const translationOnly = next.slice(0, -1).every((value, index) => value === previous[index]);
+    if (translationOnly) reader?.updateTranslation();
+    else reader?.render();
+  },
   { flush: 'post' },
 );
 onBeforeUnmount(() => reader?.dispose());

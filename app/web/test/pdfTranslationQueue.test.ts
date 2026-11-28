@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { PdfTranslationQueue } from '../src/lib/pdfTranslationQueue.js';
+import type { PdfTranslationServiceEvent } from '../shared/pdfTranslation.js';
 import { translateMarkdownBlocks } from '../src/lib/pdfTranslationWorker.js';
 import type { MarkdownBlock, TranslationModel } from '../src/lib/pdfTranslationWorker.js';
 
@@ -16,6 +17,26 @@ async function until(ready: () => boolean): Promise<void> {
   throw new Error('等待队列状态超时');
 }
 const request = { requestId: 'queue-test-request', paperIds: ['L001', 'L002', 'L003'], model: 'test/model' };
+
+test('千篇任务只发送一次成员清单，进度事件修订连续', async (t) => {
+  const events: PdfTranslationServiceEvent[] = [];
+  const queue = new PdfTranslationQueue(async (entry) => {
+    queue.update(entry, { status: 'skipped', stage: '已有译本' });
+  }, (event) => events.push(event));
+  t.after(() => queue.close());
+  const paperIds = Array.from({ length: 1000 }, (_, index) => `L${index + 1}`);
+  queue.batch({ ...request, paperIds }, 'fingerprint');
+  const admission = events[0]!;
+  assert.ok(admission.type === 'pdfTranslationQueue' && 'batch' in admission);
+  assert.deepEqual(admission.jobs.map((job) => job.queuePosition), paperIds.map((_, index) => index + 1));
+  await until(() => queue.forPaper('L1000')?.status === 'skipped');
+  const done = queue.snapshot();
+  assert.equal(done.batches[0]?.counts.skipped, 1000);
+  assert.equal(events.length, 2001);
+  assert.equal(events.filter(({ type }) => type === 'pdfTranslationQueue').length, 1);
+  assert.ok(events.every((event, index) => event.revision === index + 1));
+  assert.equal(queue.revision, events.length);
+});
 
 test('保存时取消批次保留当前成品，其余任务取消，单篇继续等待保存完成', async (t) => {
   const publishing = gate();

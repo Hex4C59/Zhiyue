@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
-import { translationCounts, type PdfTranslationBatch, type PdfTranslationJob } from '../../shared/pdfTranslation';
+import type { PdfTranslationBatch, PdfTranslationJob } from '../../shared/pdfTranslation';
 import { useWorkspace } from '../lib/workspace';
 import TranslationJobRow from './TranslationJobRow.vue';
 import VirtualList from './VirtualList.vue';
@@ -9,7 +9,7 @@ const props = defineProps<{ batch: PdfTranslationBatch }>();
 const w = useWorkspace();
 const state = w.state;
 const jobs = computed(() => w.batchJobs(props.batch));
-const counts = computed(() => translationCounts(jobs.value));
+const counts = computed(() => props.batch.counts);
 const expanded = ref(state.translationBatchId === props.batch.id);
 const jobKey = (job: PdfTranslationJob): string => job.id;
 const labels: Record<PdfTranslationBatch['status'], string> = {

@@ -40,6 +40,97 @@ test('Vue 阅读区保留 PDF 文字层与复制内容，其他面板更新不�
   assert.equal(workspace.state.papers[0].readStatus, 'unread');
 });
 
+for (const responseFirst of [true, false]) {
+  test(`已有译本在首图${responseFirst ? '之前' : '之后'}返回时保留原文会话`, async (t) => {
+    const originalFetch = globalThis.fetch;
+    let finishImage!: () => void;
+    let finishStatus!: () => void;
+    let previews = 0;
+    const image = new Promise<void>((resolve) => { finishImage = resolve; });
+    const status = new Promise<void>((resolve) => { finishStatus = resolve; });
+    globalThis.fetch = async () => {
+      previews++;
+      await image;
+      return new Response(new Blob(['pdf']), { headers: { 'Content-Type': 'image/png', 'X-PDF-Pages': '1' } });
+    };
+    t.after(() => { finishImage(); finishStatus(); globalThis.fetch = originalFetch; });
+    const page = await fixture(t, {
+      pdfTranslation: { result: { key: 'a'.repeat(64) }, job: null },
+      translationApi: async (call, next) => {
+        if (call.path === '/api/papers/L001/translation') await status;
+        return next();
+      },
+    });
+    click(page.$('[data-paper="L001"]'));
+    await until(() => previews === 1);
+    const session = page.workspace.state.pdfSession;
+    if (responseFirst) finishStatus();
+    else finishImage();
+    if (responseFirst) await until(() => !page.$('[data-reader-mode="translation"]').disabled);
+    finishImage();
+    await until(() => page.$('.pdf-text-layer span'));
+    const word = page.$('.pdf-text-layer span');
+    const sheet = page.$('.pdf-page-sheet');
+    const root = page.$('#reader-content');
+    root.scrollTop = 17;
+    const range = document.createRange();
+    range.selectNodeContents(word);
+    document.getSelection()!.removeAllRanges();
+    document.getSelection()!.addRange(range);
+    finishStatus();
+    await until(() => !page.$('[data-reader-mode="translation"]').disabled);
+    assert.equal(page.workspace.state.pdfSession, session);
+    assert.equal(page.$('.pdf-page-sheet'), sheet);
+    assert.equal(root.scrollTop, 17);
+    assert.equal(document.getSelection()!.toString(), 'Selectable ');
+    assert.equal(previews, 1);
+    assert.equal(page.calls.filter((call) => call.path.includes('/text-layer?')).length, 1);
+  });
+}
+
+test('切换文献后旧译本状态返回时保留新文献首页', async (t) => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(new Blob(['pdf']), {
+    headers: { 'Content-Type': 'image/png', 'X-PDF-Pages': '1' },
+  });
+  let release!: () => void;
+  const delayed = new Promise<void>((resolve) => { release = resolve; });
+  t.after(() => { release(); globalThis.fetch = originalFetch; });
+  const page = await fixture(t, {
+    pdfTranslation: { result: { key: 'a'.repeat(64) }, job: null },
+    translationApi: async (call, next) => {
+      if (call.path === '/api/papers/L001/translation') await delayed;
+      return next();
+    },
+  });
+  click(page.$('[data-paper="L001"]'));
+  await until(() => page.calls.some(({ path }) => path === '/api/papers/L001/translation'));
+  click(page.$('[data-paper="L002"]'));
+  await until(() => page.workspace.state.pdfSession?.paper.literature_id === 'L002' && page.$('.pdf-page-image'));
+  const sheet = page.$('.pdf-page-sheet');
+  release();
+  await flush();
+  assert.equal(page.workspace.state.pdfTranslation, '');
+  assert.equal(page.$('.pdf-page-sheet'), sheet);
+});
+
+test('重复选择当前论文时返回正文并保留阅读进度', async (t) => {
+  const page = await fixture(t);
+  const { state } = page.workspace;
+  page.workspace.selectPaper('L002');
+  state.readerMode = 'note';
+  state.pdfPage = 7;
+  state.pdfZoom = 150;
+  await flush();
+  const node = page.$('#reader-content');
+  click(page.$('[data-paper="L002"]'));
+  await flush();
+  assert.equal(document.activeElement, node);
+  assert.equal(state.readerMode, 'note');
+  assert.equal(state.pdfPage, 7);
+  assert.equal(state.pdfZoom, 150);
+});
+
 test('连续阅读拖选多行标题时，选区与复制内容只包含标题', async (t) => {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async () => new Response(new Blob(['pdf']), {
@@ -193,7 +284,8 @@ test('翻译完成后自动进入中文精读视图，支持表格、插图、�
   translation.result = { key: translation.job.key, sourceHash: 'a'.repeat(64), sections: 3, images: 1 };
   translation.job.status = 'completed';
   translation.job.percent = 100;
-  page.workspace.receive({ type: 'pdfTranslation', job: structuredClone(translation.job) });
+  page.workspace.receive({ type: 'pdfTranslation', revision: page.workspace.state.translationSnapshot.revision + 1,
+    job: structuredClone(translation.job) });
   await until(() => page.$('.translation-document') && page.workspace.state.readerMode === 'translation');
   const article = page.$('.translation-document');
   assert.match(article.innerHTML, /Original Paper Title/);
@@ -220,7 +312,8 @@ test('已有中文时可重新生成，失败或取消仍可阅读和导出旧�
   const button = (text: string) => [...document.querySelectorAll('.pdf-translation-bar button')]
     .find((item) => item.textContent === text);
   const downloadKey = () => new URL(page.$('.pdf-translation-download').href).searchParams.get('key');
-  const event = (job = translation.job) => page.workspace.receive({ type: 'pdfTranslation', job: structuredClone(job) });
+  const event = (job = translation.job) => page.workspace.receive({ type: 'pdfTranslation',
+    revision: state.translationSnapshot.revision + 1, job: structuredClone(job) });
   const start = async () => {
     await until(() => !!button('重新生成中文'));
     click(button('重新生成中文'));

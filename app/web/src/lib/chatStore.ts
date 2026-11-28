@@ -3,7 +3,9 @@ import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import type { BinaryLike } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
-import type { Chat } from './chatTypes.js';
+import type { Chat, ChatMessage } from './chatTypes.js';
+import { activeClassifyRun } from '../../shared/contracts.js';
+import { chatMessagePreview } from '../../shared/chatPreview.js';
 
 export interface ChatRecord {
   version: 1;
@@ -230,19 +232,54 @@ function migrateChatStore(stateDir: string, directory: string): void {
   fs.unlinkSync(marker);
 }
 
-/** 每篇会话独立保存；position 固定原数组顺序，归档和回收不会删除或重排记录。 */
+export interface ChatSummary extends Pick<Chat, 'id' | 'title' | 'createdAt' | 'historyState' | 'paperIds'> {
+  classifyRunning: boolean;
+  messages: Array<Pick<ChatMessage, 'id' | 'role' | 'status' | 'text'>>;
+}
+interface ChatIndex {
+  position: number;
+  summary: ChatSummary;
+  drafts: string[];
+  streaming: boolean;
+  reconcile: boolean;
+}
+
+function indexRecord({ chat, position }: ChatRecord): ChatIndex {
+  const { id, title, createdAt, historyState, paperIds } = chat;
+  const runs = chat.classifyRuns ?? [];
+  const classifyRunning = runs.some(activeClassifyRun);
+  const last = chat.messages.at(-1);
+  // JSON.parse 可能让短字段引用整篇 JSON 的底层字符串。只复制索引字段，让正文可被独立回收。
+  const receipts = runs.length ? new Set(chat.messages.map((message) => message.id)) : undefined;
+  const reconcile = classifyRunning || runs.some((run) => !receipts?.has(run.messageId));
+  return structuredClone({
+    position,
+    summary: {
+      id, title, createdAt, historyState, paperIds, classifyRunning,
+      messages: last && historyState !== 'trashed' ? [chatMessagePreview(last)] : [],
+    },
+    drafts: (chat.noteDrafts ?? []).map((item) => item.id),
+    streaming: chat.messages.some((message) => message.status === 'streaming'),
+    reconcile,
+  });
+}
+
+/** 启动逐篇校验并建立轻量索引；完整正文按需加载，只有空闲正文参与淘汰。 */
 export class ChatStore {
   readonly directory: string;
-  readonly data: { chats: Chat[] };
-  private readonly positions = new Map<string, number>();
+  private readonly index = new Map<string, ChatIndex>();
+  private readonly resident = new Map<string, Chat>();
+  private readonly unsaved = new Set<string>();
+  private readonly pins = new Map<string, number>();
   private nextPosition = 0;
 
-  constructor(stateDir: string) {
+  constructor(stateDir: string, private readonly idleLimit = 4) {
+    if (!Number.isSafeInteger(idleLimit) || idleLimit < 1) throw new Error('聊天缓存容量无效。');
     fs.mkdirSync(stateDir, { recursive: true });
     this.directory = path.join(stateDir, 'chats');
     migrateChatStore(stateDir, this.directory);
     if (!directoryExists(this.directory)) fs.mkdirSync(this.directory);
-    const records: ChatRecord[] = [];
+    const records: ChatIndex[] = [];
     const stale: string[] = [];
     for (const name of fs.readdirSync(this.directory)) {
       if (/^[a-f\d]{64}\.json\.[a-f\d-]{36}\.writing$/.test(name)) {
@@ -252,31 +289,98 @@ export class ChatStore {
         stale.push(file);
       } else {
         if (!/^[a-f\d]{64}\.json$/.test(name)) fail(`无法识别的会话记录：${name}`);
-        records.push(readRecord(this.directory, name));
+        records.push(indexRecord(readRecord(this.directory, name)));
       }
     }
     records.sort((a, b) => a.position - b.position);
     const used = new Set<number>();
-    for (const { chat, position } of records) {
-      if (this.positions.has(chat.id) || used.has(position)) fail('会话编号或原数组位置重复。');
-      this.positions.set(chat.id, position);
+    for (const entry of records) {
+      const { position, summary: { id } } = entry;
+      if (this.index.has(id) || used.has(position)) fail('会话编号或原数组位置重复。');
+      this.index.set(id, entry);
       used.add(position);
       this.nextPosition = Math.max(this.nextPosition, position + 1);
     }
     for (const file of stale) fs.unlinkSync(file);
-    this.data = { chats: records.map(({ chat }) => chat) };
+  }
+
+  summaries(): ChatSummary[] { return structuredClone(Array.from(this.index.values(), ({ summary }) => summary)); }
+  get residentCount(): number { return this.resident.size; }
+
+  candidates(kind: 'streaming' | 'reconcile'): string[] {
+    return [...this.index.values()].filter((entry) => entry[kind]).map(({ summary }) => summary.id);
+  }
+
+  draftOwner(draftId: string): string | undefined {
+    for (const { summary, drafts } of this.index.values()) if (drafts.includes(draftId)) return summary.id;
+    return undefined;
+  }
+
+  get(id: string): Chat | undefined {
+    const entry = this.index.get(id);
+    if (!entry) return undefined;
+    let chat = this.resident.get(id);
+    if (chat) this.resident.delete(id);
+    else {
+      const record = readRecord(this.directory, recordName(id));
+      if (record.position !== entry.position) fail('会话位置已发生变化。');
+      chat = record.chat;
+    }
+    this.resident.set(id, chat);
+    this.trim();
+    return chat;
+  }
+
+  /** 异步操作可能重叠（例如回答结束后工具仍在收尾），须等最后一个持有方释放。 */
+  pin(id: string): () => void {
+    this.pins.set(id, (this.pins.get(id) ?? 0) + 1);
+    return () => {
+      const count = this.pins.get(id)! - 1;
+      if (count) this.pins.set(id, count);
+      else this.pins.delete(id);
+      this.trim();
+    };
+  }
+
+  async withPin<T>(id: string, work: () => Promise<T>): Promise<T> {
+    const release = this.pin(id);
+    try { return await work(); }
+    finally { release(); }
+  }
+
+  private trim(): void {
+    if (this.resident.size <= this.idleLimit) return;
+    const idle = [...this.resident.keys()].filter((id) =>
+      !this.pins.has(id) && !this.unsaved.has(id) && !this.index.get(id)?.summary.classifyRunning);
+    for (const id of idle.slice(0, Math.max(0, idle.length - this.idleLimit))) this.resident.delete(id);
+  }
+
+  create(chat: Chat): void {
+    if (this.index.has(chat.id)) throw new Error('会话编号重复。');
+    this.resident.set(chat.id, chat);
+    try { this.save(chat.id); }
+    catch (error) {
+      this.resident.delete(chat.id);
+      this.unsaved.delete(chat.id);
+      throw error;
+    }
   }
 
   fileFor(chatId: string): string { return path.join(this.directory, recordName(chatId)); }
 
   save(chatId: string): void {
-    const chat = this.data.chats.find(({ id }) => id === chatId);
-    if (!chat) throw new Error(`无法保存不存在的会话：${chatId}`);
-    const position = this.positions.get(chatId) ?? this.nextPosition;
+    const chat = this.resident.get(chatId);
+    if (!chat) throw new Error(`无法保存未加载或不存在的会话：${chatId}`);
+    const position = this.index.get(chatId)?.position ?? this.nextPosition;
     if (!Number.isSafeInteger(position)) throw new Error('会话顺序超出可保存范围。');
-    const content = JSON.stringify({ version: 1, position, chat } satisfies ChatRecord, null, 2);
-    atomicWrite(this.fileFor(chatId), content);
-    this.positions.set(chatId, position);
+    // 只有成功替换磁盘记录才更新摘要并允许淘汰；失败保留唯一正文，以供回滚和重试。
+    this.unsaved.add(chatId);
+    const record: ChatRecord = { version: 1, position, chat };
+    const entry = indexRecord(record);
+    atomicWrite(this.fileFor(chatId), JSON.stringify(record, null, 2));
+    this.index.set(entry.summary.id, entry);
+    this.unsaved.delete(chatId);
     this.nextPosition = Math.max(this.nextPosition, position + 1);
+    this.trim();
   }
 }
